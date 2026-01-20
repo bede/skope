@@ -296,6 +296,10 @@ enum Commands {
         #[arg(short = 'w', long = "window-size", default_value_t = 21)]
         window_size: u8,
 
+        /// Skip reads that hit multiple targets (discriminatory mode)
+        #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
+        discriminatory: bool,
+
         // Processing options
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
@@ -448,6 +452,7 @@ fn main() -> Result<()> {
             sample_names,
             kmer_length,
             window_size,
+            discriminatory,
             threads,
             output,
             quiet,
@@ -526,6 +531,7 @@ fn main() -> Result<()> {
                 quiet: *quiet,
                 limit_bp,
                 include_all_reads,
+                discriminatory: *discriminatory,
             };
 
             config

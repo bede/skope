@@ -139,6 +139,7 @@ fn test_length_histogram() {
         quiet: true,
         limit_bp: None,
         include_all_reads: false,
+        discriminatory: false,
     };
 
     grate::run_length_histogram_analysis(&config).unwrap();
@@ -147,6 +148,6 @@ fn test_length_histogram() {
         serde_json::from_str(&std::fs::read_to_string(temp_output.path()).unwrap()).unwrap();
 
     assert_eq!(report.samples.len(), 1);
-    assert!(report.samples[0].reads_with_hits > 0);
-    assert!(!report.samples[0].length_histogram.is_empty());
+    assert!(report.samples[0].total_stats.reads_with_hits > 0);
+    assert!(!report.samples[0].total_stats.length_histogram.is_empty());
 }

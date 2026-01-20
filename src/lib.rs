@@ -18,7 +18,7 @@ pub use containment::{
 
 pub use length::{
     run_length_histogram_analysis, LengthHistogramConfig, LengthHistogramParameters,
-    LengthHistogramReport, LengthHistogramResult,
+    LengthHistogramReport, SampleLengthResults, TargetLengthResult, TotalLengthStats,
 };
 
 pub use minimizers::{
