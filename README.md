@@ -1,6 +1,6 @@
 # Grate
 
-A fork of [Deacon](https://github.com/bede/deacon).
+Like [knownknowns](https://github.com/bede/knownknowns), but faster. A fork of [Deacon](https://github.com/bede/deacon).
 
 ## Install
 
