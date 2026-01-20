@@ -293,7 +293,7 @@ enum Commands {
         kmer_length: u8,
 
         /// Minimizer window size
-        #[arg(short = 'w', long = "window-size", default_value_t = 21)]
+        #[arg(short = 'w', long = "window-size", default_value_t = DEFAULT_WINDOW_SIZE)]
         window_size: u8,
 
         // Processing options
