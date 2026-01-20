@@ -12,16 +12,16 @@ pub mod minimizers;
 
 // Re-export the main functionality
 pub use containment::{
-    run_containment_analysis, ContainmentConfig, ContainmentParameters, ContainmentResult,
-    OutputFormat, Report, SampleResults, SortOrder, TargetInfo, TimingStats, TotalStats,
+    ContainmentConfig, ContainmentParameters, ContainmentResult, OutputFormat, Report,
+    SampleResults, SortOrder, TargetInfo, TimingStats, TotalStats, run_containment_analysis,
 };
 
 pub use length::{
-    run_length_histogram_analysis, LengthHistogramConfig, LengthHistogramParameters,
-    LengthHistogramReport, LengthHistogramResult,
+    LengthHistogramConfig, LengthHistogramParameters, LengthHistogramReport, LengthHistogramResult,
+    run_length_histogram_analysis,
 };
 
 pub use minimizers::{
-    decode_u128, decode_u64, fill_minimizers, fill_minimizers_with_positions, Buffers, KmerHasher,
-    MinimizerVec, DEFAULT_KMER_LENGTH, DEFAULT_WINDOW_SIZE,
+    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_WINDOW_SIZE, KmerHasher, MinimizerVec, decode_u64,
+    decode_u128, fill_minimizers, fill_minimizers_with_positions,
 };

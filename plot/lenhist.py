@@ -8,7 +8,6 @@
 # ///
 
 import argparse
-import json
 import os
 import sys
 
@@ -17,32 +16,15 @@ import pandas as pd
 
 
 def load_data(input_file):
-    """Load length histogram data from JSON file."""
-    with open(input_file, 'r') as f:
-        data = json.load(f)
-
-    rows = []
-    # Extract data from JSON structure
-    for sample in data.get("samples", []):
-        sample_name = sample.get("sample_name", "unknown")
-        length_histogram = sample.get("length_histogram", [])
-
-        # Expand histogram to long format
-        for length, count in length_histogram:
-            rows.append({
-                "sample": sample_name,
-                "length": length,
-                "count": count
-            })
-
-    return pd.DataFrame(rows)
+    """Load length histogram data from CSV file."""
+    return pd.read_csv(input_file)
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Plot read length distributions from Grate len output"
     )
-    parser.add_argument("input_file", help="Input JSON file from 'grate len'")
+    parser.add_argument("input_file", help="Input CSV file from 'grate len'")
     parser.add_argument("-o", "--output", help="Output PNG filename (default: <input_prefix>-lenhist.png)")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing output files")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output")

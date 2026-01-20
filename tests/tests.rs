@@ -143,10 +143,10 @@ fn test_length_histogram() {
 
     grate::run_length_histogram_analysis(&config).unwrap();
 
-    let report: grate::LengthHistogramReport =
-        serde_json::from_str(&std::fs::read_to_string(temp_output.path()).unwrap()).unwrap();
-
-    assert_eq!(report.samples.len(), 1);
-    assert!(report.samples[0].reads_with_hits > 0);
-    assert!(!report.samples[0].length_histogram.is_empty());
+    // Verify CSV output has header and data rows
+    let content = std::fs::read_to_string(temp_output.path()).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert!(lines[0].starts_with("sample,length,count,"));
+    assert!(lines.len() > 1, "Should have data rows");
+    assert!(lines[1].starts_with("test,"));
 }

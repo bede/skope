@@ -1,11 +1,11 @@
 use crate::minimizers::{
-    fill_minimizers, fill_minimizers_with_positions, Buffers, KmerHasher, MinimizerVec,
+    Buffers, KmerHasher, MinimizerVec, fill_minimizers, fill_minimizers_with_positions,
 };
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use paraseq::Record;
 use paraseq::fastx::Reader;
 use paraseq::parallel::{ParallelProcessor, ParallelReader};
-use paraseq::Record;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

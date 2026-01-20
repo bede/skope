@@ -1,4 +1,4 @@
-use packed_seq::{unpack_base, PackedNSeqVec, SeqVec};
+use packed_seq::{PackedNSeqVec, SeqVec, unpack_base};
 
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
 pub const DEFAULT_WINDOW_SIZE: u8 = 15;

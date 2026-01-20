@@ -1,12 +1,12 @@
 use crate::containment::{
-    format_bp, format_bp_per_sec, process_targets_file, MinimizerSet, TimingStats,
+    MinimizerSet, TimingStats, format_bp, format_bp_per_sec, process_targets_file,
 };
-use crate::minimizers::{fill_minimizers, Buffers, KmerHasher, MinimizerVec};
+use crate::minimizers::{Buffers, KmerHasher, MinimizerVec, fill_minimizers};
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use paraseq::Record;
 use paraseq::fastx::Reader;
 use paraseq::parallel::{ParallelProcessor, ParallelReader};
-use paraseq::Record;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -579,16 +579,42 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         },
     };
 
-    // Output JSON
+    // Output CSV
     let writer: Box<dyn Write> = if let Some(path) = &config.output_path {
         Box::new(BufWriter::new(File::create(path)?))
     } else {
         Box::new(BufWriter::new(io::stdout()))
     };
 
-    let mut writer = writer;
-    serde_json::to_writer_pretty(&mut writer, &report)?;
-    writeln!(writer)?;
+    let mut csv_writer = csv::Writer::from_writer(writer);
+
+    // Write header
+    csv_writer.write_record([
+        "sample",
+        "length",
+        "count",
+        "total_reads_processed",
+        "total_bp_processed",
+        "reads_with_hits",
+        "reads_without_hits",
+    ])?;
+
+    // Write one row per (sample, length, count) tuple
+    for sample in &report.samples {
+        for (length, count) in &sample.length_histogram {
+            csv_writer.write_record([
+                &sample.sample_name,
+                &length.to_string(),
+                &count.to_string(),
+                &sample.total_reads_processed.to_string(),
+                &sample.total_bp_processed.to_string(),
+                &sample.reads_with_hits.to_string(),
+                &sample.reads_without_hits.to_string(),
+            ])?;
+        }
+    }
+
+    csv_writer.flush()?;
 
     Ok(())
 }

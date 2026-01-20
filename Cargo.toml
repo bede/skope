@@ -1,6 +1,6 @@
 [package]
 name = "grate"
-version = "0.2.1"
+version = "0.2.2"
 description = "Fast DNA containment analysis"
 authors = ["Bede Constantinides <b@bede.im>"]
 edition = "2024"
@@ -31,6 +31,7 @@ thiserror = "2.0"
 rayon = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+csv = "1.4"
 rapidhash = "4.1.0"
 parking_lot = "0.12"
 indicatif = "0.18"
@@ -46,7 +47,7 @@ flate2 = { version = "1.1", features = ["zlib-rs"], optional = true }
 zstd = { version = "0.13", optional = true }
 
 [dev-dependencies]
-tempfile = "3.13"
+tempfile = "3.24"
 
 [profile.release]
 opt-level = 3
