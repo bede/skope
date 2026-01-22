@@ -2,7 +2,7 @@
 
 Like [knownknowns](https://github.com/bede/knownknowns), but faster. A fork of [Deacon](https://github.com/bede/deacon).
 
-## Install
+## Install & update
 
 ```bash
 RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/bede/grate
@@ -11,30 +11,31 @@ RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/bede/gra
 ## Usage
 
 ```bash
-# One sample
+# Calculate containment of target sequences in reads
 grate con refs.fa reads.fastq.gz
 
-# Many samples
+# Calculate target containment in multiple samples
 grate con refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
+
+# Plot containment bar and scatter
+grate con -f csv refs.fa s1.fq.gz s2.fq.gz > results.csv
+uv run plot/con.py --mode bar results.csv
+uv run plot/con.py --mode scatter results.csv
+
+# Plot sequence length histograms
+grate len refs.fa s1.fq.gz s2.fq.gz > len.csv
+uv run plot/lenhist.py len.csv -f -b 500
+
+# Plot minimizer abundance histogram
+grate con -f json refs.fa s1.fq.gz s2.fq.gz > results.json
+uv run plot/minhist.py results.json
 
 # Stdin
 zstdcat reads3.fq.zst | grate con refs.fa
 
-# CSV output for plotting
-grate con -f csv refs.fa reads.fastq.gz > results.csv
-
-# JSON output for histogram plotting
-grate con -f json refs.fa reads.fastq.gz > results.json
-
-# Plot containment bar chart (requires uv)
-uv run plot/con.py results.csv
-
-# Plot abundance histograms (requires uv)
-uv run plot/minhist.py results.json
-
 # View plotting options
-uv run plot/con.py --help
-uv run plot/minhist.py --help
+uv run plot/con.py -h
+uv run plot/minhist.py -h
 ```
 
 Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically handle dependencies.
@@ -49,7 +50,7 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
 
 ```bash
 $ grate con -h
-Streaming containment and abundance estimation using minimizers
+Calculate minimizer containment & abundance in fastx files or directories thereof
 
 Usage: grate con [OPTIONS] <TARGETS> <SAMPLES>...
 

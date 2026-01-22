@@ -33,8 +33,8 @@ def main():
                         help="Minimum x-axis limit (default: 0)")
     parser.add_argument("--facet", action="store_true",
                         help="Facet by sample instead of overlaying")
-    parser.add_argument("-b", "--bin-step", type=int, default=50,
-                        help="Bin step size in bp (default: 50)")
+    parser.add_argument("-b", "--bin-step", type=int, default=100,
+                        help="Bin step size in bp (default: 100)")
     parser.add_argument("-c", "--colours", "--colors", default="category20",
                         help="Altair/Vega-Lite color scheme (default: %(default)s)")
 
