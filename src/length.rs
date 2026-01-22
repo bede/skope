@@ -1,7 +1,7 @@
 use crate::containment::{
     MinimizerSet, TimingStats, format_bp, format_bp_per_sec, process_targets_file,
 };
-use crate::minimizers::{Buffers, KmerHasher, MinimizerVec, fill_minimizers};
+use crate::minimizers::{Buffers, KmerHasher, MinimizerVec, fill_syncmers};
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use paraseq::Record;
@@ -42,7 +42,7 @@ pub struct LengthHistogramReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LengthHistogramParameters {
     pub kmer_length: u8,
-    pub window_size: u8,
+    pub smer_size: u8,
     pub threads: usize,
 }
 
@@ -52,7 +52,7 @@ pub struct LengthHistogramConfig {
     pub reads_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
-    pub window_size: u8,
+    pub smer_size: u8,
     pub threads: usize,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
@@ -81,11 +81,11 @@ struct ProcessingStats {
     last_reported: u64,
 }
 
-/// Processor for collecting read lengths with minimizer hits
+/// Processor for collecting read lengths with syncmer hits
 #[derive(Clone)]
 struct LengthHistogramProcessor {
     kmer_length: u8,
-    window_size: u8,
+    smer_size: u8,
     hasher: KmerHasher,
     targets_minimizers: Arc<MinimizerSet>,
     include_all_reads: bool,
@@ -110,7 +110,7 @@ struct LengthHistogramProcessor {
 impl LengthHistogramProcessor {
     fn new(
         kmer_length: u8,
-        window_size: u8,
+        smer_size: u8,
         targets_minimizers: Arc<MinimizerSet>,
         include_all_reads: bool,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
@@ -125,8 +125,8 @@ impl LengthHistogramProcessor {
 
         Self {
             kmer_length,
-            window_size,
-            hasher: KmerHasher::new(kmer_length as usize),
+            smer_size,
+            hasher: KmerHasher::new(smer_size as usize),
             targets_minimizers,
             include_all_reads,
             buffers,
@@ -183,15 +183,15 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
             // Include all reads when no target filtering
             true
         } else {
-            fill_minimizers(
+            fill_syncmers(
                 &seq,
                 &self.hasher,
                 self.kmer_length,
-                self.window_size,
+                self.smer_size,
                 &mut self.buffers,
             );
 
-            // Check if ANY minimizer hits the reference set (early termination)
+            // Check if ANY syncmer hits the reference set (early termination)
             match (&self.buffers.minimizers, &*self.targets_minimizers) {
                 (MinimizerVec::U64(vec), MinimizerSet::U64(targets_set)) => {
                     vec.iter().any(|minimizer| targets_set.contains(minimizer))
@@ -256,7 +256,7 @@ fn process_reads_file(
     reads_path: &Path,
     targets_minimizers: Arc<MinimizerSet>,
     kmer_length: u8,
-    window_size: u8,
+    smer_size: u8,
     threads: usize,
     quiet: bool,
     include_all_reads: bool,
@@ -286,7 +286,7 @@ fn process_reads_file(
     let start_time = Instant::now();
     let mut processor = LengthHistogramProcessor::new(
         kmer_length,
-        window_size,
+        smer_size,
         targets_minimizers,
         include_all_reads,
         spinner.clone(),
@@ -368,7 +368,7 @@ fn process_single_sample(
                 reads_path,
                 Arc::clone(&targets_minimizers),
                 config.kmer_length,
-                config.window_size,
+                config.smer_size,
                 config.threads,
                 quiet_sample,
                 config.include_all_reads,
@@ -423,8 +423,8 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
 
     if !config.quiet {
         let mut options = format!(
-            "k={}, w={}, threads={}",
-            config.kmer_length, config.window_size, config.threads
+            "k={}, s={}, threads={}",
+            config.kmer_length, config.smer_size, config.threads
         );
 
         if config.reads_paths.len() > 1 {
@@ -457,14 +457,14 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         let targets = process_targets_file(
             &config.targets_path,
             config.kmer_length,
-            config.window_size,
+            config.smer_size,
             config.quiet,
         )?;
         let targets_time = targets_start.elapsed();
 
-        // Build set of all unique minimizers across targets
+        // Build set of all unique syncmers across targets
         if !config.quiet {
-            eprint!("Building minimizer set…\r");
+            eprint!("Building syncmer set…\r");
         }
         let targets_minimizers = if config.kmer_length <= 32 {
             use crate::containment::RapidHashSet;
@@ -486,16 +486,16 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
             MinimizerSet::U128(set)
         };
 
-        let total_target_minimizers = targets_minimizers.len();
+        let total_target_syncmers = targets_minimizers.len();
         let total_bp: usize = targets.iter().map(|t| t.length).sum();
 
         if !config.quiet {
             eprint!("\x1B[2K\r"); // Clear line
             eprintln!(
-                "Targets: {} records ({}), {} unique minimizers",
+                "Targets: {} records ({}), {} unique syncmers",
                 targets.len(),
                 format_bp(total_bp),
-                total_target_minimizers
+                total_target_syncmers
             );
         }
 
@@ -565,7 +565,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         },
         parameters: LengthHistogramParameters {
             kmer_length: config.kmer_length,
-            window_size: config.window_size,
+            smer_size: config.smer_size,
             threads: config.threads,
         },
         samples: sample_results,

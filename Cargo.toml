@@ -6,7 +6,7 @@ authors = ["Bede Constantinides <b@bede.im>"]
 edition = "2024"
 repository = "https://github.com/bede/grate"
 homepage = "https://github.com/bede/grate"
-keywords = ["bioinformatics", "genomics", "minimizers"]
+keywords = ["bioinformatics", "genomics"]
 categories = ["science", "command-line-utilities"]
 license = "MIT"
 
@@ -37,7 +37,7 @@ parking_lot = "0.12"
 indicatif = "0.18"
 
 packed-seq = "4.2.0"
-simd-minimizers = "2.2.0"
+simd-minimizers = "2.3.0"
 
 paraseq = { version = "0.4.2", default-features = false, features = ["anyhow", "niffler"] }
 niffler = "3"

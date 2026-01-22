@@ -1,8 +1,8 @@
 //! # Grate
 //!
-//! A fast minimizer-based containment analysis tool for genomic sequences.
+//! A fast closed syncmer-based containment analysis tool for genomic sequences.
 //!
-//! Grate analyzes the containment of minimizers from reference sequences in read datasets,
+//! Grate analyzes the containment of closed syncmers from reference sequences in read datasets,
 //! providing detailed statistics on containment and abundance per target sequence.
 //!
 
@@ -22,6 +22,6 @@ pub use length::{
 };
 
 pub use minimizers::{
-    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_WINDOW_SIZE, KmerHasher, MinimizerVec, decode_u64,
-    decode_u128, fill_minimizers, fill_minimizers_with_positions,
+    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_SIZE, KmerHasher, MinimizerVec, decode_u64,
+    decode_u128, fill_syncmers, fill_syncmers_with_positions,
 };

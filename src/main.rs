@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_KMER_LENGTH: u8 = 31;
-const DEFAULT_WINDOW_SIZE: u8 = 31;
+const DEFAULT_SMER_SIZE: u8 = 5;
 
 /// Derive sample name from file path by stripping directory and extensions
 fn derive_sample_name(path: &Path, is_directory: bool) -> String {
@@ -209,7 +209,7 @@ fn parse_sample(s: &str) -> Result<u64> {
 }
 
 #[derive(Parser)]
-#[command(author, version, about = "Streaming containment and abundance estimation using minimizers", long_about = None)]
+#[command(author, version, about = "Streaming containment and abundance estimation using closed syncmers", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -217,7 +217,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Calculate minimizer containment & abundance in fastx files or directories thereof
+    /// Calculate closed syncmer containment & abundance in fastx files or directories thereof
     Con {
         /// Path to fasta file containing target sequence record(s)
         targets: PathBuf,
@@ -227,13 +227,13 @@ enum Commands {
         samples: Vec<PathBuf>,
 
         // Algorithm parameters
-        /// Minimizer length (1-61)
+        /// Syncmer length (1-61)
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// Minimizer window size
-        #[arg(short = 'w', long = "window-size", default_value_t = DEFAULT_WINDOW_SIZE)]
-        window_size: u8,
+        /// S-mer size for closed syncmer selection (s < k)
+        #[arg(short = 's', long = "smer-size", default_value_t = DEFAULT_SMER_SIZE)]
+        smer_size: u8,
 
         /// Comma-separated abundance thresholds for containment calculation
         #[arg(
@@ -244,7 +244,7 @@ enum Commands {
         )]
         abundance_thresholds: Vec<usize>,
 
-        /// Consider only minimizers unique to each target
+        /// Consider only syncmers unique to each target
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
@@ -270,15 +270,15 @@ enum Commands {
         #[arg(short = 'n', long = "names", value_delimiter = ',')]
         sample_names: Option<Vec<String>>,
 
-        /// Sort displayed results: o=original, t=target, s=sample, c=containment (descending)
-        #[arg(short = 's', long = "sort", default_value = "o", value_parser = ["o", "t", "s", "c"])]
+        /// Sort displayed results: o=original, t=target, S=sample, c=containment (descending)
+        #[arg(short = 'S', long = "sort", default_value = "o", value_parser = ["o", "t", "s", "c"])]
         sort: String,
 
         /// Suppress progress reporting
         #[arg(short = 'q', long = "quiet", default_value_t = false)]
         quiet: bool,
     },
-    /// Generate length histogram for reads with one or more minimizer hits to target sequences
+    /// Generate length histogram for reads with one or more syncmer hits to target sequences
     Len {
         /// Path to fasta file containing target sequence record(s) (- to disable target filtering)
         targets: PathBuf,
@@ -288,13 +288,13 @@ enum Commands {
         samples: Vec<PathBuf>,
 
         // Algorithm parameters
-        /// Minimizer length (1-61)
+        /// Syncmer length (1-61)
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// Minimizer window size
-        #[arg(short = 'w', long = "window-size", default_value_t = DEFAULT_WINDOW_SIZE)]
-        window_size: u8,
+        /// S-mer size for closed syncmer selection (s < k)
+        #[arg(short = 's', long = "smer-size", default_value_t = DEFAULT_SMER_SIZE)]
+        smer_size: u8,
 
         // Processing options
         /// Number of execution threads (0 = auto)
@@ -337,7 +337,7 @@ fn main() -> Result<()> {
             samples,
             sample_names,
             kmer_length,
-            window_size,
+            smer_size,
             threads,
             output,
             quiet,
@@ -372,17 +372,20 @@ fn main() -> Result<()> {
 
             // Validate uniqueness
             validate_sample_names(&derived_sample_names)?;
-            // Validate k-mer and window size constraints
+            // Validate k-mer and s-mer size constraints for closed syncmers
             let k = *kmer_length as usize;
-            let w = *window_size as usize;
+            let s = *smer_size as usize;
 
-            // Check constraints: k <= 61, k+w <= 96, k+w even (ensures k odd and k+w-1 odd)
-            if k > 61 || k + w > 96 || (k + w) % 2 != 0 {
+            // Check constraints:
+            // - k <= 61 (fits in packed representation)
+            // - 1 <= s < k (valid s-mer within k-mer)
+            // - s <= 32 (s-mer must fit in hasher's u64 representation)
+            // - k must be odd (for canonical strand determination)
+            if k > 61 || s >= k || s < 1 || s > 32 || k % 2 == 0 {
                 return Err(anyhow::anyhow!(
-                    "Invalid k-w combination: k={}, w={}, k+w={} (constraints: k<=61, k+w<=96, k+w even)",
+                    "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, 1<=s<k, s<=32)",
                     k,
-                    w,
-                    k + w
+                    s
                 ));
             }
 
@@ -423,7 +426,7 @@ fn main() -> Result<()> {
                 reads_paths: expanded_reads,
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
-                window_size: *window_size,
+                smer_size: *smer_size,
                 threads: *threads,
                 output_path: if output == "-" {
                     None
@@ -447,7 +450,7 @@ fn main() -> Result<()> {
             samples,
             sample_names,
             kmer_length,
-            window_size,
+            smer_size,
             threads,
             output,
             quiet,
@@ -479,17 +482,20 @@ fn main() -> Result<()> {
             // Validate uniqueness
             validate_sample_names(&derived_sample_names)?;
 
-            // Validate k-mer and window size constraints
+            // Validate k-mer and s-mer size constraints for closed syncmers
             let k = *kmer_length as usize;
-            let w = *window_size as usize;
+            let s = *smer_size as usize;
 
-            // Check constraints: k <= 61, k+w <= 96, k+w even (ensures k odd and k+w-1 odd)
-            if k > 61 || k + w > 96 || (k + w) % 2 != 0 {
+            // Check constraints:
+            // - k <= 61 (fits in packed representation)
+            // - 1 <= s < k (valid s-mer within k-mer)
+            // - s <= 32 (s-mer must fit in hasher's u64 representation)
+            // - k must be odd (for canonical strand determination)
+            if k > 61 || s >= k || s < 1 || s > 32 || k % 2 == 0 {
                 return Err(anyhow::anyhow!(
-                    "Invalid k-w combination: k={}, w={}, k+w={} (constraints: k<=61, k+w<=96, k+w even)",
+                    "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, 1<=s<k, s<=32)",
                     k,
-                    w,
-                    k + w
+                    s
                 ));
             }
 
@@ -516,7 +522,7 @@ fn main() -> Result<()> {
                 reads_paths: expanded_reads,
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
-                window_size: *window_size,
+                smer_size: *smer_size,
                 threads: *threads,
                 output_path: if output == "-" {
                     None

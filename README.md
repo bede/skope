@@ -26,7 +26,7 @@ uv run plot/con.py --mode scatter results.csv
 grate len refs.fa s1.fq.gz s2.fq.gz > len.csv
 uv run plot/lenhist.py len.csv -f -b 500
 
-# Plot minimizer abundance histogram
+# Plot syncmer abundance histogram
 grate con -f json refs.fa s1.fq.gz s2.fq.gz > results.json
 uv run plot/minhist.py results.json
 
@@ -50,7 +50,7 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
 
 ```bash
 $ grate con -h
-Calculate minimizer containment & abundance in fastx files or directories thereof
+Calculate closed syncmer containment & abundance in fastx files or directories thereof
 
 Usage: grate con [OPTIONS] <TARGETS> <SAMPLES>...
 
@@ -60,13 +60,13 @@ Arguments:
 
 Options:
   -k, --kmer-length <KMER_LENGTH>
-          Minimizer length (1-61) [default: 31]
-  -w, --window-size <WINDOW_SIZE>
-          Minimizer window size [default: 31]
+          Syncmer length (1-61) [default: 31]
+  -s, --smer-size <SMER_SIZE>
+          S-mer size for closed syncmer selection (s < k) [default: 5]
   -a, --abundance-thresholds <ABUNDANCE_THRESHOLDS>
           Comma-separated abundance thresholds for containment calculation [default: 10]
   -d, --discriminatory
-          Consider only minimizers unique to each target
+          Consider only syncmers unique to each target
   -t, --threads <THREADS>
           Number of execution threads (0 = auto) [default: 8]
   -l, --limit <LIMIT>
@@ -77,7 +77,7 @@ Options:
           Output format [default: table] [possible values: table, csv, json]
   -n, --names <SAMPLE_NAMES>
           Comma-separated sample names (default is file/dir name without extension)
-  -s, --sort <SORT>
+  -S, --sort <SORT>
           Sort displayed results: o=original, t=target, s=sample, c=containment (descending) [default: o] [possible values: o, t, s, c]
   -q, --quiet
           Suppress progress reporting

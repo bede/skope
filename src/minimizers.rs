@@ -1,7 +1,7 @@
 use packed_seq::{PackedNSeqVec, SeqVec, unpack_base};
 
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
-pub const DEFAULT_WINDOW_SIZE: u8 = 15;
+pub const DEFAULT_SMER_SIZE: u8 = 15;
 
 pub type KmerHasher = simd_minimizers::seq_hash::NtHasher<true, 1>;
 
@@ -89,12 +89,12 @@ impl Buffers {
     }
 }
 
-/// Fill minimizers vector and positions vector from sequence
-pub fn fill_minimizers_with_positions(
+/// Fill syncmers vector and positions vector from sequence
+pub fn fill_syncmers_with_positions(
     seq: &[u8],
     hasher: &KmerHasher,
     kmer_length: u8,
-    window_size: u8,
+    smer_size: u8,
     buffers: &mut Buffers,
     positions_out: &mut Vec<usize>,
 ) {
@@ -119,9 +119,13 @@ pub fn fill_minimizers_with_positions(
     packed_nseq.seq.push_ascii(seq);
     packed_nseq.ambiguous.push_ascii(seq);
 
-    let k = kmer_length as usize;
-    let w = window_size as usize;
-    let m = simd_minimizers::canonical_minimizers(k, w)
+    // simd-minimizers API: canonical_closed_syncmers(k, w) where:
+    //   their k = our smer_size (the s-mer length for comparison)
+    //   their w = our kmer_length - smer_size + 1 (window size)
+    //   the output syncmer length is k+w-1 = our kmer_length
+    let s = smer_size as usize;
+    let w = kmer_length as usize - s + 1;
+    let m = simd_minimizers::canonical_closed_syncmers(s, w)
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
@@ -142,12 +146,12 @@ pub fn fill_minimizers_with_positions(
     }
 }
 
-/// Fill minimizers vector from sequence (without positions)
-pub fn fill_minimizers(
+/// Fill syncmers vector from sequence (without positions)
+pub fn fill_syncmers(
     seq: &[u8],
     hasher: &KmerHasher,
     kmer_length: u8,
-    window_size: u8,
+    smer_size: u8,
     buffers: &mut Buffers,
 ) {
     let Buffers {
@@ -170,9 +174,13 @@ pub fn fill_minimizers(
     packed_nseq.seq.push_ascii(seq);
     packed_nseq.ambiguous.push_ascii(seq);
 
-    let k = kmer_length as usize;
-    let w = window_size as usize;
-    let m = simd_minimizers::canonical_minimizers(k, w)
+    // simd-minimizers API: canonical_closed_syncmers(k, w) where:
+    //   their k = our smer_size (the s-mer length for comparison)
+    //   their w = our kmer_length - smer_size + 1 (window size)
+    //   the output syncmer length is k+w-1 = our kmer_length
+    let s = smer_size as usize;
+    let w = kmer_length as usize - s + 1;
+    let m = simd_minimizers::canonical_closed_syncmers(s, w)
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
@@ -192,36 +200,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_fill_minimizers() {
+    fn test_fill_syncmers() {
         let seq = b"ACGTACGTACGT";
         let k = 5;
-        let w = 3;
-        let hasher = KmerHasher::new(k as usize);
+        let s = 3;
+        let hasher = KmerHasher::new(s as usize);
         let mut buffers = Buffers::new_u64();
 
-        fill_minimizers(seq, &hasher, k, w, &mut buffers);
+        fill_syncmers(seq, &hasher, k, s, &mut buffers);
 
-        // We should have at least one minimizer
+        // We should have at least one syncmer
         assert!(!buffers.minimizers.is_empty());
 
         // Test with a sequence shorter than k
         let short_seq = b"ACGT";
-        fill_minimizers(short_seq, &hasher, k, w, &mut buffers);
+        fill_syncmers(short_seq, &hasher, k, s, &mut buffers);
         assert!(buffers.minimizers.is_empty());
     }
 
     #[test]
-    fn test_fill_minimizers_with_positions() {
+    fn test_fill_syncmers_with_positions() {
         let seq = b"ACGTACGTACGTACGT";
         let k = 7;
-        let w = 3;
-        let hasher = KmerHasher::new(k as usize);
+        let s = 3;
+        let hasher = KmerHasher::new(s as usize);
         let mut buffers = Buffers::new_u64();
         let mut positions = Vec::new();
 
-        fill_minimizers_with_positions(seq, &hasher, k, w, &mut buffers, &mut positions);
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions);
 
-        // Should have same number of minimizers and positions
+        // Should have same number of syncmers and positions
         assert_eq!(buffers.minimizers.len(), positions.len());
 
         // All positions should be valid

@@ -1,5 +1,5 @@
 use crate::minimizers::{
-    Buffers, KmerHasher, MinimizerVec, fill_minimizers, fill_minimizers_with_positions,
+    Buffers, KmerHasher, MinimizerVec, fill_syncmers, fill_syncmers_with_positions,
 };
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -89,7 +89,7 @@ pub struct ContainmentResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainmentParameters {
     pub kmer_length: u8,
-    pub window_size: u8,
+    pub smer_size: u8,
     pub threads: usize,
     pub abundance_thresholds: Vec<usize>,
 }
@@ -149,7 +149,7 @@ pub struct ContainmentConfig {
     pub reads_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
-    pub window_size: u8,
+    pub smer_size: u8,
     pub threads: usize,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
@@ -174,11 +174,11 @@ fn reader_with_inferred_batch_size(
     Ok(reader)
 }
 
-/// Processor for collecting target sequence records with minimizers
+/// Processor for collecting target sequence records with syncmers
 #[derive(Clone)]
 struct TargetsProcessor {
     kmer_length: u8,
-    window_size: u8,
+    smer_size: u8,
     hasher: KmerHasher,
     buffers: Buffers,
     positions: Vec<usize>,
@@ -194,7 +194,7 @@ struct TargetsProcessor {
 impl TargetsProcessor {
     fn new(
         kmer_length: u8,
-        window_size: u8,
+        smer_size: u8,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: std::time::Instant,
     ) -> Self {
@@ -206,8 +206,8 @@ impl TargetsProcessor {
 
         Self {
             kmer_length,
-            window_size,
-            hasher: KmerHasher::new(kmer_length as usize),
+            smer_size,
+            hasher: KmerHasher::new(smer_size as usize),
             buffers,
             positions: Vec::new(),
             targets: Arc::new(Mutex::new(Vec::new())),
@@ -226,7 +226,7 @@ impl TargetsProcessor {
             let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
 
             spinner.lock().set_message(format!(
-                "Collecting target minimizers: {} seqs ({}). {:.0} seqs/s ({})",
+                "Collecting target syncmers: {} seqs ({}). {:.0} seqs/s ({})",
                 stats.total_seqs,
                 format_bp(stats.total_bp as usize),
                 seqs_per_sec,
@@ -244,16 +244,16 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         self.local_stats.total_seqs += 1;
         self.local_stats.total_bp += sequence.len() as u64;
 
-        fill_minimizers_with_positions(
+        fill_syncmers_with_positions(
             &sequence,
             &self.hasher,
             self.kmer_length,
-            self.window_size,
+            self.smer_size,
             &mut self.buffers,
             &mut self.positions,
         );
 
-        // Build unique minimizer set for this target
+        // Build unique syncmer set for this target
         let minimizers = match &self.buffers.minimizers {
             MinimizerVec::U64(vec) => {
                 let set: RapidHashSet<u64> = vec.iter().copied().collect();
@@ -302,7 +302,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
 pub fn process_targets_file(
     targets_path: &Path,
     kmer_length: u8,
-    window_size: u8,
+    smer_size: u8,
     quiet: bool,
 ) -> Result<Vec<TargetInfo>> {
     let in_path = if targets_path.to_string_lossy() == "-" {
@@ -328,7 +328,7 @@ pub fn process_targets_file(
 
     let start_time = std::time::Instant::now();
     let mut processor =
-        TargetsProcessor::new(kmer_length, window_size, spinner.clone(), start_time);
+        TargetsProcessor::new(kmer_length, smer_size, spinner.clone(), start_time);
 
     // Single thread to preserve order
     reader.process_parallel(&mut processor, 1)?;
@@ -350,11 +350,11 @@ struct ProcessingStats {
     last_reported: u64,
 }
 
-/// Processor for counting minimizer depths from reads
+/// Processor for counting syncmer depths from reads
 #[derive(Clone)]
 struct ReadsProcessor {
     kmer_length: u8,
-    window_size: u8,
+    smer_size: u8,
     hasher: KmerHasher,
     targets_minimizers: Arc<MinimizerSet>,
 
@@ -376,7 +376,7 @@ struct ReadsProcessor {
 impl ReadsProcessor {
     fn new(
         kmer_length: u8,
-        window_size: u8,
+        smer_size: u8,
         targets_minimizers: Arc<MinimizerSet>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
@@ -408,8 +408,8 @@ impl ReadsProcessor {
 
         Self {
             kmer_length,
-            window_size,
-            hasher: KmerHasher::new(kmer_length as usize),
+            smer_size,
+            hasher: KmerHasher::new(smer_size as usize),
             targets_minimizers,
             buffers,
             local_stats: ProcessingStats::default(),
@@ -459,15 +459,15 @@ impl<Rf: Record> ParallelProcessor<Rf> for ReadsProcessor {
         self.local_stats.total_seqs += 1;
         self.local_stats.total_bp += seq.len() as u64;
 
-        fill_minimizers(
+        fill_syncmers(
             &seq,
             &self.hasher,
             self.kmer_length,
-            self.window_size,
+            self.smer_size,
             &mut self.buffers,
         );
 
-        // Count minimizers present in targets
+        // Count syncmers present in targets
         match (&self.buffers.minimizers, &*self.targets_minimizers) {
             (MinimizerVec::U64(vec), MinimizerSet::U64(targets_set)) => {
                 let local_counts = self.local_counts_u64.as_mut().unwrap();
@@ -553,7 +553,7 @@ fn process_reads_file(
     reads_path: &Path,
     targets_minimizers: Arc<MinimizerSet>,
     kmer_length: u8,
-    window_size: u8,
+    smer_size: u8,
     threads: usize,
     quiet: bool,
     limit_bp: Option<u64>,
@@ -579,12 +579,12 @@ fn process_reads_file(
         None
     };
 
-    let total_target_minimizers = targets_minimizers.len();
+    let total_target_syncmers = targets_minimizers.len();
 
     let start_time = Instant::now();
     let mut processor = ReadsProcessor::new(
         kmer_length,
-        window_size,
+        smer_size,
         targets_minimizers,
         spinner.clone(),
         start_time,
@@ -628,17 +628,17 @@ fn process_reads_file(
 
     if !quiet {
         let elapsed = start_time.elapsed();
-        let unique_minimizers = match &abundance_map {
+        let unique_syncmers = match &abundance_map {
             AbundanceMap::U64(m) => m.len(),
             AbundanceMap::U128(m) => m.len(),
         };
         let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
         eprintln!(
-            "Sample: {} records ({}), found {} of {} distinct target minimizers ({})",
+            "Sample: {} records ({}), found {} of {} distinct target syncmers ({})",
             stats.total_seqs,
             format_bp(stats.total_bp as usize),
-            unique_minimizers,
-            total_target_minimizers,
+            unique_syncmers,
+            total_target_syncmers,
             format_bp_per_sec(bp_per_sec)
         );
     }
@@ -810,7 +810,7 @@ fn process_single_sample(
             reads_path,
             Arc::clone(&targets_minimizers),
             config.kmer_length,
-            config.window_size,
+            config.smer_size,
             config.threads,
             quiet_sample,
             config.limit_bp.map(|limit| limit.saturating_sub(total_bp)),
@@ -944,8 +944,8 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
 
     if !config.quiet {
         let mut options = format!(
-            "k={}, w={}, threads={}",
-            config.kmer_length, config.window_size, config.threads
+            "k={}, s={}, threads={}",
+            config.kmer_length, config.smer_size, config.threads
         );
 
         if config.reads_paths.len() > 1 {
@@ -989,14 +989,14 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     let mut targets = process_targets_file(
         &config.targets_path,
         config.kmer_length,
-        config.window_size,
+        config.smer_size,
         config.quiet,
     )?;
     let targets_time = targets_start.elapsed();
 
-    // Count minimizers shared between targets
+    // Count syncmers shared between targets
     if !config.quiet {
-        eprint!("Counting shared minimizers…\r");
+        eprint!("Counting shared syncmers…\r");
     }
     let mut minimizer_target_counts: HashMap<u64, usize> = HashMap::new();
     let mut minimizer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
@@ -1058,15 +1058,15 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
 
     if !config.quiet {
         eprint!("\r"); // Clear space
-        let total_unique_minimizers: usize = targets.iter().map(|t| t.minimizers.len()).sum();
+        let total_unique_syncmers: usize = targets.iter().map(|t| t.minimizers.len()).sum();
         let total_bp: usize = targets.iter().map(|t| t.length).sum();
 
         if config.discriminatory {
             eprintln!(
-                "Targets: {} records ({}), {} discriminatory minimizers ({} shared minimizers dropped)",
+                "Targets: {} records ({}), {} discriminatory syncmers ({} shared syncmers dropped)",
                 targets.len(),
                 format_bp(total_bp),
-                total_unique_minimizers,
+                total_unique_syncmers,
                 shared_minimizers
             );
         } else {
@@ -1076,19 +1076,19 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
                 0.0
             };
             eprintln!(
-                "Targets: {} records ({}), {} minimizers, of which {} ({:.1}%) shared by multiple targets",
+                "Targets: {} records ({}), {} syncmers, of which {} ({:.1}%) shared by multiple targets",
                 targets.len(),
                 format_bp(total_bp),
-                total_unique_minimizers,
+                total_unique_syncmers,
                 shared_minimizers,
                 shared_pct
             );
         }
     }
 
-    // Build set of all unique minimizers across targets
+    // Build set of all unique syncmers across targets
     if !config.quiet {
-        eprint!("Building minimizer set…\r");
+        eprint!("Building syncmer set…\r");
     }
     let targets_minimizers = if config.kmer_length <= 32 {
         let mut set = RapidHashSet::default();
@@ -1184,7 +1184,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         targets_file: config.targets_path.to_string_lossy().to_string(),
         parameters: ContainmentParameters {
             kmer_length: config.kmer_length,
-            window_size: config.window_size,
+            smer_size: config.smer_size,
             threads: config.threads,
             abundance_thresholds: config.abundance_thresholds.clone(),
         },
