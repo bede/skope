@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_KMER_LENGTH: u8 = 31;
-const DEFAULT_SMER_SIZE: u8 = 5;
+const DEFAULT_SMER_SIZE: u8 = 15;
 
 /// Derive sample name from file path by stripping directory and extensions
 fn derive_sample_name(path: &Path, is_directory: bool) -> String {
@@ -209,7 +209,7 @@ fn parse_sample(s: &str) -> Result<u64> {
 }
 
 #[derive(Parser)]
-#[command(author, version, about = "Streaming containment and abundance estimation using closed syncmers", long_about = None)]
+#[command(author, version, about = "Streaming containment and abundance estimation using open syncmers", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -217,7 +217,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Calculate closed syncmer containment & abundance in fastx files or directories thereof
+    /// Calculate open syncmer containment & abundance in fastx files or directories thereof
     Con {
         /// Path to fasta file containing target sequence record(s)
         targets: PathBuf,
@@ -231,7 +231,7 @@ enum Commands {
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// S-mer size for closed syncmer selection (s < k)
+        /// S-mer size for open syncmer selection (s < k, s must be odd)
         #[arg(short = 's', long = "smer-size", default_value_t = DEFAULT_SMER_SIZE)]
         smer_size: u8,
 
@@ -292,7 +292,7 @@ enum Commands {
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// S-mer size for closed syncmer selection (s < k)
+        /// S-mer size for open syncmer selection (s < k, s must be odd)
         #[arg(short = 's', long = "smer-size", default_value_t = DEFAULT_SMER_SIZE)]
         smer_size: u8,
 
@@ -372,7 +372,7 @@ fn main() -> Result<()> {
 
             // Validate uniqueness
             validate_sample_names(&derived_sample_names)?;
-            // Validate k-mer and s-mer size constraints for closed syncmers
+            // Validate k-mer and s-mer size constraints for open syncmers
             let k = *kmer_length as usize;
             let s = *smer_size as usize;
 
@@ -381,9 +381,10 @@ fn main() -> Result<()> {
             // - 1 <= s < k (valid s-mer within k-mer)
             // - s <= 32 (s-mer must fit in hasher's u64 representation)
             // - k must be odd (for canonical strand determination)
-            if k > 61 || s >= k || s < 1 || s > 32 || k % 2 == 0 {
+            // - s must be odd (for open syncmers, w = k - s + 1 must be odd)
+            if k > 61 || s >= k || s < 1 || s > 32 || k % 2 == 0 || s % 2 == 0 {
                 return Err(anyhow::anyhow!(
-                    "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, 1<=s<k, s<=32)",
+                    "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
                     k,
                     s
                 ));
@@ -482,7 +483,7 @@ fn main() -> Result<()> {
             // Validate uniqueness
             validate_sample_names(&derived_sample_names)?;
 
-            // Validate k-mer and s-mer size constraints for closed syncmers
+            // Validate k-mer and s-mer size constraints for open syncmers
             let k = *kmer_length as usize;
             let s = *smer_size as usize;
 
@@ -491,9 +492,10 @@ fn main() -> Result<()> {
             // - 1 <= s < k (valid s-mer within k-mer)
             // - s <= 32 (s-mer must fit in hasher's u64 representation)
             // - k must be odd (for canonical strand determination)
-            if k > 61 || s >= k || s < 1 || s > 32 || k % 2 == 0 {
+            // - s must be odd (for open syncmers, w = k - s + 1 must be odd)
+            if k > 61 || s >= k || s < 1 || s > 32 || k % 2 == 0 || s % 2 == 0 {
                 return Err(anyhow::anyhow!(
-                    "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, 1<=s<k, s<=32)",
+                    "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
                     k,
                     s
                 ));

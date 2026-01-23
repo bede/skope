@@ -110,26 +110,19 @@ pub fn fill_syncmers_with_positions(
     positions.clear();
     positions_out.clear();
 
-    // Skip if too short
     if seq.len() < kmer_length as usize {
         return;
     }
 
-    // Pack the sequence into 2-bit
     packed_nseq.seq.push_ascii(seq);
     packed_nseq.ambiguous.push_ascii(seq);
 
-    // simd-minimizers API: canonical_closed_syncmers(k, w) where:
-    //   their k = our smer_size (the s-mer length for comparison)
-    //   their w = our kmer_length - smer_size + 1 (window size)
-    //   the output syncmer length is k+w-1 = our kmer_length
     let s = smer_size as usize;
     let w = kmer_length as usize - s + 1;
-    let m = simd_minimizers::canonical_closed_syncmers(s, w)
+    let m = simd_minimizers::canonical_open_syncmers(s, w)
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
-    // Store k-mer values directly based on variant
     match minimizers {
         MinimizerVec::U64(vec) => {
             for (pos, val) in m.pos_and_values_u64() {
@@ -165,26 +158,19 @@ pub fn fill_syncmers(
     minimizers.clear();
     positions.clear();
 
-    // Skip if sequence is too short
     if seq.len() < kmer_length as usize {
         return;
     }
 
-    // Pack the sequence into 2-bit representation
     packed_nseq.seq.push_ascii(seq);
     packed_nseq.ambiguous.push_ascii(seq);
 
-    // simd-minimizers API: canonical_closed_syncmers(k, w) where:
-    //   their k = our smer_size (the s-mer length for comparison)
-    //   their w = our kmer_length - smer_size + 1 (window size)
-    //   the output syncmer length is k+w-1 = our kmer_length
     let s = smer_size as usize;
     let w = kmer_length as usize - s + 1;
-    let m = simd_minimizers::canonical_closed_syncmers(s, w)
+    let m = simd_minimizers::canonical_open_syncmers(s, w)
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
-    // Store k-mer values directly based on variant
     match minimizers {
         MinimizerVec::U64(vec) => {
             vec.extend(m.pos_and_values_u64().map(|(_, val)| val));
