@@ -217,7 +217,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Calculate open syncmer containment & abundance in fastx files or directories thereof
+    /// Calculate sequence containment & abundance in fastx files or directories thereof
     Con {
         /// Path to fasta file containing target sequence record(s)
         targets: PathBuf,

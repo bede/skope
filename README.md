@@ -50,7 +50,7 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
 
 ```bash
 $ grate con -h
-Calculate closed syncmer containment & abundance in fastx files or directories thereof
+Calculate sequence containment & abundance in fastx files or directories thereof
 
 Usage: grate con [OPTIONS] <TARGETS> <SAMPLES>...
 
@@ -62,7 +62,7 @@ Options:
   -k, --kmer-length <KMER_LENGTH>
           Syncmer length (1-61) [default: 31]
   -s, --smer-size <SMER_SIZE>
-          S-mer size for closed syncmer selection (s < k) [default: 5]
+          S-mer size for open syncmer selection (s < k, s must be odd) [default: 15]
   -a, --abundance-thresholds <ABUNDANCE_THRESHOLDS>
           Comma-separated abundance thresholds for containment calculation [default: 10]
   -d, --discriminatory

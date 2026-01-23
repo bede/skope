@@ -1,6 +1,6 @@
 [package]
 name = "grate"
-version = "0.2.3"
+version = "0.3.0"
 description = "Fast DNA containment analysis"
 authors = ["Bede Constantinides <b@bede.im>"]
 edition = "2024"
