@@ -158,6 +158,7 @@ pub struct ContainmentConfig {
     pub discriminatory: bool,
     pub limit_bp: Option<u64>,
     pub sort_order: SortOrder,
+    pub dump_positions_path: Option<PathBuf>,
 }
 
 impl ContainmentConfig {
@@ -1109,6 +1110,25 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     };
 
     let targets_minimizers = Arc::new(targets_minimizers);
+
+    // Dump syncmer positions if requested
+    if let Some(ref path) = config.dump_positions_path {
+        let mut file = BufWriter::new(File::create(path)?);
+        for target in &targets {
+            for &pos in &target.minimizer_positions {
+                writeln!(file, "{}\t{}", target.name, pos)?;
+            }
+        }
+        file.flush()?;
+        if !config.quiet {
+            let total_positions: usize = targets.iter().map(|t| t.minimizer_positions.len()).sum();
+            eprintln!(
+                "Dumped {} syncmer positions to {}",
+                total_positions,
+                path.display()
+            );
+        }
+    }
 
     // Process each sample in parallel
     use rayon::prelude::*;

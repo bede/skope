@@ -277,6 +277,10 @@ enum Commands {
         /// Suppress progress reporting
         #[arg(short = 'q', long = "quiet", default_value_t = false)]
         quiet: bool,
+
+        /// Dump syncmer positions to TSV file (target<tab>position)
+        #[arg(long = "dump-positions")]
+        dump_positions: Option<String>,
     },
     /// Generate length histogram for reads with one or more syncmer hits to target sequences
     Len {
@@ -346,6 +350,7 @@ fn main() -> Result<()> {
             discriminatory,
             limit,
             sort,
+            dump_positions,
         } => {
             // Expand directories to lists of files
             let (expanded_reads, is_directory) = expand_sample_inputs(&samples)?;
@@ -440,6 +445,7 @@ fn main() -> Result<()> {
                 discriminatory: *discriminatory,
                 limit_bp,
                 sort_order,
+                dump_positions_path: dump_positions.as_ref().map(PathBuf::from),
             };
 
             config
