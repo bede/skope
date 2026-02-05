@@ -58,11 +58,10 @@ fn validate_sample_names(names: &[String]) -> Result<()> {
     let mut duplicates = Vec::new();
 
     for name in names {
-        if !seen.insert(name) {
-            if !duplicates.contains(name) {
+        if !seen.insert(name)
+            && !duplicates.contains(name) {
                 duplicates.push(name.clone());
             }
-        }
     }
 
     if !duplicates.is_empty() {
@@ -110,11 +109,10 @@ fn find_fastx_files_in_dir(dir_path: &Path) -> Result<Vec<PathBuf>> {
         let path = entry.path();
 
         // Skip hidden files (starting with '.')
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.starts_with('.') {
                 continue;
             }
-        }
 
         // Follow symlinks via metadata()
         let metadata = std::fs::metadata(&path)
@@ -235,7 +233,7 @@ enum Commands {
         #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
-        /// Comma-separated abundance thresholds for containment calculation
+        /// Comma-separated additional abundance thresholds for containment estimation
         #[arg(
             short = 'a',
             long = "abundance-thresholds",
@@ -270,13 +268,17 @@ enum Commands {
         #[arg(short = 'n', long = "names", value_delimiter = ',')]
         sample_names: Option<Vec<String>>,
 
-        /// Sort displayed results: o=original, t=target, S=sample, c=containment (descending)
-        #[arg(short = 'S', long = "sort", default_value = "o", value_parser = ["o", "t", "s", "c"])]
+        /// Sort displayed results: c=containment (descending), t=target, s=sample, o=original
+        #[arg(short = 'S', long = "sort", default_value = "c", value_parser = ["c", "t", "o", "s"])]
         sort: String,
 
         /// Suppress progress reporting
         #[arg(short = 'q', long = "quiet", default_value_t = false)]
         quiet: bool,
+
+        /// Suppress TOTAL summary rows in output
+        #[arg(long = "no-total", default_value_t = false)]
+        no_total: bool,
 
         /// Dump open syncmer positions to TSV file (target\tposition)
         #[arg(long = "dump-positions")]
@@ -351,9 +353,10 @@ fn main() -> Result<()> {
             limit,
             sort,
             dump_positions,
+            no_total,
         } => {
             // Expand directories to lists of files
-            let (expanded_reads, is_directory) = expand_sample_inputs(&samples)?;
+            let (expanded_reads, is_directory) = expand_sample_inputs(samples)?;
 
             // Derive or validate sample names
             let derived_sample_names: Vec<String> = if let Some(names) = sample_names {
@@ -387,7 +390,7 @@ fn main() -> Result<()> {
             // - s <= 32 (s-mer must fit in hasher's u64 representation)
             // - k must be odd (for canonical strand determination)
             // - s must be odd (for open syncmers, w = k - s + 1 must be odd)
-            if k > 61 || s >= k || s < 1 || s > 32 || k % 2 == 0 || s % 2 == 0 {
+            if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
                 return Err(anyhow::anyhow!(
                     "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
                     k,
@@ -445,6 +448,7 @@ fn main() -> Result<()> {
                 limit_bp,
                 sort_order,
                 dump_positions_path: dump_positions.as_ref().map(PathBuf::from),
+                no_total: *no_total,
             };
 
             config
@@ -463,7 +467,7 @@ fn main() -> Result<()> {
             limit,
         } => {
             // Expand directories to lists of files
-            let (expanded_reads, is_directory) = expand_sample_inputs(&samples)?;
+            let (expanded_reads, is_directory) = expand_sample_inputs(samples)?;
 
             // Derive or validate sample names
             let derived_sample_names: Vec<String> = if let Some(names) = sample_names {
@@ -498,7 +502,7 @@ fn main() -> Result<()> {
             // - s <= 32 (s-mer must fit in hasher's u64 representation)
             // - k must be odd (for canonical strand determination)
             // - s must be odd (for open syncmers, w = k - s + 1 must be odd)
-            if k > 61 || s >= k || s < 1 || s > 32 || k % 2 == 0 || s % 2 == 0 {
+            if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
                 return Err(anyhow::anyhow!(
                     "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
                     k,

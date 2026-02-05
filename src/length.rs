@@ -385,11 +385,10 @@ fn process_single_sample(
         total_reads_without_hits += file_without_hits;
 
         // Check if limit reached
-        if let Some(limit) = config.limit_bp {
-            if total_bp >= limit {
+        if let Some(limit) = config.limit_bp
+            && total_bp >= limit {
                 break;
             }
-        }
     }
 
     // Convert histogram to sorted vec

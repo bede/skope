@@ -57,6 +57,10 @@ impl MinimizerSet {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn is_u64(&self) -> bool {
         matches!(self, MinimizerSet::U64(_))
     }
@@ -74,14 +78,14 @@ pub struct TargetInfo {
 pub struct ContainmentResult {
     pub target: String,
     pub length: usize,
-    pub total_minimizers: usize,
+    pub target_kmers: usize,
     pub contained_minimizers: usize,
     pub containment1: f64,
     pub median_nz_abundance: f64,
     pub abundance_histogram: Vec<(CountDepth, usize)>, // (abundance, count)
     pub containment_at_threshold: HashMap<usize, f64>, // threshold -> containment
     pub hits_at_threshold: HashMap<usize, usize>,      // threshold -> hit count
-    pub sample_name: Option<String>, // Only used in multi-sample mode
+    pub sample_name: Option<String>,                   // Only used in multi-sample mode
 }
 
 #[derive(Debug, Clone)]
@@ -95,7 +99,7 @@ pub struct ContainmentParameters {
 #[derive(Debug, Clone)]
 pub struct TotalStats {
     pub total_targets: usize,
-    pub total_minimizers: usize,
+    pub target_kmers: usize,
     pub total_contained_minimizers: usize,
     pub total_containment1: f64,
     pub total_median_nz_abundance: f64,
@@ -156,6 +160,7 @@ pub struct ContainmentConfig {
     pub limit_bp: Option<u64>,
     pub sort_order: SortOrder,
     pub dump_positions_path: Option<PathBuf>,
+    pub no_total: bool,
 }
 
 impl ContainmentConfig {
@@ -653,7 +658,7 @@ fn calculate_containment_statistics(
     targets
         .iter()
         .map(|target| {
-            let total_minimizers = target.minimizers.len();
+            let target_kmers = target.minimizers.len();
             let mut abundances: Vec<CountDepth> = Vec::new();
             let mut contained_count = 0;
 
@@ -680,8 +685,8 @@ fn calculate_containment_statistics(
                 _ => panic!("Mismatch between MinimizerSet and AbundanceMap types"),
             }
 
-            let containment1 = if total_minimizers > 0 {
-                contained_count as f64 / total_minimizers as f64
+            let containment1 = if target_kmers > 0 {
+                contained_count as f64 / target_kmers as f64
             } else {
                 0.0
             };
@@ -695,7 +700,7 @@ fn calculate_containment_statistics(
             sorted_abundances.sort_unstable();
             let median_nz_abundance = if sorted_abundances.is_empty() {
                 0.0
-            } else if sorted_abundances.len() % 2 == 0 {
+            } else if sorted_abundances.len().is_multiple_of(2) {
                 let mid = sorted_abundances.len() / 2;
                 (sorted_abundances[mid - 1] + sorted_abundances[mid]) as f64 / 2.0
             } else {
@@ -723,8 +728,8 @@ fn calculate_containment_statistics(
                 // Store the hit count
                 hits_at_threshold.insert(threshold, count_at_threshold);
 
-                let containment_value = if total_minimizers > 0 {
-                    count_at_threshold as f64 / total_minimizers as f64
+                let containment_value = if target_kmers > 0 {
+                    count_at_threshold as f64 / target_kmers as f64
                 } else {
                     0.0
                 };
@@ -734,7 +739,7 @@ fn calculate_containment_statistics(
             ContainmentResult {
                 target: target.name.clone(),
                 length: target.length,
-                total_minimizers,
+                target_kmers,
                 contained_minimizers: contained_count,
                 containment1,
                 median_nz_abundance,
@@ -839,11 +844,10 @@ fn process_single_sample(
         total_bp += file_bp;
 
         // Check if limit reached
-        if let Some(limit) = config.limit_bp {
-            if total_bp >= limit {
+        if let Some(limit) = config.limit_bp
+            && total_bp >= limit {
                 break;
             }
-        }
     }
 
     let reads_time = reads_start.elapsed();
@@ -860,23 +864,23 @@ fn process_single_sample(
     let analysis_time = analysis_start.elapsed();
 
     // Overall stats for this sample
-    let total_minimizers: usize = containment_results.iter().map(|r| r.total_minimizers).sum();
+    let target_kmers: usize = containment_results.iter().map(|r| r.target_kmers).sum();
     let total_contained_minimizers: usize = containment_results
         .iter()
         .map(|r| r.contained_minimizers)
         .sum();
-    let total_containment1 = if total_minimizers > 0 {
-        total_contained_minimizers as f64 / total_minimizers as f64
+    let total_containment1 = if target_kmers > 0 {
+        total_contained_minimizers as f64 / target_kmers as f64
     } else {
         0.0
     };
 
-    let total_median_nz_abundance = if total_minimizers > 0 {
+    let total_median_nz_abundance = if target_kmers > 0 {
         containment_results
             .iter()
-            .map(|r| r.median_nz_abundance * r.total_minimizers as f64)
+            .map(|r| r.median_nz_abundance * r.target_kmers as f64)
             .sum::<f64>()
-            / total_minimizers as f64
+            / target_kmers as f64
     } else {
         0.0
     };
@@ -891,11 +895,11 @@ fn process_single_sample(
             .iter()
             .map(|r| {
                 let containment = r.containment_at_threshold.get(&threshold).unwrap_or(&0.0);
-                (containment * r.total_minimizers as f64) as usize
+                (containment * r.target_kmers as f64) as usize
             })
             .sum();
-        let overall_containment_value = if total_minimizers > 0 {
-            total_at_threshold as f64 / total_minimizers as f64
+        let overall_containment_value = if target_kmers > 0 {
+            total_at_threshold as f64 / target_kmers as f64
         } else {
             0.0
         };
@@ -917,7 +921,7 @@ fn process_single_sample(
         targets: containment_results,
         total_stats: TotalStats {
             total_targets: targets.len(),
-            total_minimizers,
+            target_kmers,
             total_contained_minimizers,
             total_containment1,
             total_median_nz_abundance,
@@ -1039,14 +1043,14 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
                     set.retain(|minimizer| {
                         minimizer_target_counts
                             .get(minimizer)
-                            .map_or(true, |&count| count == 1)
+                            .is_none_or(|&count| count == 1)
                     });
                 }
                 MinimizerSet::U128(set) => {
                     set.retain(|minimizer| {
                         minimizer_target_counts_u128
                             .get(minimizer)
-                            .map_or(true, |&count| count == 1)
+                            .is_none_or(|&count| count == 1)
                     });
                 }
             }
@@ -1221,6 +1225,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         config.output_path.as_ref(),
         config.output_format,
         config.sort_order,
+        config.no_total,
     )?;
 
     Ok(())
@@ -1256,6 +1261,7 @@ fn output_results(
     output_path: Option<&PathBuf>,
     output_format: OutputFormat,
     sort_order: SortOrder,
+    no_total: bool,
 ) -> Result<()> {
     let writer: Box<dyn Write> = if let Some(path) = output_path {
         Box::new(BufWriter::new(File::create(path)?))
@@ -1274,11 +1280,11 @@ fn output_results(
                     sort_results(&mut sample.targets, sort_order);
                 }
             }
-            output_tsv(&mut writer, &sorted_report)?;
+            output_tsv(&mut writer, &sorted_report, no_total)?;
         }
         OutputFormat::Table => {
             // Table: full cross-sample sorting
-            output_table_sorted(&mut writer, report, sort_order)?;
+            output_table_sorted(&mut writer, report, sort_order, no_total)?;
         }
     }
 
@@ -1299,6 +1305,7 @@ fn output_table_sorted(
     writer: &mut dyn Write,
     report: &Report,
     sort_order: SortOrder,
+    no_total: bool,
 ) -> Result<()> {
     let mut thresholds = report.parameters.abundance_thresholds.clone();
     thresholds.sort_unstable();
@@ -1400,43 +1407,44 @@ fn output_table_sorted(
     }
 
     // Output TOTAL rows (grouped by sample, after regular rows)
-    // For now, let's append TOTAL rows at the end
-    for sample in &report.samples {
-        let sample_display = if sample.reads_files.len() > 1 {
-            format!(
-                "{} ({} files)",
-                sample.sample_name,
-                sample.reads_files.len()
-            )
-        } else {
-            sample.sample_name.clone()
-        };
+    if !no_total {
+        for sample in &report.samples {
+            let sample_display = if sample.reads_files.len() > 1 {
+                format!(
+                    "{} ({} files)",
+                    sample.sample_name,
+                    sample.reads_files.len()
+                )
+            } else {
+                sample.sample_name.clone()
+            };
 
-        let mut total_row = format!(
-            "{:<50} | {:<20} | {:>12.2}%",
-            "TOTAL",
-            truncate_string(&sample_display, 20),
-            sample.total_stats.total_containment1 * 100.0
-        );
-        for threshold in &thresholds {
-            let containment = sample
-                .total_stats
-                .total_containment_at_threshold
-                .get(threshold)
-                .unwrap_or(&0.0);
-            total_row.push_str(&format!(" | {:>14.2}%", containment * 100.0));
+            let mut total_row = format!(
+                "{:<50} | {:<20} | {:>12.2}%",
+                "TOTAL",
+                truncate_string(&sample_display, 20),
+                sample.total_stats.total_containment1 * 100.0
+            );
+            for threshold in &thresholds {
+                let containment = sample
+                    .total_stats
+                    .total_containment_at_threshold
+                    .get(threshold)
+                    .unwrap_or(&0.0);
+                total_row.push_str(&format!(" | {:>14.2}%", containment * 100.0));
+            }
+            total_row.push_str(&format!(
+                " | {:>18.0}",
+                sample.total_stats.total_median_nz_abundance,
+            ));
+            writeln!(writer, "{}", total_row)?;
         }
-        total_row.push_str(&format!(
-            " | {:>18.0}",
-            sample.total_stats.total_median_nz_abundance,
-        ));
-        writeln!(writer, "{}", total_row)?;
     }
 
     Ok(())
 }
 
-fn output_tsv(writer: &mut dyn Write, report: &Report) -> Result<()> {
+fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result<()> {
     let mut thresholds = report.parameters.abundance_thresholds.clone();
     thresholds.sort_unstable();
 
@@ -1448,7 +1456,7 @@ fn output_tsv(writer: &mut dyn Write, report: &Report) -> Result<()> {
             threshold, threshold
         ));
     }
-    header.push_str("\tlength_bp\ttotal_minimizers\tcontained_minimizers\tmedian_nz_abundance");
+    header.push_str("\ttarget_length\ttarget_kmers\tmedian_nz_abundance");
     writeln!(writer, "{}", header)?;
 
     // Output data rows for all samples
@@ -1470,39 +1478,36 @@ fn output_tsv(writer: &mut dyn Write, report: &Report) -> Result<()> {
                 row.push_str(&format!("\t{:.5}\t{}", containment, hits));
             }
             row.push_str(&format!(
-                "\t{}\t{}\t{}\t{:.0}",
-                result.length,
-                result.total_minimizers,
-                result.contained_minimizers,
-                result.median_nz_abundance,
+                "\t{}\t{}\t{:.0}",
+                result.length, result.target_kmers, result.median_nz_abundance,
             ));
             writeln!(writer, "{}", row)?;
         }
 
         // Add TOTAL row for this sample
-        let mut total_row = format!(
-            "{}\t{}\t{:.5}\t{}",
-            "TOTAL",
-            sample.sample_name,
-            sample.total_stats.total_containment1,
-            sample.total_stats.total_contained_minimizers
-        );
-        for threshold in &thresholds {
-            let containment = sample
-                .total_stats
-                .total_containment_at_threshold
-                .get(threshold)
-                .unwrap_or(&0.0);
-            let hits = (containment * sample.total_stats.total_minimizers as f64).round() as usize;
-            total_row.push_str(&format!("\t{:.5}\t{}", containment, hits));
+        if !no_total {
+            let mut total_row = format!(
+                "{}\t{}\t{:.5}\t{}",
+                "TOTAL",
+                sample.sample_name,
+                sample.total_stats.total_containment1,
+                sample.total_stats.total_contained_minimizers
+            );
+            for threshold in &thresholds {
+                let containment = sample
+                    .total_stats
+                    .total_containment_at_threshold
+                    .get(threshold)
+                    .unwrap_or(&0.0);
+                let hits = (containment * sample.total_stats.target_kmers as f64).round() as usize;
+                total_row.push_str(&format!("\t{:.5}\t{}", containment, hits));
+            }
+            total_row.push_str(&format!(
+                "\t0\t{}\t{:.0}",
+                sample.total_stats.target_kmers, sample.total_stats.total_median_nz_abundance,
+            ));
+            writeln!(writer, "{}", total_row)?;
         }
-        total_row.push_str(&format!(
-            "\t0\t{}\t{}\t{:.0}",
-            sample.total_stats.total_minimizers,
-            sample.total_stats.total_contained_minimizers,
-            sample.total_stats.total_median_nz_abundance,
-        ));
-        writeln!(writer, "{}", total_row)?;
     }
 
     Ok(())

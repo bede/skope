@@ -22,6 +22,7 @@ fn test_multisample_processing() {
         limit_bp: None,
         sort_order: SortOrder::Original,
         dump_positions_path: None,
+        no_total: false,
     };
 
     assert!(grate::run_containment_analysis(&config).is_ok());
@@ -50,6 +51,7 @@ fn test_multisample_report_structure() {
         limit_bp: None,
         sort_order: SortOrder::Original,
         dump_positions_path: None,
+        no_total: false,
     };
 
     grate::run_containment_analysis(&config).unwrap();
@@ -101,6 +103,7 @@ fn test_sort_target() {
         limit_bp: None,
         sort_order: SortOrder::Target,
         dump_positions_path: None,
+        no_total: false,
     };
 
     grate::run_containment_analysis(&config).unwrap();
@@ -144,6 +147,7 @@ fn test_sort_containment() {
         limit_bp: None,
         sort_order: SortOrder::Containment,
         dump_positions_path: None,
+        no_total: false,
     };
 
     grate::run_containment_analysis(&config).unwrap();
