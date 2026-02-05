@@ -7,7 +7,6 @@ use paraseq::Record;
 use paraseq::fastx::Reader;
 use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::BuildHasher;
@@ -71,7 +70,7 @@ pub struct TargetInfo {
     pub minimizer_positions: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ContainmentResult {
     pub target: String,
     pub length: usize,
@@ -82,11 +81,10 @@ pub struct ContainmentResult {
     pub abundance_histogram: Vec<(CountDepth, usize)>, // (abundance, count)
     pub containment_at_threshold: HashMap<usize, f64>, // threshold -> containment
     pub hits_at_threshold: HashMap<usize, usize>,      // threshold -> hit count
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sample_name: Option<String>, // Only used in multi-sample mode
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ContainmentParameters {
     pub kmer_length: u8,
     pub smer_size: u8,
@@ -94,7 +92,7 @@ pub struct ContainmentParameters {
     pub abundance_thresholds: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TotalStats {
     pub total_targets: usize,
     pub total_minimizers: usize,
@@ -106,7 +104,7 @@ pub struct TotalStats {
     pub total_containment_at_threshold: HashMap<usize, f64>, // threshold -> overall containment
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct TimingStats {
     pub reference_processing_time: f64,
     pub reads_processing_time: f64,
@@ -117,7 +115,7 @@ pub struct TimingStats {
 }
 
 /// Results for a single sample in multi-sample mode
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SampleResults {
     pub sample_name: String,
     pub reads_files: Vec<String>, // Multiple files per sample
@@ -127,7 +125,7 @@ pub struct SampleResults {
 }
 
 /// Report containing results for one or more samples
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Report {
     pub version: String,
     pub targets_file: String,
@@ -140,8 +138,7 @@ pub struct Report {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     Table,
-    Csv,
-    Json,
+    Tsv,
 }
 
 pub struct ContainmentConfig {
@@ -977,8 +974,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             ", format={}",
             match config.output_format {
                 OutputFormat::Table => "table",
-                OutputFormat::Csv => "csv",
-                OutputFormat::Json => "json",
+                OutputFormat::Tsv => "tsv",
             }
         ));
 
@@ -1270,26 +1266,15 @@ fn output_results(
     let mut writer = writer;
 
     match output_format {
-        OutputFormat::Json => {
-            // JSON: per-sample sorting (keep existing approach)
+        OutputFormat::Tsv => {
+            // TSV: per-sample sorting (keep existing approach)
             let mut sorted_report = report.clone();
             if sort_order != SortOrder::Original {
                 for sample in &mut sorted_report.samples {
                     sort_results(&mut sample.targets, sort_order);
                 }
             }
-            serde_json::to_writer_pretty(&mut writer, &sorted_report)?;
-            writeln!(writer)?;
-        }
-        OutputFormat::Csv => {
-            // CSV: per-sample sorting (keep existing approach)
-            let mut sorted_report = report.clone();
-            if sort_order != SortOrder::Original {
-                for sample in &mut sorted_report.samples {
-                    sort_results(&mut sample.targets, sort_order);
-                }
-            }
-            output_csv(&mut writer, &sorted_report)?;
+            output_tsv(&mut writer, &sorted_report)?;
         }
         OutputFormat::Table => {
             // Table: full cross-sample sorting
@@ -1451,26 +1436,26 @@ fn output_table_sorted(
     Ok(())
 }
 
-fn output_csv(writer: &mut dyn Write, report: &Report) -> Result<()> {
+fn output_tsv(writer: &mut dyn Write, report: &Report) -> Result<()> {
     let mut thresholds = report.parameters.abundance_thresholds.clone();
     thresholds.sort_unstable();
 
     // Build header with target column first
-    let mut header = "target,sample,containment1,containment1_hits".to_string();
+    let mut header = "target\tsample\tcontainment1\tcontainment1_hits".to_string();
     for threshold in &thresholds {
         header.push_str(&format!(
-            ",containment{},containment{}_hits",
+            "\tcontainment{}\tcontainment{}_hits",
             threshold, threshold
         ));
     }
-    header.push_str(",length_bp,total_minimizers,contained_minimizers,median_nz_abundance");
+    header.push_str("\tlength_bp\ttotal_minimizers\tcontained_minimizers\tmedian_nz_abundance");
     writeln!(writer, "{}", header)?;
 
     // Output data rows for all samples
     for sample in &report.samples {
         for result in &sample.targets {
             let mut row = format!(
-                "{},{},{:.5},{}",
+                "{}\t{}\t{:.5}\t{}",
                 result.target,
                 sample.sample_name,
                 result.containment1,
@@ -1482,10 +1467,10 @@ fn output_csv(writer: &mut dyn Write, report: &Report) -> Result<()> {
                     .get(threshold)
                     .unwrap_or(&0.0);
                 let hits = result.hits_at_threshold.get(threshold).unwrap_or(&0);
-                row.push_str(&format!(",{:.5},{}", containment, hits));
+                row.push_str(&format!("\t{:.5}\t{}", containment, hits));
             }
             row.push_str(&format!(
-                ",{},{},{},{:.0}",
+                "\t{}\t{}\t{}\t{:.0}",
                 result.length,
                 result.total_minimizers,
                 result.contained_minimizers,
@@ -1496,7 +1481,7 @@ fn output_csv(writer: &mut dyn Write, report: &Report) -> Result<()> {
 
         // Add TOTAL row for this sample
         let mut total_row = format!(
-            "{},{},{:.5},{}",
+            "{}\t{}\t{:.5}\t{}",
             "TOTAL",
             sample.sample_name,
             sample.total_stats.total_containment1,
@@ -1509,10 +1494,10 @@ fn output_csv(writer: &mut dyn Write, report: &Report) -> Result<()> {
                 .get(threshold)
                 .unwrap_or(&0.0);
             let hits = (containment * sample.total_stats.total_minimizers as f64).round() as usize;
-            total_row.push_str(&format!(",{:.5},{}", containment, hits));
+            total_row.push_str(&format!("\t{:.5}\t{}", containment, hits));
         }
         total_row.push_str(&format!(
-            ",0,{},{},{:.0}",
+            "\t0\t{}\t{}\t{:.0}",
             sample.total_stats.total_minimizers,
             sample.total_stats.total_contained_minimizers,
             sample.total_stats.total_median_nz_abundance,

@@ -8,7 +8,6 @@ use paraseq::Record;
 use paraseq::fastx::Reader;
 use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -17,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 /// Result for a single sample's length histogram
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct LengthHistogramResult {
     pub sample_name: String,
     pub reads_files: Vec<String>,
@@ -29,7 +28,7 @@ pub struct LengthHistogramResult {
 }
 
 /// Complete report containing all samples
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct LengthHistogramReport {
     pub version: String,
     pub targets_file: String,
@@ -39,7 +38,7 @@ pub struct LengthHistogramReport {
 }
 
 /// Parameters used for analysis
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct LengthHistogramParameters {
     pub kmer_length: u8,
     pub smer_size: u8,
@@ -586,7 +585,9 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         Box::new(BufWriter::new(io::stdout()))
     };
 
-    let mut csv_writer = csv::Writer::from_writer(writer);
+    let mut csv_writer = csv::WriterBuilder::new()
+        .delimiter(b'\t')
+        .from_writer(writer);
 
     // Write header
     csv_writer.write_record([

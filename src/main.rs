@@ -263,7 +263,7 @@ enum Commands {
         output: String,
 
         /// Output format
-        #[arg(short = 'f', long = "format", default_value = "table", value_parser = ["table", "csv", "json"])]
+        #[arg(short = 'f', long = "format", default_value = "tsv", value_parser = ["tsv", "table"])]
         format: String,
 
         /// Comma-separated sample names (default is file/dir name without extension)
@@ -406,8 +406,7 @@ fn main() -> Result<()> {
             // Parse outfmt
             let output_format = match format.as_str() {
                 "table" => grate::OutputFormat::Table,
-                "csv" => grate::OutputFormat::Csv,
-                "json" => grate::OutputFormat::Json,
+                "tsv" => grate::OutputFormat::Tsv,
                 _ => unreachable!("clap should have validated the format"),
             };
 

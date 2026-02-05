@@ -16,9 +16,9 @@ import pandas as pd
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot Grate CSV file (single CSV; one or many samples)")
+    parser = argparse.ArgumentParser(description="Plot Grate TSV file (single TSV; one or many samples)")
     # Input/output
-    parser.add_argument("input_csv", help="Input CSV file containing one or many samples (must include a sample column)")
+    parser.add_argument("input_tsv", help="Input TSV file containing one or many samples (must include a sample column)")
     parser.add_argument("-o", "--output", help="Output plot filename (default: <input_prefix>.png)")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing output files")
     parser.add_argument("--format", choices=["png", "html"], default="png",
@@ -54,7 +54,7 @@ def main():
 
     # Auto-generate output filenames from input prefix if not specified
     # Use only the filename (not path) and output to current directory
-    input_filename = os.path.basename(args.input_csv)
+    input_filename = os.path.basename(args.input_tsv)
     input_prefix = os.path.splitext(input_filename)[0]
     if args.output is None:
         args.output = f"{input_prefix}.{args.format}"
@@ -74,24 +74,24 @@ def main():
 
     try:
         # --- Load & validate ---
-        if not os.path.exists(args.input_csv):
-            print(f"ERROR: File {args.input_csv} does not exist")
+        if not os.path.exists(args.input_tsv):
+            print(f"ERROR: File {args.input_tsv} does not exist")
             sys.exit(1)
-        if os.path.getsize(args.input_csv) == 0:
-            print(f"ERROR: File {args.input_csv} is empty")
+        if os.path.getsize(args.input_tsv) == 0:
+            print(f"ERROR: File {args.input_tsv} is empty")
             sys.exit(1)
 
-        df = pd.read_csv(args.input_csv)
+        df = pd.read_csv(args.input_tsv, sep='\t')
 
         if args.debug:
-            print(f"\n{args.input_csv}:")
+            print(f"\n{args.input_tsv}:")
             print(f"  Columns: {list(df.columns)}")
             print(f"  Shape: {df.shape}")
             print("  First few rows:")
             print(df.head())
 
         if df.empty:
-            print("ERROR: Input CSV has no data")
+            print("ERROR: Input TSV has no data")
             sys.exit(1)
 
         # Construct containment column name from abundance threshold
@@ -102,12 +102,12 @@ def main():
         required_cols = {"target", containment_col, hits_col, "median_nz_abundance"}
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
-            print(f"ERROR: Input CSV missing required columns: {', '.join(missing)}")
+            print(f"ERROR: Input TSV missing required columns: {', '.join(missing)}")
             sys.exit(1)
 
         sample_col = args.sample_column
         if sample_col not in df.columns:
-            print(f"ERROR: Input CSV missing sample column '{sample_col}'. "
+            print(f"ERROR: Input TSV missing sample column '{sample_col}'. "
                   f"Use --sample-column to specify the correct column.")
             sys.exit(1)
 

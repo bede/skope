@@ -19,7 +19,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Plot read length distributions from Grate len output"
     )
-    parser.add_argument("input_files", nargs="+", help="Input CSV file(s) from 'grate len'")
+    parser.add_argument("input_files", nargs="+", help="Input TSV file(s) from 'grate len'")
     parser.add_argument("-o", "--output", help="Output PNG filename (default: <input_prefix>-lenhist.png)")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing output files")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output")
@@ -62,7 +62,7 @@ def main():
                 print(f"ERROR: File {input_file} is empty")
                 sys.exit(1)
 
-            file_df = pd.read_csv(input_file)
+            file_df = pd.read_csv(input_file, sep='\t')
 
             if args.debug:
                 print(f"\n{input_file}:")
