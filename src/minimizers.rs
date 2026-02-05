@@ -1,7 +1,7 @@
 use packed_seq::{PackedNSeqVec, SeqVec, unpack_base};
 
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
-pub const DEFAULT_SMER_SIZE: u8 = 15;
+pub const DEFAULT_SMER_LENGTH: u8 = 15;
 
 pub type KmerHasher = simd_minimizers::seq_hash::NtHasher<true, 1>;
 
@@ -94,7 +94,7 @@ pub fn fill_syncmers_with_positions(
     seq: &[u8],
     hasher: &KmerHasher,
     kmer_length: u8,
-    smer_size: u8,
+    smer_length: u8,
     buffers: &mut Buffers,
     positions_out: &mut Vec<usize>,
 ) {
@@ -117,7 +117,7 @@ pub fn fill_syncmers_with_positions(
     packed_nseq.seq.push_ascii(seq);
     packed_nseq.ambiguous.push_ascii(seq);
 
-    let s = smer_size as usize;
+    let s = smer_length as usize;
     let w = kmer_length as usize - s + 1;
     let m = simd_minimizers::canonical_open_syncmers(s, w)
         .hasher(hasher)
@@ -144,7 +144,7 @@ pub fn fill_syncmers(
     seq: &[u8],
     hasher: &KmerHasher,
     kmer_length: u8,
-    smer_size: u8,
+    smer_length: u8,
     buffers: &mut Buffers,
 ) {
     let Buffers {
@@ -165,7 +165,7 @@ pub fn fill_syncmers(
     packed_nseq.seq.push_ascii(seq);
     packed_nseq.ambiguous.push_ascii(seq);
 
-    let s = smer_size as usize;
+    let s = smer_length as usize;
     let w = kmer_length as usize - s + 1;
     let m = simd_minimizers::canonical_open_syncmers(s, w)
         .hasher(hasher)

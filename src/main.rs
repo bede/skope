@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_KMER_LENGTH: u8 = 31;
-const DEFAULT_SMER_SIZE: u8 = 15;
+const DEFAULT_SMER_LENGTH: u8 = 15;
 
 /// Derive sample name from file path by stripping directory and extensions
 fn derive_sample_name(path: &Path, is_directory: bool) -> String {
@@ -217,9 +217,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Calculate sequence containment & abundance in fastx files or directories thereof
-    Con {
-        /// Path to fasta file containing target sequence record(s)
+    /// Estimate k-mer containment & abundance in fastx file(s) or directories thereof
+    Query {
+        /// Path to fastx file containing target sequence record(s)
         targets: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample.
@@ -227,13 +227,13 @@ enum Commands {
         samples: Vec<PathBuf>,
 
         // Algorithm parameters
-        /// Syncmer length (1-61)
+        /// K-mer length (1-61)
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// S-mer size for open syncmer selection (s < k, s must be odd)
-        #[arg(short = 's', long = "smer-size", default_value_t = DEFAULT_SMER_SIZE)]
-        smer_size: u8,
+        /// S-mer length used for open syncmer selection (s < k, s must be odd)
+        #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        smer_length: u8,
 
         /// Comma-separated abundance thresholds for containment calculation
         #[arg(
@@ -278,13 +278,13 @@ enum Commands {
         #[arg(short = 'q', long = "quiet", default_value_t = false)]
         quiet: bool,
 
-        /// Dump syncmer positions to TSV file (target<tab>position)
+        /// Dump open syncmer positions to TSV file (target\tposition)
         #[arg(long = "dump-positions")]
         dump_positions: Option<String>,
     },
-    /// Generate length histogram for reads with one or more syncmer hits to target sequences
-    Len {
-        /// Path to fasta file containing target sequence record(s) (- to disable target filtering)
+    /// Generate length histogram for sequences with k-mer hits to target sequence(s)
+    Lenhist {
+        /// Path to fastx file containing target sequence record(s) (- to disable target filtering)
         targets: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample.
@@ -292,13 +292,13 @@ enum Commands {
         samples: Vec<PathBuf>,
 
         // Algorithm parameters
-        /// Syncmer length (1-61)
+        /// k-mer length (1-61)
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// S-mer size for open syncmer selection (s < k, s must be odd)
-        #[arg(short = 's', long = "smer-size", default_value_t = DEFAULT_SMER_SIZE)]
-        smer_size: u8,
+        /// S-mer length used for open syncmer selection (s < k, s must be odd)
+        #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        smer_length: u8,
 
         // Processing options
         /// Number of execution threads (0 = auto)
@@ -336,12 +336,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Con {
+        Commands::Query {
             targets,
             samples,
             sample_names,
             kmer_length,
-            smer_size,
+            smer_length,
             threads,
             output,
             quiet,
@@ -379,7 +379,7 @@ fn main() -> Result<()> {
             validate_sample_names(&derived_sample_names)?;
             // Validate k-mer and s-mer size constraints for open syncmers
             let k = *kmer_length as usize;
-            let s = *smer_size as usize;
+            let s = *smer_length as usize;
 
             // Check constraints:
             // - k <= 61 (fits in packed representation)
@@ -431,7 +431,7 @@ fn main() -> Result<()> {
                 reads_paths: expanded_reads,
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
-                smer_size: *smer_size,
+                smer_length: *smer_length,
                 threads: *threads,
                 output_path: if output == "-" {
                     None
@@ -451,12 +451,12 @@ fn main() -> Result<()> {
                 .execute()
                 .context("Failed to run containment analysis")?;
         }
-        Commands::Len {
+        Commands::Lenhist {
             targets,
             samples,
             sample_names,
             kmer_length,
-            smer_size,
+            smer_length,
             threads,
             output,
             quiet,
@@ -490,7 +490,7 @@ fn main() -> Result<()> {
 
             // Validate k-mer and s-mer size constraints for open syncmers
             let k = *kmer_length as usize;
-            let s = *smer_size as usize;
+            let s = *smer_length as usize;
 
             // Check constraints:
             // - k <= 61 (fits in packed representation)
@@ -529,7 +529,7 @@ fn main() -> Result<()> {
                 reads_paths: expanded_reads,
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
-                smer_size: *smer_size,
+                smer_length: *smer_length,
                 threads: *threads,
                 output_path: if output == "-" {
                     None

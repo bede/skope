@@ -87,7 +87,7 @@ pub struct ContainmentResult {
 #[derive(Debug, Clone)]
 pub struct ContainmentParameters {
     pub kmer_length: u8,
-    pub smer_size: u8,
+    pub smer_length: u8,
     pub threads: usize,
     pub abundance_thresholds: Vec<usize>,
 }
@@ -146,7 +146,7 @@ pub struct ContainmentConfig {
     pub reads_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
-    pub smer_size: u8,
+    pub smer_length: u8,
     pub threads: usize,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
@@ -176,7 +176,7 @@ fn reader_with_inferred_batch_size(
 #[derive(Clone)]
 struct TargetsProcessor {
     kmer_length: u8,
-    smer_size: u8,
+    smer_length: u8,
     hasher: KmerHasher,
     buffers: Buffers,
     positions: Vec<usize>,
@@ -192,7 +192,7 @@ struct TargetsProcessor {
 impl TargetsProcessor {
     fn new(
         kmer_length: u8,
-        smer_size: u8,
+        smer_length: u8,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: std::time::Instant,
     ) -> Self {
@@ -204,8 +204,8 @@ impl TargetsProcessor {
 
         Self {
             kmer_length,
-            smer_size,
-            hasher: KmerHasher::new(smer_size as usize),
+            smer_length,
+            hasher: KmerHasher::new(smer_length as usize),
             buffers,
             positions: Vec::new(),
             targets: Arc::new(Mutex::new(Vec::new())),
@@ -246,7 +246,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
             &sequence,
             &self.hasher,
             self.kmer_length,
-            self.smer_size,
+            self.smer_length,
             &mut self.buffers,
             &mut self.positions,
         );
@@ -300,7 +300,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
 pub fn process_targets_file(
     targets_path: &Path,
     kmer_length: u8,
-    smer_size: u8,
+    smer_length: u8,
     quiet: bool,
 ) -> Result<Vec<TargetInfo>> {
     let in_path = if targets_path.to_string_lossy() == "-" {
@@ -326,7 +326,7 @@ pub fn process_targets_file(
 
     let start_time = std::time::Instant::now();
     let mut processor =
-        TargetsProcessor::new(kmer_length, smer_size, spinner.clone(), start_time);
+        TargetsProcessor::new(kmer_length, smer_length, spinner.clone(), start_time);
 
     // Single thread to preserve order
     reader.process_parallel(&mut processor, 1)?;
@@ -352,7 +352,7 @@ struct ProcessingStats {
 #[derive(Clone)]
 struct ReadsProcessor {
     kmer_length: u8,
-    smer_size: u8,
+    smer_length: u8,
     hasher: KmerHasher,
     targets_minimizers: Arc<MinimizerSet>,
 
@@ -374,7 +374,7 @@ struct ReadsProcessor {
 impl ReadsProcessor {
     fn new(
         kmer_length: u8,
-        smer_size: u8,
+        smer_length: u8,
         targets_minimizers: Arc<MinimizerSet>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
@@ -406,8 +406,8 @@ impl ReadsProcessor {
 
         Self {
             kmer_length,
-            smer_size,
-            hasher: KmerHasher::new(smer_size as usize),
+            smer_length,
+            hasher: KmerHasher::new(smer_length as usize),
             targets_minimizers,
             buffers,
             local_stats: ProcessingStats::default(),
@@ -461,7 +461,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for ReadsProcessor {
             &seq,
             &self.hasher,
             self.kmer_length,
-            self.smer_size,
+            self.smer_length,
             &mut self.buffers,
         );
 
@@ -551,7 +551,7 @@ fn process_reads_file(
     reads_path: &Path,
     targets_minimizers: Arc<MinimizerSet>,
     kmer_length: u8,
-    smer_size: u8,
+    smer_length: u8,
     threads: usize,
     quiet: bool,
     limit_bp: Option<u64>,
@@ -582,7 +582,7 @@ fn process_reads_file(
     let start_time = Instant::now();
     let mut processor = ReadsProcessor::new(
         kmer_length,
-        smer_size,
+        smer_length,
         targets_minimizers,
         spinner.clone(),
         start_time,
@@ -808,7 +808,7 @@ fn process_single_sample(
             reads_path,
             Arc::clone(&targets_minimizers),
             config.kmer_length,
-            config.smer_size,
+            config.smer_length,
             config.threads,
             quiet_sample,
             config.limit_bp.map(|limit| limit.saturating_sub(total_bp)),
@@ -943,7 +943,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     if !config.quiet {
         let mut options = format!(
             "k={}, s={}, threads={}",
-            config.kmer_length, config.smer_size, config.threads
+            config.kmer_length, config.smer_length, config.threads
         );
 
         if config.reads_paths.len() > 1 {
@@ -986,7 +986,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     let mut targets = process_targets_file(
         &config.targets_path,
         config.kmer_length,
-        config.smer_size,
+        config.smer_length,
         config.quiet,
     )?;
     let targets_time = targets_start.elapsed();
@@ -1200,7 +1200,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         targets_file: config.targets_path.to_string_lossy().to_string(),
         parameters: ContainmentParameters {
             kmer_length: config.kmer_length,
-            smer_size: config.smer_size,
+            smer_length: config.smer_length,
             threads: config.threads,
             abundance_thresholds: config.abundance_thresholds.clone(),
         },

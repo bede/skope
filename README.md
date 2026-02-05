@@ -60,8 +60,8 @@ Arguments:
 
 Options:
   -k, --kmer-length <KMER_LENGTH>
-          Syncmer length (1-61) [default: 31]
-  -s, --smer-size <SMER_SIZE>
+          k-mer length (1-61) [default: 31]
+  -s, --smer-size <smer_length>
           S-mer size for open syncmer selection (s < k, s must be odd) [default: 15]
   -a, --abundance-thresholds <ABUNDANCE_THRESHOLDS>
           Comma-separated abundance thresholds for containment calculation [default: 10]

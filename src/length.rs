@@ -41,7 +41,7 @@ pub struct LengthHistogramReport {
 #[derive(Debug, Clone)]
 pub struct LengthHistogramParameters {
     pub kmer_length: u8,
-    pub smer_size: u8,
+    pub smer_length: u8,
     pub threads: usize,
 }
 
@@ -51,7 +51,7 @@ pub struct LengthHistogramConfig {
     pub reads_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
-    pub smer_size: u8,
+    pub smer_length: u8,
     pub threads: usize,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
@@ -84,7 +84,7 @@ struct ProcessingStats {
 #[derive(Clone)]
 struct LengthHistogramProcessor {
     kmer_length: u8,
-    smer_size: u8,
+    smer_length: u8,
     hasher: KmerHasher,
     targets_minimizers: Arc<MinimizerSet>,
     include_all_reads: bool,
@@ -109,7 +109,7 @@ struct LengthHistogramProcessor {
 impl LengthHistogramProcessor {
     fn new(
         kmer_length: u8,
-        smer_size: u8,
+        smer_length: u8,
         targets_minimizers: Arc<MinimizerSet>,
         include_all_reads: bool,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
@@ -124,8 +124,8 @@ impl LengthHistogramProcessor {
 
         Self {
             kmer_length,
-            smer_size,
-            hasher: KmerHasher::new(smer_size as usize),
+            smer_length,
+            hasher: KmerHasher::new(smer_length as usize),
             targets_minimizers,
             include_all_reads,
             buffers,
@@ -186,7 +186,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
                 &seq,
                 &self.hasher,
                 self.kmer_length,
-                self.smer_size,
+                self.smer_length,
                 &mut self.buffers,
             );
 
@@ -255,7 +255,7 @@ fn process_reads_file(
     reads_path: &Path,
     targets_minimizers: Arc<MinimizerSet>,
     kmer_length: u8,
-    smer_size: u8,
+    smer_length: u8,
     threads: usize,
     quiet: bool,
     include_all_reads: bool,
@@ -285,7 +285,7 @@ fn process_reads_file(
     let start_time = Instant::now();
     let mut processor = LengthHistogramProcessor::new(
         kmer_length,
-        smer_size,
+        smer_length,
         targets_minimizers,
         include_all_reads,
         spinner.clone(),
@@ -367,7 +367,7 @@ fn process_single_sample(
                 reads_path,
                 Arc::clone(&targets_minimizers),
                 config.kmer_length,
-                config.smer_size,
+                config.smer_length,
                 config.threads,
                 quiet_sample,
                 config.include_all_reads,
@@ -423,7 +423,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
     if !config.quiet {
         let mut options = format!(
             "k={}, s={}, threads={}",
-            config.kmer_length, config.smer_size, config.threads
+            config.kmer_length, config.smer_length, config.threads
         );
 
         if config.reads_paths.len() > 1 {
@@ -456,7 +456,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         let targets = process_targets_file(
             &config.targets_path,
             config.kmer_length,
-            config.smer_size,
+            config.smer_length,
             config.quiet,
         )?;
         let targets_time = targets_start.elapsed();
@@ -564,7 +564,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         },
         parameters: LengthHistogramParameters {
             kmer_length: config.kmer_length,
-            smer_size: config.smer_size,
+            smer_length: config.smer_length,
             threads: config.threads,
         },
         samples: sample_results,

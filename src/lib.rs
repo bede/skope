@@ -22,6 +22,6 @@ pub use length::{
 };
 
 pub use minimizers::{
-    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_SIZE, KmerHasher, MinimizerVec, decode_u64,
+    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, KmerHasher, MinimizerVec, decode_u64,
     decode_u128, fill_syncmers, fill_syncmers_with_positions,
 };
