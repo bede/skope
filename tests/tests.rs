@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 fn test_multisample_processing() {
     let config = ContainmentConfig {
         targets_path: PathBuf::from("data/zmrp21.combined-segments.fa"),
-        reads_paths: vec![
+        sample_paths: vec![
             vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")],
             vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")],
         ],
@@ -35,7 +35,7 @@ fn test_multisample_report_structure() {
 
     let config = ContainmentConfig {
         targets_path: PathBuf::from("data/zmrp21.combined-segments.fa"),
-        reads_paths: vec![
+        sample_paths: vec![
             vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")],
             vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")],
         ],
@@ -90,7 +90,7 @@ fn test_sort_target() {
     let temp_output = NamedTempFile::new().unwrap();
     let config = ContainmentConfig {
         targets_path: PathBuf::from("data/zmrp21.combined-segments.fa"),
-        reads_paths: vec![vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")]],
+        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
         kmer_length: 31,
         smer_length: 15,
@@ -134,7 +134,7 @@ fn test_sort_containment() {
     let temp_output = NamedTempFile::new().unwrap();
     let config = ContainmentConfig {
         targets_path: PathBuf::from("data/zmrp21.combined-segments.fa"),
-        reads_paths: vec![vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")]],
+        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
         kmer_length: 31,
         smer_length: 15,
@@ -199,7 +199,7 @@ fn test_length_histogram() {
 
     let config = LengthHistogramConfig {
         targets_path: PathBuf::from("data/zmrp21.combined-segments.fa"),
-        reads_paths: vec![vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")]],
+        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.10k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
         kmer_length: 31,
         smer_length: 15,
@@ -207,7 +207,7 @@ fn test_length_histogram() {
         output_path: Some(temp_output.path().to_path_buf()),
         quiet: true,
         limit_bp: None,
-        include_all_reads: false,
+        include_all_seqs: false,
     };
 
     grate::run_length_histogram_analysis(&config).unwrap();

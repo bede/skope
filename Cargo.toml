@@ -1,7 +1,7 @@
 [package]
 name = "grate"
 version = "0.4.0"
-description = "Fast containment estimation"
+description = "Fast DNA sequence containment estimation"
 authors = ["Bede Constantinides <b@bede.im>"]
 edition = "2024"
 repository = "https://github.com/bede/grate"
@@ -33,6 +33,7 @@ csv = "1.4"
 rapidhash = "4.1.0"
 parking_lot = "0.12"
 indicatif = "0.18"
+bincode = "2"
 
 packed-seq = "4.2.0"
 simd-minimizers = "2.3.0"
