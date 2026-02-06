@@ -78,8 +78,6 @@ enum Classification {
 struct GroupCounts {
     seqs: u64,
     bases: u64,
-    group_kmers_seen: u64,
-    unique_kmers_seen: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -721,7 +719,6 @@ fn classify_seq_kmers(
 struct GlobalClassifyState {
     group_seqs: Vec<u64>,
     group_bases: Vec<u64>,
-    group_kmer_hits: Vec<u64>,
     ambiguous_seqs: u64,
     ambiguous_bases: u64,
     unclassified_seqs: u64,
@@ -734,7 +731,6 @@ impl GlobalClassifyState {
         Self {
             group_seqs: vec![0; num_groups],
             group_bases: vec![0; num_groups],
-            group_kmer_hits: vec![0; num_groups],
             ambiguous_seqs: 0,
             ambiguous_bases: 0,
             unclassified_seqs: 0,
@@ -761,7 +757,6 @@ struct ClassifySummaryProcessor {
     // Thread-local accumulators
     local_group_seqs: Vec<u64>,
     local_group_bases: Vec<u64>,
-    local_group_kmer_hits: Vec<u64>,
     local_ambiguous_seqs: u64,
     local_ambiguous_bases: u64,
     local_unclassified_seqs: u64,
@@ -805,7 +800,6 @@ impl ClassifySummaryProcessor {
             hits: [0u64; 64],
             local_group_seqs: vec![0; num_groups],
             local_group_bases: vec![0; num_groups],
-            local_group_kmer_hits: vec![0; num_groups],
             local_ambiguous_seqs: 0,
             local_ambiguous_bases: 0,
             local_unclassified_seqs: 0,
@@ -846,7 +840,6 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
             Classification::Classified(group_idx) => {
                 self.local_group_seqs[group_idx] += 1;
                 self.local_group_bases[group_idx] += seq_len as u64;
-                self.local_group_kmer_hits[group_idx] += self.hits[group_idx];
             }
             Classification::Ambiguous(_) => {
                 self.local_ambiguous_seqs += 1;
@@ -867,10 +860,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
         for i in 0..self.num_groups {
             g.group_seqs[i] += self.local_group_seqs[i];
             g.group_bases[i] += self.local_group_bases[i];
-            g.group_kmer_hits[i] += self.local_group_kmer_hits[i];
             self.local_group_seqs[i] = 0;
             self.local_group_bases[i] = 0;
-            self.local_group_kmer_hits[i] = 0;
         }
 
         g.ambiguous_seqs += self.local_ambiguous_seqs;
@@ -1099,7 +1090,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
     let (index, group_names, kmer_length, smer_length) = if config.index_path.is_dir() {
         if !config.quiet {
             eprintln!(
-                "Grate v{}; mode: classify (from directory); options: k={}, s={}, threads={}, min_hits={}, min_fraction={:.3}",
+                "Grate v{}; mode: classify (from directory); options: k={}, s={}, threads={}, min_hits={}, min_fraction={:.2}",
                 version, config.kmer_length, config.smer_length, config.threads, config.min_hits, config.min_fraction
             );
         }
@@ -1117,7 +1108,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         // Load pre-built index
         if !config.quiet {
             eprintln!(
-                "Grate v{}; mode: classify (from index); options: threads={}, min_hits={}, min_fraction={:.3}",
+                "Grate v{}; mode: classify (from index); options: threads={}, min_hits={}, min_fraction={:.2}",
                 version, config.threads, config.min_hits, config.min_fraction
             );
         }
@@ -1297,7 +1288,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 
         writeln!(
             writer,
-            "sample\tgroup\tseqs\tseqs_pct\tbases\tbases_pct\tgroup_kmers\tunique_kmers"
+            "sample\tgroup\tseqs\tseqs_pct\tbases\tbases_pct"
         )?;
 
         for (sample_name, result) in &sample_results {
@@ -1318,15 +1309,13 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 
                 writeln!(
                     writer,
-                    "{}\t{}\t{}\t{:.2}\t{}\t{:.2}\t{}\t{}",
+                    "{}\t{}\t{}\t{:.2}\t{}\t{:.2}",
                     sample_name,
                     group_names[group_idx],
                     counts.seqs,
                     pct_seqs,
                     counts.bases,
                     pct_bases,
-                    counts.group_kmers_seen,
-                    counts.unique_kmers_seen,
                 )?;
             }
 
@@ -1343,7 +1332,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             };
             writeln!(
                 writer,
-                "{}\tambiguous\t{}\t{:.2}\t{}\t{:.2}\t.\t.",
+                "{}\tambiguous\t{}\t{:.2}\t{}\t{:.2}",
                 sample_name, result.ambiguous_seqs, pct_seqs, result.ambiguous_bases, pct_bases,
             )?;
 
@@ -1360,7 +1349,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             };
             writeln!(
                 writer,
-                "{}\tunclassified\t{}\t{:.2}\t{}\t{:.2}\t.\t.",
+                "{}\tunclassified\t{}\t{:.2}\t{}\t{:.2}",
                 sample_name,
                 result.unclassified_seqs,
                 pct_seqs,
@@ -1435,7 +1424,6 @@ fn process_sample_summary(
         for i in 0..num_groups {
             combined.group_counts[i].seqs += g.group_seqs[i];
             combined.group_counts[i].bases += g.group_bases[i];
-            combined.group_counts[i].group_kmers_seen += g.group_kmer_hits[i];
         }
 
         combined.ambiguous_seqs += g.ambiguous_seqs;
