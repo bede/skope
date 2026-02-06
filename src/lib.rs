@@ -2,7 +2,7 @@
 //!
 //! A fast open syncmer-based containment analysis tool for genomic sequences.
 //!
-//! Grate analyzes the containment of open syncmers from reference sequences in read datasets,
+//! Grate analyzes the containment of open syncmers from reference sequences in sequence datasets,
 //! providing detailed statistics on containment and abundance per target sequence.
 //!
 

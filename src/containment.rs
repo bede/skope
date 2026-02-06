@@ -90,7 +90,7 @@ pub struct TotalStats {
     pub total_contained_minimizers: usize,
     pub total_containment1: f64,
     pub total_median_nz_abundance: f64,
-    pub total_reads_processed: u64,
+    pub total_seqs_processed: u64,
     pub total_bp_processed: u64,
     pub total_containment_at_threshold: HashMap<usize, f64>, // threshold -> overall containment
 }
@@ -98,10 +98,10 @@ pub struct TotalStats {
 #[derive(Debug, Clone)]
 pub struct TimingStats {
     pub reference_processing_time: f64,
-    pub reads_processing_time: f64,
+    pub seqs_processing_time: f64,
     pub analysis_time: f64,
     pub total_time: f64,
-    pub reads_per_second: f64,
+    pub seqs_per_second: f64,
     pub bp_per_second: f64,
 }
 
@@ -109,7 +109,7 @@ pub struct TimingStats {
 #[derive(Debug, Clone)]
 pub struct SampleResults {
     pub sample_name: String,
-    pub reads_files: Vec<String>, // Multiple files per sample
+    pub seq_files: Vec<String>, // Multiple files per sample
     pub targets: Vec<ContainmentResult>,
     pub total_stats: TotalStats,
     pub timing: TimingStats,
@@ -134,7 +134,7 @@ pub enum OutputFormat {
 
 pub struct ContainmentConfig {
     pub targets_path: PathBuf,
-    pub reads_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
+    pub sample_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
     pub smer_length: u8,
@@ -314,9 +314,9 @@ pub fn process_targets_file(
     Ok(targets)
 }
 
-/// Processor for counting syncmer depths from reads
+/// Processor for counting syncmer depths from sequences
 #[derive(Clone)]
-struct ReadsProcessor {
+struct SeqsProcessor {
     kmer_length: u8,
     smer_length: u8,
     hasher: KmerHasher,
@@ -337,7 +337,7 @@ struct ReadsProcessor {
     limit_bp: Option<u64>,
 }
 
-impl ReadsProcessor {
+impl SeqsProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
@@ -392,21 +392,21 @@ impl ReadsProcessor {
         if let Some(ref spinner) = self.spinner {
             let stats = self.global_stats.lock();
             let elapsed = self.start_time.elapsed();
-            let reads_per_sec = stats.total_seqs as f64 / elapsed.as_secs_f64();
+            let seqs_per_sec = stats.total_seqs as f64 / elapsed.as_secs_f64();
             let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
 
             spinner.lock().set_message(format!(
-                "Processing sample: {} reads ({}). {:.0} reads/s ({})",
+                "Processing sample: {} seqs ({}). {:.0} seqs/s ({})",
                 stats.total_seqs,
                 format_bp(stats.total_bp as usize),
-                reads_per_sec,
+                seqs_per_sec,
                 format_bp_per_sec(bp_per_sec)
             ));
         }
     }
 }
 
-impl<Rf: Record> ParallelProcessor<Rf> for ReadsProcessor {
+impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
     fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         // Check if we've reached sample limit
         if let Some(limit) = self.limit_bp {
@@ -513,8 +513,8 @@ enum AbundanceMap {
     U128(HashMap<u128, CountDepth>),
 }
 
-fn process_reads_file(
-    reads_path: &Path,
+fn process_seqs_file(
+    seq_path: &Path,
     targets_minimizers: Arc<MinimizerSet>,
     kmer_length: u8,
     smer_length: u8,
@@ -522,22 +522,22 @@ fn process_reads_file(
     quiet: bool,
     limit_bp: Option<u64>,
 ) -> Result<(AbundanceMap, u64, u64)> {
-    let in_path = if reads_path.to_string_lossy() == "-" {
+    let in_path = if seq_path.to_string_lossy() == "-" {
         None
     } else {
-        Some(reads_path)
+        Some(seq_path)
     };
     let reader = reader_with_inferred_batch_size(in_path)?;
 
     let spinner = create_spinner(quiet)?;
     if let Some(ref pb) = spinner {
-        pb.lock().set_message("Processing sample: 0 reads (0bp)");
+        pb.lock().set_message("Processing sample: 0 seqs (0bp)");
     }
 
     let total_target_syncmers = targets_minimizers.len();
 
     let start_time = Instant::now();
-    let mut processor = ReadsProcessor::new(
+    let mut processor = SeqsProcessor::new(
         kmer_length,
         smer_length,
         targets_minimizers,
@@ -700,19 +700,19 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 }
 
 
-/// Process a single sample's reads and calculate statistics
+/// Process a single sample's sequences and calculate statistics
 fn process_single_sample(
     _idx: usize,
-    reads_paths: &[PathBuf], // Multiple files per sample
+    sample_paths: &[PathBuf], // Multiple files per sample
     sample_name: &str,
     targets: &[TargetInfo],
     targets_minimizers: Arc<MinimizerSet>,
     config: &ContainmentConfig,
 ) -> Result<SampleResults> {
     // Silence per-sample progress for >1 sample
-    let quiet_sample = config.quiet || config.reads_paths.len() > 1;
+    let quiet_sample = config.quiet || config.sample_paths.len() > 1;
 
-    let reads_start = Instant::now();
+    let seqs_start = Instant::now();
 
     // Initialize empty abundance map based on k-mer length
     let mut combined_abundance_map = if config.kmer_length <= 32 {
@@ -720,13 +720,13 @@ fn process_single_sample(
     } else {
         AbundanceMap::U128(HashMap::new())
     };
-    let mut total_reads = 0u64;
+    let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
 
     // Process each file and accumulate results
-    for reads_path in reads_paths {
-        let (file_abundance_map, file_reads, file_bp) = process_reads_file(
-            reads_path,
+    for seq_path in sample_paths {
+        let (file_abundance_map, file_seqs, file_bp) = process_seqs_file(
+            seq_path,
             Arc::clone(&targets_minimizers),
             config.kmer_length,
             config.smer_length,
@@ -756,7 +756,7 @@ fn process_single_sample(
             _ => panic!("Mismatch between AbundanceMap types"),
         }
 
-        total_reads += file_reads;
+        total_seqs += file_seqs;
         total_bp += file_bp;
 
         // Check if limit reached
@@ -766,7 +766,7 @@ fn process_single_sample(
             }
     }
 
-    let reads_time = reads_start.elapsed();
+    let seqs_time = seqs_start.elapsed();
     let abundance_map = combined_abundance_map;
 
     // Calculate containment statistics for this sample
@@ -801,8 +801,8 @@ fn process_single_sample(
         0.0
     };
 
-    let reads_per_second = total_reads as f64 / reads_time.as_secs_f64();
-    let bp_per_second = total_bp as f64 / reads_time.as_secs_f64();
+    let seqs_per_second = total_seqs as f64 / seqs_time.as_secs_f64();
+    let bp_per_second = total_bp as f64 / seqs_time.as_secs_f64();
 
     // Calculate overall containment at each threshold
     let mut total_containment_at_threshold = HashMap::new();
@@ -824,7 +824,7 @@ fn process_single_sample(
 
     Ok(SampleResults {
         sample_name: sample_name.to_string(),
-        reads_files: reads_paths
+        seq_files: sample_paths
             .iter()
             .map(|p| {
                 if p.to_string_lossy() == "-" {
@@ -841,16 +841,16 @@ fn process_single_sample(
             total_contained_minimizers,
             total_containment1,
             total_median_nz_abundance,
-            total_reads_processed: total_reads,
+            total_seqs_processed: total_seqs,
             total_bp_processed: total_bp,
             total_containment_at_threshold,
         },
         timing: TimingStats {
             reference_processing_time: 0.0, // Not per-sample
-            reads_processing_time: reads_time.as_secs_f64(),
+            seqs_processing_time: seqs_time.as_secs_f64(),
             analysis_time: analysis_time.as_secs_f64(),
-            total_time: reads_time.as_secs_f64() + analysis_time.as_secs_f64(),
-            reads_per_second,
+            total_time: seqs_time.as_secs_f64() + analysis_time.as_secs_f64(),
+            seqs_per_second,
             bp_per_second,
         },
     })
@@ -866,8 +866,8 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.kmer_length, config.smer_length, config.threads
         );
 
-        if config.reads_paths.len() > 1 {
-            options.push_str(&format!(", samples={}", config.reads_paths.len()));
+        if config.sample_paths.len() > 1 {
+            options.push_str(&format!(", samples={}", config.sample_paths.len()));
         }
 
         if !config.abundance_thresholds.is_empty() {
@@ -1049,12 +1049,12 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     // Process each sample in parallel
     use rayon::prelude::*;
 
-    let is_multisample = config.reads_paths.len() > 1;
+    let is_multisample = config.sample_paths.len() > 1;
     let completed = if is_multisample && !config.quiet {
         // Give us a blank line to overwrite
         eprint!(
             "\x1B[2K\rSamples: processed 0 of {}…",
-            config.reads_paths.len()
+            config.sample_paths.len()
         );
         Some(Arc::new(Mutex::new(0usize)))
     } else {
@@ -1066,14 +1066,14 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     };
 
     let mut sample_results_with_idx: Vec<(usize, SampleResults)> = config
-        .reads_paths
+        .sample_paths
         .par_iter()
         .zip(&config.sample_names)
         .enumerate()
-        .map(|(idx, (reads_paths, sample_name))| {
+        .map(|(idx, (sample_paths, sample_name))| {
             let result = process_single_sample(
                 idx,
-                reads_paths, // Now a &Vec<PathBuf>
+                sample_paths, // Now a &Vec<PathBuf>
                 sample_name,
                 &targets,
                 Arc::clone(&targets_minimizers),
@@ -1087,7 +1087,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
                 eprint!(
                     "\rSamples: processed {} of {}…",
                     *count,
-                    config.reads_paths.len()
+                    config.sample_paths.len()
                 );
             }
 
@@ -1106,9 +1106,9 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         eprintln!();
     }
 
-    let total_reads_time: f64 = sample_results
+    let total_seqs_time: f64 = sample_results
         .iter()
-        .map(|s| s.timing.reads_processing_time)
+        .map(|s| s.timing.seqs_processing_time)
         .sum();
     let total_analysis_time: f64 = sample_results.iter().map(|s| s.timing.analysis_time).sum();
 
@@ -1127,10 +1127,10 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         samples: sample_results,
         total_timing: TimingStats {
             reference_processing_time: targets_time.as_secs_f64(),
-            reads_processing_time: total_reads_time,
+            seqs_processing_time: total_seqs_time,
             analysis_time: total_analysis_time,
             total_time: total_time.as_secs_f64(),
-            reads_per_second: 0.0, // Not meaningful across samples
+            seqs_per_second: 0.0, // Not meaningful across samples
             bp_per_second: 0.0,    // Not meaningful across samples
         },
     };
@@ -1247,11 +1247,11 @@ fn output_table_sorted(
     let mut rows: Vec<TableRow> = Vec::new();
 
     for sample in &report.samples {
-        let sample_display = if sample.reads_files.len() > 1 {
+        let sample_display = if sample.seq_files.len() > 1 {
             format!(
                 "{} ({} files)",
                 sample.sample_name,
-                sample.reads_files.len()
+                sample.seq_files.len()
             )
         } else {
             sample.sample_name.clone()
@@ -1325,11 +1325,11 @@ fn output_table_sorted(
     // Output TOTAL rows (grouped by sample, after regular rows)
     if !no_total {
         for sample in &report.samples {
-            let sample_display = if sample.reads_files.len() > 1 {
+            let sample_display = if sample.seq_files.len() > 1 {
                 format!(
                     "{} ({} files)",
                     sample.sample_name,
-                    sample.reads_files.len()
+                    sample.seq_files.len()
                 )
             } else {
                 sample.sample_name.clone()

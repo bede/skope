@@ -133,7 +133,7 @@ enum Commands {
     #[command(subcommand)]
     Index(IndexCommands),
 
-    /// Classify reads into groups based on k-mer membership
+    /// Classify sequences into groups based on k-mer membership
     Classify {
         /// Path to .gci index file or directory of FASTA files (one per group)
         index: PathBuf,
@@ -150,11 +150,11 @@ enum Commands {
         #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
-        /// Minimum k-mer hits to classify a read to a group
+        /// Minimum k-mer hits to classify a sequence to a group
         #[arg(short = 'm', long = "min-hits", default_value_t = 1)]
         min_hits: u64,
 
-        /// Minimum fraction of read k-mers hitting a group
+        /// Minimum fraction of sequence k-mers hitting a group
         #[arg(short = 'r', long = "min-fraction", default_value_t = 0.0)]
         min_fraction: f64,
 
@@ -166,7 +166,7 @@ enum Commands {
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
 
-        /// Terminate read processing after approximately this many bases (e.g. 50M, 10G)
+        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
         #[arg(short = 'l', long = "limit")]
         limit: Option<String>,
 
@@ -174,9 +174,9 @@ enum Commands {
         #[arg(short = 'o', long = "output", default_value = "-")]
         output: String,
 
-        /// Output per-read classifications instead of summary
-        #[arg(long = "per-read", default_value_t = false)]
-        per_read: bool,
+        /// Output per-sequence classifications instead of summary
+        #[arg(long = "per-seq", default_value_t = false)]
+        per_seq: bool,
 
         /// Comma-separated sample names (default is file/dir name without extension)
         #[arg(short = 'n', long = "names", value_delimiter = ',')]
@@ -223,7 +223,7 @@ enum Commands {
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
 
-        /// Terminate read processing after approximately this many bases (e.g. 50M, 10G)
+        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
         #[arg(short = 'l', long = "limit")]
         limit: Option<String>,
 
@@ -279,7 +279,7 @@ enum Commands {
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
 
-        /// Terminate read processing after approximately this many bases (e.g. 50M, 10G)
+        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
         #[arg(short = 'l', long = "limit")]
         limit: Option<String>,
 
@@ -365,17 +365,17 @@ fn main() -> Result<()> {
             threads,
             limit,
             output,
-            per_read,
+            per_seq,
             quiet,
         } => {
-            let (expanded_reads, is_directory) = expand_sample_inputs(samples)?;
+            let (expanded_samples, is_directory) = expand_sample_inputs(samples)?;
 
             let derived_sample_names: Vec<String> = if let Some(names) = sample_names {
-                if names.len() != expanded_reads.len() {
+                if names.len() != expanded_samples.len() {
                     return Err(anyhow::anyhow!(
                         "Number of sample names ({}) must match number of samples ({})",
                         names.len(),
-                        expanded_reads.len()
+                        expanded_samples.len()
                     ));
                 }
                 names.clone()
@@ -409,7 +409,7 @@ fn main() -> Result<()> {
 
             let config = grate::ClassifyConfig {
                 index_path: index.clone(),
-                reads_paths: expanded_reads,
+                sample_paths: expanded_samples,
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
                 smer_length: *smer_length,
@@ -422,7 +422,7 @@ fn main() -> Result<()> {
                 } else {
                     Some(PathBuf::from(output))
                 },
-                per_read: *per_read,
+                per_seq: *per_seq,
                 discriminatory: *discriminatory,
                 quiet: *quiet,
             };
@@ -449,16 +449,16 @@ fn main() -> Result<()> {
             no_total,
         } => {
             // Expand directories to lists of files
-            let (expanded_reads, is_directory) = expand_sample_inputs(samples)?;
+            let (expanded_samples, is_directory) = expand_sample_inputs(samples)?;
 
             // Derive or validate sample names
             let derived_sample_names: Vec<String> = if let Some(names) = sample_names {
                 // User-provided names
-                if names.len() != expanded_reads.len() {
+                if names.len() != expanded_samples.len() {
                     return Err(anyhow::anyhow!(
                         "Number of sample names ({}) must match number of samples ({})",
                         names.len(),
-                        expanded_reads.len()
+                        expanded_samples.len()
                     ));
                 }
                 names.clone()
@@ -508,7 +508,7 @@ fn main() -> Result<()> {
 
             let config = grate::ContainmentConfig {
                 targets_path: targets.clone(),
-                reads_paths: expanded_reads,
+                sample_paths: expanded_samples,
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
                 smer_length: *smer_length,
@@ -544,16 +544,16 @@ fn main() -> Result<()> {
             limit,
         } => {
             // Expand directories to lists of files
-            let (expanded_reads, is_directory) = expand_sample_inputs(samples)?;
+            let (expanded_samples, is_directory) = expand_sample_inputs(samples)?;
 
             // Derive or validate sample names
             let derived_sample_names: Vec<String> = if let Some(names) = sample_names {
                 // User-provided names
-                if names.len() != expanded_reads.len() {
+                if names.len() != expanded_samples.len() {
                     return Err(anyhow::anyhow!(
                         "Number of sample names ({}) must match number of samples ({})",
                         names.len(),
-                        expanded_reads.len()
+                        expanded_samples.len()
                     ));
                 }
                 names.clone()
@@ -586,12 +586,12 @@ fn main() -> Result<()> {
                 None
             };
 
-            // Detect if user wants all reads (no target filtering)
-            let include_all_reads = targets.to_string_lossy() == "-";
+            // Detect if user wants all seqs (no target filtering)
+            let include_all_seqs = targets.to_string_lossy() == "-";
 
             let config = grate::LengthHistogramConfig {
                 targets_path: targets.clone(),
-                reads_paths: expanded_reads,
+                sample_paths: expanded_samples,
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
                 smer_length: *smer_length,
@@ -603,7 +603,7 @@ fn main() -> Result<()> {
                 },
                 quiet: *quiet,
                 limit_bp,
-                include_all_reads,
+                include_all_seqs,
             };
 
             config

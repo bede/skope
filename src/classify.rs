@@ -76,7 +76,7 @@ enum Classification {
 
 #[derive(Debug, Clone, Default)]
 struct GroupCounts {
-    reads: u64,
+    seqs: u64,
     bases: u64,
     group_kmers_seen: u64,
     unique_kmers_seen: u64,
@@ -85,11 +85,11 @@ struct GroupCounts {
 #[derive(Debug, Clone, Default)]
 struct SampleClassificationResult {
     group_counts: Vec<GroupCounts>,
-    ambiguous_reads: u64,
+    ambiguous_seqs: u64,
     ambiguous_bases: u64,
-    unclassified_reads: u64,
+    unclassified_seqs: u64,
     unclassified_bases: u64,
-    total_reads: u64,
+    total_seqs: u64,
     total_bases: u64,
 }
 
@@ -106,7 +106,7 @@ pub struct BuildConfig {
 
 pub struct ClassifyConfig {
     pub index_path: PathBuf,
-    pub reads_paths: Vec<Vec<PathBuf>>,
+    pub sample_paths: Vec<Vec<PathBuf>>,
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
     pub smer_length: u8,
@@ -115,7 +115,7 @@ pub struct ClassifyConfig {
     pub threads: usize,
     pub limit_bp: Option<u64>,
     pub output_path: Option<PathBuf>,
-    pub per_read: bool,
+    pub per_seq: bool,
     pub discriminatory: bool,
     pub quiet: bool,
 }
@@ -601,8 +601,8 @@ pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, 
 
 // ── Classification pipeline ───────────────────────────────────────────────────
 
-/// Classify a single read's k-mers against the index
-fn classify_read(
+/// Classify a single sequence's k-mers against the index
+fn classify_seq(
     hits: &mut [u64; 64],
     num_groups: usize,
     total_kmers: usize,
@@ -643,21 +643,21 @@ fn update_classify_spinner(
     if let Some(spinner) = spinner {
         let stats = global_stats.lock();
         let elapsed = start_time.elapsed();
-        let reads_per_sec = stats.total_seqs as f64 / elapsed.as_secs_f64();
+        let seqs_per_sec = stats.total_seqs as f64 / elapsed.as_secs_f64();
         let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
 
         spinner.lock().set_message(format!(
-            "Classifying: {} reads ({}). {:.0} reads/s ({})",
+            "Classifying: {} seqs ({}). {:.0} seqs/s ({})",
             stats.total_seqs,
             format_bp(stats.total_bp as usize),
-            reads_per_sec,
+            seqs_per_sec,
             format_bp_per_sec(bp_per_sec)
         ));
     }
 }
 
-/// Classify a read's k-mers against the index, populating hits array
-fn classify_read_kmers(
+/// Classify a sequence's k-mers against the index, populating hits array
+fn classify_seq_kmers(
     seq: &[u8],
     hasher: &KmerHasher,
     kmer_length: u8,
@@ -705,7 +705,7 @@ fn classify_read_kmers(
         _ => panic!("Mismatch between MinimizerVec and ClassificationIndex types"),
     }
 
-    let classification = classify_read(
+    let classification = classify_seq(
         hits,
         num_groups,
         total_kmers,
@@ -719,12 +719,12 @@ fn classify_read_kmers(
 /// Consolidated global state for summary classification
 #[derive(Clone)]
 struct GlobalClassifyState {
-    group_reads: Vec<u64>,
+    group_seqs: Vec<u64>,
     group_bases: Vec<u64>,
     group_kmer_hits: Vec<u64>,
-    ambiguous_reads: u64,
+    ambiguous_seqs: u64,
     ambiguous_bases: u64,
-    unclassified_reads: u64,
+    unclassified_seqs: u64,
     unclassified_bases: u64,
     stats: ProcessingStats,
 }
@@ -732,19 +732,19 @@ struct GlobalClassifyState {
 impl GlobalClassifyState {
     fn new(num_groups: usize) -> Self {
         Self {
-            group_reads: vec![0; num_groups],
+            group_seqs: vec![0; num_groups],
             group_bases: vec![0; num_groups],
             group_kmer_hits: vec![0; num_groups],
-            ambiguous_reads: 0,
+            ambiguous_seqs: 0,
             ambiguous_bases: 0,
-            unclassified_reads: 0,
+            unclassified_seqs: 0,
             unclassified_bases: 0,
             stats: ProcessingStats::default(),
         }
     }
 }
 
-/// Processor for classifying reads (summary mode)
+/// Processor for classifying sequences (summary mode)
 #[derive(Clone)]
 struct ClassifySummaryProcessor {
     kmer_length: u8,
@@ -759,12 +759,12 @@ struct ClassifySummaryProcessor {
     hits: [u64; 64],
 
     // Thread-local accumulators
-    local_group_reads: Vec<u64>,
+    local_group_seqs: Vec<u64>,
     local_group_bases: Vec<u64>,
     local_group_kmer_hits: Vec<u64>,
-    local_ambiguous_reads: u64,
+    local_ambiguous_seqs: u64,
     local_ambiguous_bases: u64,
-    local_unclassified_reads: u64,
+    local_unclassified_seqs: u64,
     local_unclassified_bases: u64,
     local_stats: ProcessingStats,
 
@@ -803,12 +803,12 @@ impl ClassifySummaryProcessor {
             min_fraction,
             buffers,
             hits: [0u64; 64],
-            local_group_reads: vec![0; num_groups],
+            local_group_seqs: vec![0; num_groups],
             local_group_bases: vec![0; num_groups],
             local_group_kmer_hits: vec![0; num_groups],
-            local_ambiguous_reads: 0,
+            local_ambiguous_seqs: 0,
             local_ambiguous_bases: 0,
-            local_unclassified_reads: 0,
+            local_unclassified_seqs: 0,
             local_unclassified_bases: 0,
             local_stats: ProcessingStats::default(),
             global: Arc::new(Mutex::new(GlobalClassifyState::new(num_groups))),
@@ -832,11 +832,11 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
         }
 
         let seq = record.seq();
-        let read_len = seq.len();
+        let seq_len = seq.len();
         self.local_stats.total_seqs += 1;
-        self.local_stats.total_bp += read_len as u64;
+        self.local_stats.total_bp += seq_len as u64;
 
-        let (_total_kmers, classification) = classify_read_kmers(
+        let (_total_kmers, classification) = classify_seq_kmers(
             &seq, &self.hasher, self.kmer_length, self.smer_length,
             &mut self.buffers, &mut self.hits, self.num_groups,
             &self.index, self.min_hits, self.min_fraction,
@@ -844,17 +844,17 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
 
         match classification {
             Classification::Classified(group_idx) => {
-                self.local_group_reads[group_idx] += 1;
-                self.local_group_bases[group_idx] += read_len as u64;
+                self.local_group_seqs[group_idx] += 1;
+                self.local_group_bases[group_idx] += seq_len as u64;
                 self.local_group_kmer_hits[group_idx] += self.hits[group_idx];
             }
             Classification::Ambiguous(_) => {
-                self.local_ambiguous_reads += 1;
-                self.local_ambiguous_bases += read_len as u64;
+                self.local_ambiguous_seqs += 1;
+                self.local_ambiguous_bases += seq_len as u64;
             }
             Classification::Unclassified => {
-                self.local_unclassified_reads += 1;
-                self.local_unclassified_bases += read_len as u64;
+                self.local_unclassified_seqs += 1;
+                self.local_unclassified_bases += seq_len as u64;
             }
         }
 
@@ -865,21 +865,21 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
         let mut g = self.global.lock();
 
         for i in 0..self.num_groups {
-            g.group_reads[i] += self.local_group_reads[i];
+            g.group_seqs[i] += self.local_group_seqs[i];
             g.group_bases[i] += self.local_group_bases[i];
             g.group_kmer_hits[i] += self.local_group_kmer_hits[i];
-            self.local_group_reads[i] = 0;
+            self.local_group_seqs[i] = 0;
             self.local_group_bases[i] = 0;
             self.local_group_kmer_hits[i] = 0;
         }
 
-        g.ambiguous_reads += self.local_ambiguous_reads;
+        g.ambiguous_seqs += self.local_ambiguous_seqs;
         g.ambiguous_bases += self.local_ambiguous_bases;
-        g.unclassified_reads += self.local_unclassified_reads;
+        g.unclassified_seqs += self.local_unclassified_seqs;
         g.unclassified_bases += self.local_unclassified_bases;
-        self.local_ambiguous_reads = 0;
+        self.local_ambiguous_seqs = 0;
         self.local_ambiguous_bases = 0;
-        self.local_unclassified_reads = 0;
+        self.local_unclassified_seqs = 0;
         self.local_unclassified_bases = 0;
 
         g.stats.total_seqs += self.local_stats.total_seqs;
@@ -895,13 +895,13 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
             if let Some(ref spinner) = self.spinner {
                 let g = self.global.lock();
                 let elapsed = self.start_time.elapsed();
-                let reads_per_sec = g.stats.total_seqs as f64 / elapsed.as_secs_f64();
+                let seqs_per_sec = g.stats.total_seqs as f64 / elapsed.as_secs_f64();
                 let bp_per_sec = g.stats.total_bp as f64 / elapsed.as_secs_f64();
                 spinner.lock().set_message(format!(
-                    "Classifying: {} reads ({}). {:.0} reads/s ({})",
+                    "Classifying: {} seqs ({}). {:.0} seqs/s ({})",
                     g.stats.total_seqs,
                     format_bp(g.stats.total_bp as usize),
-                    reads_per_sec,
+                    seqs_per_sec,
                     format_bp_per_sec(bp_per_sec)
                 ));
             }
@@ -913,9 +913,9 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
     }
 }
 
-/// Processor for per-read classification output
+/// Processor for per-sequence classification output
 #[derive(Clone)]
-struct ClassifyPerReadProcessor {
+struct ClassifyPerSeqProcessor {
     kmer_length: u8,
     smer_length: u8,
     hasher: KmerHasher,
@@ -940,7 +940,7 @@ struct ClassifyPerReadProcessor {
     limit_bp: Option<u64>,
 }
 
-impl ClassifyPerReadProcessor {
+impl ClassifyPerSeqProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
@@ -985,7 +985,7 @@ impl ClassifyPerReadProcessor {
 
 }
 
-impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerReadProcessor {
+impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerSeqProcessor {
     fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
         if let Some(limit) = self.limit_bp {
             let global_bp = self.global_stats.lock().total_bp;
@@ -997,12 +997,12 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerReadProcessor {
         }
 
         let seq = record.seq();
-        let read_id = String::from_utf8_lossy(record.id());
-        let read_len = seq.len();
+        let seq_id = String::from_utf8_lossy(record.id());
+        let seq_len = seq.len();
         self.local_stats.total_seqs += 1;
-        self.local_stats.total_bp += read_len as u64;
+        self.local_stats.total_bp += seq_len as u64;
 
-        let (total_kmers, classification) = classify_read_kmers(
+        let (total_kmers, classification) = classify_seq_kmers(
             &seq, &self.hasher, self.kmer_length, self.smer_length,
             &mut self.buffers, &mut self.hits, self.num_groups,
             &self.index, self.min_hits, self.min_fraction,
@@ -1016,18 +1016,18 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerReadProcessor {
                     self.local_output,
                     "{}\t{}\tclassified\t{}\t{}\t{}\t{}",
                     self.sample_name,
-                    read_id,
+                    seq_id,
                     self.group_names[group_idx],
                     self.hits[group_idx],
                     total_kmers,
-                    read_len,
+                    seq_len,
                 );
             }
             Classification::Unclassified => {
                 let _ = writeln!(
                     self.local_output,
                     "{}\t{}\tunclassified\t.\t0\t{}\t{}",
-                    self.sample_name, read_id, total_kmers, read_len,
+                    self.sample_name, seq_id, total_kmers, seq_len,
                 );
             }
             Classification::Ambiguous(mask) => {
@@ -1051,7 +1051,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerReadProcessor {
                 let _ = writeln!(
                     self.local_output,
                     "{}\t{}\tambiguous\t{}\t{}\t{}\t{}",
-                    self.sample_name, read_id, groups, hits_str, total_kmers, read_len,
+                    self.sample_name, seq_id, groups, hits_str, total_kmers, seq_len,
                 );
             }
         }
@@ -1162,8 +1162,8 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
     // Process samples
     use rayon::prelude::*;
 
-    if config.per_read {
-        // Per-read output mode
+    if config.per_seq {
+        // Per-sequence output mode
         let writer: Box<dyn Write + Send> = if let Some(path) = &config.output_path {
             Box::new(BufWriter::new(File::create(path)?))
         } else {
@@ -1176,25 +1176,25 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             let mut w = writer.lock();
             writeln!(
                 w,
-                "sample\tread_id\tclassification\tgroup\thits\tread_kmers\tread_length"
+                "sample\tseq_id\tclassification\tgroup\thits\tseq_kmers\tseq_length"
             )?;
         }
 
         for (sample_paths, sample_name) in
-            config.reads_paths.iter().zip(&config.sample_names)
+            config.sample_paths.iter().zip(&config.sample_names)
         {
-            for reads_path in sample_paths {
-                let in_path = if reads_path.to_string_lossy() == "-" {
+            for seq_path in sample_paths {
+                let in_path = if seq_path.to_string_lossy() == "-" {
                     None
                 } else {
-                    Some(reads_path.as_path())
+                    Some(seq_path.as_path())
                 };
 
                 let spinner = create_spinner(config.quiet)?;
 
                 let pr_start = Instant::now();
 
-                let mut processor = ClassifyPerReadProcessor::new(
+                let mut processor = ClassifyPerSeqProcessor::new(
                     kmer_length,
                     smer_length,
                     Arc::clone(&index),
@@ -1222,7 +1222,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                     let elapsed = pr_start.elapsed();
                     let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
                     eprintln!(
-                        "Sample {}: {} reads ({}) ({})",
+                        "Sample {}: {} seqs ({}) ({})",
                         sample_name,
                         stats.total_seqs,
                         format_bp(stats.total_bp as usize),
@@ -1235,12 +1235,12 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         writer.lock().flush()?;
     } else {
         // Summary mode
-        let is_multisample = config.reads_paths.len() > 1;
+        let is_multisample = config.sample_paths.len() > 1;
 
         let completed = if is_multisample && !config.quiet {
             eprint!(
                 "\x1B[2K\rSamples: processed 0 of {}…",
-                config.reads_paths.len()
+                config.sample_paths.len()
             );
             Some(Arc::new(Mutex::new(0usize)))
         } else {
@@ -1251,7 +1251,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         };
 
         let sample_results: Vec<(String, SampleClassificationResult)> = config
-            .reads_paths
+            .sample_paths
             .par_iter()
             .zip(&config.sample_names)
             .map(|(sample_paths, sample_name)| {
@@ -1275,7 +1275,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                     eprint!(
                         "\rSamples: processed {} of {}…",
                         *count,
-                        config.reads_paths.len()
+                        config.sample_paths.len()
                     );
                 }
 
@@ -1297,16 +1297,16 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 
         writeln!(
             writer,
-            "sample\tgroup\treads\tbases\tpct_reads\tpct_bases\tgroup_kmers\tunique_kmers"
+            "sample\tgroup\tseqs\tseqs_pct\tbases\tbases_pct\tgroup_kmers\tunique_kmers"
         )?;
 
         for (sample_name, result) in &sample_results {
-            let total_reads = result.total_reads as f64;
+            let total_seqs = result.total_seqs as f64;
             let total_bases = result.total_bases as f64;
 
             for (group_idx, counts) in result.group_counts.iter().enumerate() {
-                let pct_reads = if total_reads > 0.0 {
-                    counts.reads as f64 / total_reads * 100.0
+                let pct_seqs = if total_seqs > 0.0 {
+                    counts.seqs as f64 / total_seqs * 100.0
                 } else {
                     0.0
                 };
@@ -1318,12 +1318,12 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 
                 writeln!(
                     writer,
-                    "{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{}\t{}",
+                    "{}\t{}\t{}\t{:.2}\t{}\t{:.2}\t{}\t{}",
                     sample_name,
                     group_names[group_idx],
-                    counts.reads,
+                    counts.seqs,
+                    pct_seqs,
                     counts.bases,
-                    pct_reads,
                     pct_bases,
                     counts.group_kmers_seen,
                     counts.unique_kmers_seen,
@@ -1331,8 +1331,8 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             }
 
             // Ambiguous row
-            let pct_reads = if total_reads > 0.0 {
-                result.ambiguous_reads as f64 / total_reads * 100.0
+            let pct_seqs = if total_seqs > 0.0 {
+                result.ambiguous_seqs as f64 / total_seqs * 100.0
             } else {
                 0.0
             };
@@ -1343,13 +1343,13 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             };
             writeln!(
                 writer,
-                "{}\tambiguous\t{}\t{}\t{:.2}\t{:.2}\t.\t.",
-                sample_name, result.ambiguous_reads, result.ambiguous_bases, pct_reads, pct_bases,
+                "{}\tambiguous\t{}\t{:.2}\t{}\t{:.2}\t.\t.",
+                sample_name, result.ambiguous_seqs, pct_seqs, result.ambiguous_bases, pct_bases,
             )?;
 
             // Unclassified row
-            let pct_reads = if total_reads > 0.0 {
-                result.unclassified_reads as f64 / total_reads * 100.0
+            let pct_seqs = if total_seqs > 0.0 {
+                result.unclassified_seqs as f64 / total_seqs * 100.0
             } else {
                 0.0
             };
@@ -1360,11 +1360,11 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             };
             writeln!(
                 writer,
-                "{}\tunclassified\t{}\t{}\t{:.2}\t{:.2}\t.\t.",
+                "{}\tunclassified\t{}\t{:.2}\t{}\t{:.2}\t.\t.",
                 sample_name,
-                result.unclassified_reads,
+                result.unclassified_seqs,
+                pct_seqs,
                 result.unclassified_bases,
-                pct_reads,
                 pct_bases,
             )?;
         }
@@ -1399,11 +1399,11 @@ fn process_sample_summary(
         ..Default::default()
     };
 
-    for reads_path in sample_paths {
-        let in_path = if reads_path.to_string_lossy() == "-" {
+    for seq_path in sample_paths {
+        let in_path = if seq_path.to_string_lossy() == "-" {
             None
         } else {
-            Some(reads_path.as_path())
+            Some(seq_path.as_path())
         };
 
         let spinner = create_spinner(quiet)?;
@@ -1433,17 +1433,17 @@ fn process_sample_summary(
         // Merge results
         let g = processor.global.lock();
         for i in 0..num_groups {
-            combined.group_counts[i].reads += g.group_reads[i];
+            combined.group_counts[i].seqs += g.group_seqs[i];
             combined.group_counts[i].bases += g.group_bases[i];
             combined.group_counts[i].group_kmers_seen += g.group_kmer_hits[i];
         }
 
-        combined.ambiguous_reads += g.ambiguous_reads;
+        combined.ambiguous_seqs += g.ambiguous_seqs;
         combined.ambiguous_bases += g.ambiguous_bases;
-        combined.unclassified_reads += g.unclassified_reads;
+        combined.unclassified_seqs += g.unclassified_seqs;
         combined.unclassified_bases += g.unclassified_bases;
 
-        combined.total_reads += g.stats.total_seqs;
+        combined.total_seqs += g.stats.total_seqs;
         combined.total_bases += g.stats.total_bp;
         let stats = g.stats.clone();
         drop(g);
@@ -1452,7 +1452,7 @@ fn process_sample_summary(
             let elapsed = file_start.elapsed();
             let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
             eprintln!(
-                "Sample {}: {} reads ({}) ({})",
+                "Sample {}: {} seqs ({}) ({})",
                 sample_name,
                 stats.total_seqs,
                 format_bp(stats.total_bp as usize),
