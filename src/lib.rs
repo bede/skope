@@ -174,7 +174,7 @@ pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Derive sample/group name from file path by stripping directory and extensions
+/// Derive sample/class name from file path by stripping directory and extensions
 pub fn derive_sample_name(path: &Path, is_directory: bool) -> String {
     // Handle stdin
     if path.to_string_lossy() == "-" {

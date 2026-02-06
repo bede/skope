@@ -100,10 +100,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum IndexCommands {
-    /// Build a classification index from a directory of FASTA files (one per group)
+    /// Build a classification index from a directory of FASTA files (one per class)
     Build {
-        /// Directory containing FASTA files (one per group/class)
-        groups: PathBuf,
+        /// Directory containing FASTA files (one per class)
+        classes: PathBuf,
 
         /// K-mer length (1-61, must be odd)
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
@@ -133,9 +133,9 @@ enum Commands {
     #[command(subcommand)]
     Index(IndexCommands),
 
-    /// Classify sequences into groups based on k-mer membership
+    /// Classify sequences into classes based on k-mer membership
     Classify {
-        /// Path to .gci index file or directory of FASTA files (one per group)
+        /// Path to .idx index file or directory of FASTA files (one per class)
         index: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin)
@@ -150,15 +150,15 @@ enum Commands {
         #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
-        /// Minimum k-mer hits to classify a sequence to a group
+        /// Minimum k-mer hits to classify a sequence to a class
         #[arg(short = 'm', long = "min-hits", default_value_t = 1)]
         min_hits: u64,
 
-        /// Minimum fraction of sequence k-mers hitting a group
+        /// Minimum fraction of sequence k-mers hitting a class
         #[arg(short = 'r', long = "min-fraction", default_value_t = 0.0)]
         min_fraction: f64,
 
-        /// Consider only k-mers unique to each group
+        /// Consider only k-mers unique to each class
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
@@ -312,7 +312,7 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Index(index_cmd) => match index_cmd {
             IndexCommands::Build {
-                groups,
+                classes,
                 kmer_length,
                 smer_length,
                 threads,
@@ -321,10 +321,10 @@ fn main() -> Result<()> {
             } => {
                 validate_k_s(*kmer_length, *smer_length)?;
 
-                if !groups.is_dir() {
+                if !classes.is_dir() {
                     return Err(anyhow::anyhow!(
-                        "Groups path must be a directory: {}",
-                        groups.display()
+                        "Classes path must be a directory: {}",
+                        classes.display()
                     ));
                 }
 
@@ -336,7 +336,7 @@ fn main() -> Result<()> {
                 }
 
                 let config = grate::BuildConfig {
-                    groups_dir: groups.clone(),
+                    classes_dir: classes.clone(),
                     kmer_length: *kmer_length,
                     smer_length: *smer_length,
                     threads: *threads,
