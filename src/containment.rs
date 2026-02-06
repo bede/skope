@@ -1,15 +1,17 @@
+use crate::{
+    ProcessingStats, RapidHashSet, create_spinner, format_bp, format_bp_per_sec,
+    handle_process_result, reader_with_inferred_batch_size,
+};
 use crate::minimizers::{
     Buffers, KmerHasher, MinimizerVec, fill_syncmers, fill_syncmers_with_positions,
 };
 use anyhow::Result;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::ProgressBar;
 use paraseq::Record;
-use paraseq::fastx::Reader;
 use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
-use std::hash::BuildHasher;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,21 +19,6 @@ use std::time::Instant;
 
 /// Alias for abund counts
 type CountDepth = u16;
-
-/// BuildHasher using rapidhash with fixed seed for fast init
-#[derive(Clone, Default)]
-pub struct FixedRapidHasher;
-
-impl BuildHasher for FixedRapidHasher {
-    type Hasher = rapidhash::fast::RapidHasher<'static>;
-
-    fn build_hasher(&self) -> Self::Hasher {
-        rapidhash::fast::SeedableState::fixed().build_hasher()
-    }
-}
-
-/// RapidHashSet using rapidhash with fixed seed for fast init
-pub type RapidHashSet<T> = HashSet<T, FixedRapidHasher>;
 
 /// Sort order for results
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,14 +154,6 @@ impl ContainmentConfig {
     pub fn execute(&self) -> Result<()> {
         run_containment_analysis(self)
     }
-}
-
-fn reader_with_inferred_batch_size(
-    in_path: Option<&Path>,
-) -> Result<Reader<Box<dyn std::io::Read + Send>>> {
-    let mut reader = paraseq::fastx::Reader::from_optional_path(in_path)?;
-    reader.update_batch_size_in_bp(256 * 1024)?;
-    Ok(reader)
 }
 
 /// Processor for collecting target sequence records with syncmers
@@ -316,18 +295,7 @@ pub fn process_targets_file(
 
     let reader = reader_with_inferred_batch_size(in_path)?;
 
-    // Progress bar
-    let spinner = if !quiet {
-        let pb = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-                .template("{msg}")?,
-        );
-        Some(Arc::new(Mutex::new(pb)))
-    } else {
-        None
-    };
+    let spinner = create_spinner(quiet)?;
 
     let start_time = std::time::Instant::now();
     let mut processor =
@@ -344,13 +312,6 @@ pub fn process_targets_file(
     let targets = Arc::try_unwrap(processor.targets).unwrap().into_inner();
 
     Ok(targets)
-}
-
-#[derive(Clone, Default, Debug)]
-struct ProcessingStats {
-    total_seqs: u64,
-    total_bp: u64,
-    last_reported: u64,
 }
 
 /// Processor for counting syncmer depths from reads
@@ -568,19 +529,10 @@ fn process_reads_file(
     };
     let reader = reader_with_inferred_batch_size(in_path)?;
 
-    // Progress bar
-    let spinner = if !quiet {
-        let pb = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-                .template("{msg}")?,
-        );
-        pb.set_message("Processing sample: 0 reads (0bp)");
-        Some(Arc::new(Mutex::new(pb)))
-    } else {
-        None
-    };
+    let spinner = create_spinner(quiet)?;
+    if let Some(ref pb) = spinner {
+        pb.lock().set_message("Processing sample: 0 reads (0bp)");
+    }
 
     let total_target_syncmers = targets_minimizers.len();
 
@@ -594,22 +546,9 @@ fn process_reads_file(
         limit_bp,
     );
 
-    // Process reads - may terminate early if sample limit reached
     let process_result = reader.process_parallel(&mut processor, threads);
+    handle_process_result(process_result)?;
 
-    // Check if we stopped due to sampling
-    let stopped_early = if let Err(ref e) = process_result {
-        e.to_string().contains("Sample limit reached")
-    } else {
-        false
-    };
-
-    // If it's not a sample stop, propagate the error
-    if !stopped_early {
-        process_result?;
-    }
-
-    // Finish spinner
     if let Some(ref pb) = spinner {
         pb.lock().finish_with_message("");
     }
@@ -760,29 +699,6 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     }
 }
 
-pub fn format_bp(bp: usize) -> String {
-    if bp >= 1_000_000_000 {
-        format!("{:.1}Gbp", bp as f64 / 1_000_000_000.0)
-    } else if bp >= 1_000_000 {
-        format!("{:.1}Mbp", bp as f64 / 1_000_000.0)
-    } else if bp >= 1_000 {
-        format!("{:.1}Kbp", bp as f64 / 1_000.0)
-    } else {
-        format!("{}bp", bp)
-    }
-}
-
-pub fn format_bp_per_sec(bp_per_sec: f64) -> String {
-    if bp_per_sec >= 1_000_000_000.0 {
-        format!("{:.1} Gbp/s", bp_per_sec / 1_000_000_000.0)
-    } else if bp_per_sec >= 1_000_000.0 {
-        format!("{:.1} Mbp/s", bp_per_sec / 1_000_000.0)
-    } else if bp_per_sec >= 1_000.0 {
-        format!("{:.1} Kbp/s", bp_per_sec / 1_000.0)
-    } else {
-        format!("{:.0} bp/s", bp_per_sec)
-    }
-}
 
 /// Process a single sample's reads and calculate statistics
 fn process_single_sample(
@@ -1516,22 +1432,6 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_bp() {
-        assert_eq!(format_bp(500), "500bp");
-        assert_eq!(format_bp(1500), "1.5Kbp");
-        assert_eq!(format_bp(1500000), "1.5Mbp");
-        assert_eq!(format_bp(1500000000), "1.5Gbp");
-    }
-
-    #[test]
-    fn test_format_bp_per_sec() {
-        assert_eq!(format_bp_per_sec(500.0), "500 bp/s");
-        assert_eq!(format_bp_per_sec(1500.0), "1.5 Kbp/s");
-        assert_eq!(format_bp_per_sec(1500000.0), "1.5 Mbp/s");
-        assert_eq!(format_bp_per_sec(1500000000.0), "1.5 Gbp/s");
-    }
 
     #[test]
     fn test_truncate_string() {

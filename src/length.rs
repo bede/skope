@@ -1,11 +1,12 @@
-use crate::containment::{
-    MinimizerSet, TimingStats, format_bp, format_bp_per_sec, process_targets_file,
+use crate::{
+    ProcessingStats, RapidHashSet, create_spinner, format_bp, format_bp_per_sec,
+    handle_process_result, reader_with_inferred_batch_size,
 };
+use crate::containment::{MinimizerSet, TimingStats, process_targets_file};
 use crate::minimizers::{Buffers, KmerHasher, MinimizerVec, fill_syncmers};
 use anyhow::Result;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::ProgressBar;
 use paraseq::Record;
-use paraseq::fastx::Reader;
 use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -63,21 +64,6 @@ impl LengthHistogramConfig {
     pub fn execute(&self) -> Result<()> {
         run_length_histogram_analysis(self)
     }
-}
-
-fn reader_with_inferred_batch_size(
-    in_path: Option<&Path>,
-) -> Result<Reader<Box<dyn std::io::Read + Send>>> {
-    let mut reader = paraseq::fastx::Reader::from_optional_path(in_path)?;
-    reader.update_batch_size_in_bp(256 * 1024)?;
-    Ok(reader)
-}
-
-#[derive(Clone, Default, Debug)]
-struct ProcessingStats {
-    total_seqs: u64,
-    total_bp: u64,
-    last_reported: u64,
 }
 
 /// Processor for collecting read lengths with syncmer hits
@@ -268,19 +254,10 @@ fn process_reads_file(
     };
     let reader = reader_with_inferred_batch_size(in_path)?;
 
-    // Progress bar
-    let spinner = if !quiet {
-        let pb = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
-                .template("{msg}")?,
-        );
-        pb.set_message("Processing sample: 0 reads (0bp)");
-        Some(Arc::new(Mutex::new(pb)))
-    } else {
-        None
-    };
+    let spinner = create_spinner(quiet)?;
+    if let Some(ref pb) = spinner {
+        pb.lock().set_message("Processing sample: 0 reads (0bp)");
+    }
 
     let start_time = Instant::now();
     let mut processor = LengthHistogramProcessor::new(
@@ -293,22 +270,9 @@ fn process_reads_file(
         limit_bp,
     );
 
-    // Process reads - may terminate early if sample limit reached
     let process_result = reader.process_parallel(&mut processor, threads);
+    handle_process_result(process_result)?;
 
-    // Check if we stopped due to sampling
-    let stopped_early = if let Err(ref e) = process_result {
-        e.to_string().contains("Sample limit reached")
-    } else {
-        false
-    };
-
-    // If it's not a sample stop, propagate the error
-    if !stopped_early {
-        process_result?;
-    }
-
-    // Finish spinner
     if let Some(ref pb) = spinner {
         pb.lock().finish_with_message("");
     }
@@ -442,7 +406,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
             eprintln!("Targets: none (target filtering disabled)");
         }
         // Create empty set - won't be used
-        use crate::containment::RapidHashSet;
+
         let empty_set = if config.kmer_length <= 32 {
             MinimizerSet::U64(RapidHashSet::default())
         } else {
@@ -465,7 +429,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
             eprint!("Building syncmer set…\r");
         }
         let targets_minimizers = if config.kmer_length <= 32 {
-            use crate::containment::RapidHashSet;
+    
             let mut set = RapidHashSet::default();
             for target in &targets {
                 if let MinimizerSet::U64(target_set) = &target.minimizers {
@@ -474,7 +438,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
             }
             MinimizerSet::U64(set)
         } else {
-            use crate::containment::RapidHashSet;
+    
             let mut set = RapidHashSet::default();
             for target in &targets {
                 if let MinimizerSet::U128(target_set) = &target.minimizers {

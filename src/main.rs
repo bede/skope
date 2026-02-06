@@ -1,56 +1,12 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use grate::{derive_sample_name, find_fastx_files, validate_k_s};
 
 const DEFAULT_KMER_LENGTH: u8 = 31;
 const DEFAULT_SMER_LENGTH: u8 = 9;
-
-/// Derive sample name from file path by stripping directory and extensions
-fn derive_sample_name(path: &Path, is_directory: bool) -> String {
-    // Handle stdin
-    if path.to_string_lossy() == "-" {
-        return "stdin".to_string();
-    }
-
-    // Get filename without directory
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
-
-    // For directories, use the directory name directly
-    if is_directory {
-        return filename.to_string();
-    }
-
-    // For files, strip known extensions
-    let mut name = filename.to_string();
-
-    // Strip known extensions in order (handles chained extensions like .fastq.gz)
-    let extensions = [".xz", ".gz", ".zst", ".fasta", ".fa", ".fastq", ".fq"];
-
-    loop {
-        let original_len = name.len();
-        for ext in &extensions {
-            if name.ends_with(ext) {
-                name = name[..name.len() - ext.len()].to_string();
-                break;
-            }
-        }
-        // If no extension was removed, we're done
-        if name.len() == original_len {
-            break;
-        }
-    }
-
-    // Fallback if everything was stripped
-    if name.is_empty() {
-        filename.to_string()
-    } else {
-        name
-    }
-}
 
 /// Validate that sample names are unique
 fn validate_sample_names(names: &[String]) -> Result<()> {
@@ -72,77 +28,6 @@ fn validate_sample_names(names: &[String]) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Find all fastx files in a directory (non-recursive, following symlinks)
-fn find_fastx_files_in_dir(dir_path: &Path) -> Result<Vec<PathBuf>> {
-    // Extensions to match
-    const FASTX_EXTENSIONS: &[&str] = &[
-        ".fasta",
-        ".fa",
-        ".fastq",
-        ".fq",
-        ".fasta.gz",
-        ".fa.gz",
-        ".fastq.gz",
-        ".fq.gz",
-        ".fasta.xz",
-        ".fa.xz",
-        ".fastq.xz",
-        ".fq.xz",
-        ".fasta.zst",
-        ".fa.zst",
-        ".fastq.zst",
-        ".fq.zst",
-    ];
-
-    let mut fastx_files = Vec::new();
-
-    // Read directory entries
-    let entries = std::fs::read_dir(dir_path)
-        .with_context(|| format!("Failed to read directory: {}", dir_path.display()))?;
-
-    for entry in entries {
-        let entry = entry
-            .with_context(|| format!("Failed to read directory entry in {}", dir_path.display()))?;
-
-        let path = entry.path();
-
-        // Skip hidden files (starting with '.')
-        if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.starts_with('.') {
-                continue;
-            }
-
-        // Follow symlinks via metadata()
-        let metadata = std::fs::metadata(&path)
-            .with_context(|| format!("Failed to access: {}", path.display()))?;
-
-        // Only process files (not subdirectories)
-        if !metadata.is_file() {
-            continue;
-        }
-
-        // Check if file has fastx extension (case-insensitive)
-        let path_str = path.to_string_lossy().to_lowercase();
-        if FASTX_EXTENSIONS.iter().any(|ext| path_str.ends_with(ext)) {
-            fastx_files.push(path);
-        }
-    }
-
-    // Error if no fastx files found
-    if fastx_files.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Directory contains no fastx files: {}. Expected files with extensions: {}",
-            dir_path.display(),
-            FASTX_EXTENSIONS.join(", ")
-        ));
-    }
-
-    // Sort for deterministic ordering
-    fastx_files.sort();
-
-    Ok(fastx_files)
 }
 
 /// Expand sample inputs (files and directories) into lists of files per sample
@@ -170,7 +55,7 @@ fn expand_sample_inputs(inputs: &[PathBuf]) -> Result<(Vec<Vec<PathBuf>>, Vec<bo
             expanded_samples.push(vec![input.clone()]);
             is_directory.push(false);
         } else if metadata.is_dir() {
-            let files = find_fastx_files_in_dir(input)?;
+            let files = find_fastx_files(input)?;
             expanded_samples.push(files);
             is_directory.push(true);
         } else {
@@ -272,6 +157,10 @@ enum Commands {
         /// Minimum fraction of read k-mers hitting a group
         #[arg(short = 'r', long = "min-fraction", default_value_t = 0.0)]
         min_fraction: f64,
+
+        /// Consider only k-mers unique to each group
+        #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
+        discriminatory: bool,
 
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
@@ -430,15 +319,7 @@ fn main() -> Result<()> {
                 output,
                 quiet,
             } => {
-                let k = *kmer_length as usize;
-                let s = *smer_length as usize;
-
-                if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
-                    return Err(anyhow::anyhow!(
-                        "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
-                        k, s
-                    ));
-                }
+                validate_k_s(*kmer_length, *smer_length)?;
 
                 if !groups.is_dir() {
                     return Err(anyhow::anyhow!(
@@ -480,6 +361,7 @@ fn main() -> Result<()> {
             smer_length,
             min_hits,
             min_fraction,
+            discriminatory,
             threads,
             limit,
             output,
@@ -509,14 +391,7 @@ fn main() -> Result<()> {
 
             // Only validate k/s when index is a directory
             if index.is_dir() {
-                let k = *kmer_length as usize;
-                let s = *smer_length as usize;
-                if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
-                    return Err(anyhow::anyhow!(
-                        "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
-                        k, s
-                    ));
-                }
+                validate_k_s(*kmer_length, *smer_length)?;
             }
 
             if *threads > 0 {
@@ -548,6 +423,7 @@ fn main() -> Result<()> {
                     Some(PathBuf::from(output))
                 },
                 per_read: *per_read,
+                discriminatory: *discriminatory,
                 quiet: *quiet,
             };
 
@@ -597,23 +473,7 @@ fn main() -> Result<()> {
 
             // Validate uniqueness
             validate_sample_names(&derived_sample_names)?;
-            // Validate k-mer and s-mer size constraints for open syncmers
-            let k = *kmer_length as usize;
-            let s = *smer_length as usize;
-
-            // Check constraints:
-            // - k <= 61 (fits in packed representation)
-            // - 1 <= s < k (valid s-mer within k-mer)
-            // - s <= 32 (s-mer must fit in hasher's u64 representation)
-            // - k must be odd (for canonical strand determination)
-            // - s must be odd (for open syncmers, w = k - s + 1 must be odd)
-            if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
-                return Err(anyhow::anyhow!(
-                    "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
-                    k,
-                    s
-                ));
-            }
+            validate_k_s(*kmer_length, *smer_length)?;
 
             // Configure thread pool if specified (non-zero)
             if *threads > 0 {
@@ -709,23 +569,7 @@ fn main() -> Result<()> {
             // Validate uniqueness
             validate_sample_names(&derived_sample_names)?;
 
-            // Validate k-mer and s-mer size constraints for open syncmers
-            let k = *kmer_length as usize;
-            let s = *smer_length as usize;
-
-            // Check constraints:
-            // - k <= 61 (fits in packed representation)
-            // - 1 <= s < k (valid s-mer within k-mer)
-            // - s <= 32 (s-mer must fit in hasher's u64 representation)
-            // - k must be odd (for canonical strand determination)
-            // - s must be odd (for open syncmers, w = k - s + 1 must be odd)
-            if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
-                return Err(anyhow::anyhow!(
-                    "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
-                    k,
-                    s
-                ));
-            }
+            validate_k_s(*kmer_length, *smer_length)?;
 
             // Configure thread pool if specified (non-zero)
             if *threads > 0 {
