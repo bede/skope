@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_KMER_LENGTH: u8 = 31;
-const DEFAULT_SMER_LENGTH: u8 = 15;
+const DEFAULT_SMER_LENGTH: u8 = 9;
 
 /// Derive sample name from file path by stripping directory and extensions
 fn derive_sample_name(path: &Path, is_directory: bool) -> String {
@@ -214,7 +214,90 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum IndexCommands {
+    /// Build a classification index from a directory of FASTA files (one per group)
+    Build {
+        /// Directory containing FASTA files (one per group/class)
+        groups: PathBuf,
+
+        /// K-mer length (1-61, must be odd)
+        #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
+        kmer_length: u8,
+
+        /// S-mer length used for open syncmer selection (s < k, s must be odd)
+        #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        smer_length: u8,
+
+        /// Number of execution threads (0 = auto)
+        #[arg(short = 't', long = "threads", default_value_t = 8)]
+        threads: usize,
+
+        /// Path to output index file (- for stdout)
+        #[arg(short = 'o', long = "output", default_value = "-")]
+        output: String,
+
+        /// Suppress progress reporting
+        #[arg(short = 'q', long = "quiet", default_value_t = false)]
+        quiet: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
+    /// Build and manage classification indexes
+    #[command(subcommand)]
+    Index(IndexCommands),
+
+    /// Classify reads into groups based on k-mer membership
+    Classify {
+        /// Path to .gci index file or directory of FASTA files (one per group)
+        index: PathBuf,
+
+        /// Path(s) to fastx files/dirs (- for stdin)
+        #[arg(required = true)]
+        samples: Vec<PathBuf>,
+
+        /// K-mer length (only used when index is a directory) (1-61, must be odd)
+        #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
+        kmer_length: u8,
+
+        /// S-mer length (only used when index is a directory)
+        #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        smer_length: u8,
+
+        /// Minimum k-mer hits to classify a read to a group
+        #[arg(short = 'm', long = "min-hits", default_value_t = 1)]
+        min_hits: u64,
+
+        /// Minimum fraction of read k-mers hitting a group
+        #[arg(short = 'r', long = "min-fraction", default_value_t = 0.0)]
+        min_fraction: f64,
+
+        /// Number of execution threads (0 = auto)
+        #[arg(short = 't', long = "threads", default_value_t = 8)]
+        threads: usize,
+
+        /// Terminate read processing after approximately this many bases (e.g. 50M, 10G)
+        #[arg(short = 'l', long = "limit")]
+        limit: Option<String>,
+
+        /// Path to output file (- for stdout)
+        #[arg(short = 'o', long = "output", default_value = "-")]
+        output: String,
+
+        /// Output per-read classifications instead of summary
+        #[arg(long = "per-read", default_value_t = false)]
+        per_read: bool,
+
+        /// Comma-separated sample names (default is file/dir name without extension)
+        #[arg(short = 'n', long = "names", value_delimiter = ',')]
+        sample_names: Option<Vec<String>>,
+
+        /// Suppress progress reporting
+        #[arg(short = 'q', long = "quiet", default_value_t = false)]
+        quiet: bool,
+    },
+
     /// Estimate k-mer containment & abundance in fastx file(s) or directories thereof
     Query {
         /// Path to fastx file containing target sequence record(s)
@@ -338,6 +421,140 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
+        Commands::Index(index_cmd) => match index_cmd {
+            IndexCommands::Build {
+                groups,
+                kmer_length,
+                smer_length,
+                threads,
+                output,
+                quiet,
+            } => {
+                let k = *kmer_length as usize;
+                let s = *smer_length as usize;
+
+                if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
+                    return Err(anyhow::anyhow!(
+                        "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
+                        k, s
+                    ));
+                }
+
+                if !groups.is_dir() {
+                    return Err(anyhow::anyhow!(
+                        "Groups path must be a directory: {}",
+                        groups.display()
+                    ));
+                }
+
+                if *threads > 0 {
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(*threads)
+                        .build_global()
+                        .context("Failed to initialize thread pool")?;
+                }
+
+                let config = grate::BuildConfig {
+                    groups_dir: groups.clone(),
+                    kmer_length: *kmer_length,
+                    smer_length: *smer_length,
+                    threads: *threads,
+                    output_path: if output == "-" {
+                        None
+                    } else {
+                        Some(PathBuf::from(output))
+                    },
+                    quiet: *quiet,
+                };
+
+                grate::build_classification_index(&config)
+                    .context("Failed to build classification index")?;
+            }
+        },
+
+        Commands::Classify {
+            index,
+            samples,
+            sample_names,
+            kmer_length,
+            smer_length,
+            min_hits,
+            min_fraction,
+            threads,
+            limit,
+            output,
+            per_read,
+            quiet,
+        } => {
+            let (expanded_reads, is_directory) = expand_sample_inputs(samples)?;
+
+            let derived_sample_names: Vec<String> = if let Some(names) = sample_names {
+                if names.len() != expanded_reads.len() {
+                    return Err(anyhow::anyhow!(
+                        "Number of sample names ({}) must match number of samples ({})",
+                        names.len(),
+                        expanded_reads.len()
+                    ));
+                }
+                names.clone()
+            } else {
+                samples
+                    .iter()
+                    .zip(&is_directory)
+                    .map(|(p, &is_dir)| derive_sample_name(p, is_dir))
+                    .collect()
+            };
+
+            validate_sample_names(&derived_sample_names)?;
+
+            // Only validate k/s when index is a directory
+            if index.is_dir() {
+                let k = *kmer_length as usize;
+                let s = *smer_length as usize;
+                if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
+                    return Err(anyhow::anyhow!(
+                        "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
+                        k, s
+                    ));
+                }
+            }
+
+            if *threads > 0 {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(*threads)
+                    .build_global()
+                    .context("Failed to initialize thread pool")?;
+            }
+
+            let limit_bp = if let Some(s) = limit {
+                Some(parse_sample(s)?)
+            } else {
+                None
+            };
+
+            let config = grate::ClassifyConfig {
+                index_path: index.clone(),
+                reads_paths: expanded_reads,
+                sample_names: derived_sample_names,
+                kmer_length: *kmer_length,
+                smer_length: *smer_length,
+                min_hits: *min_hits,
+                min_fraction: *min_fraction,
+                threads: *threads,
+                limit_bp,
+                output_path: if output == "-" {
+                    None
+                } else {
+                    Some(PathBuf::from(output))
+                },
+                per_read: *per_read,
+                quiet: *quiet,
+            };
+
+            grate::run_classification(&config)
+                .context("Failed to run classification")?;
+        }
+
         Commands::Query {
             targets,
             samples,

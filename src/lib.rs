@@ -6,6 +6,7 @@
 //! providing detailed statistics on containment and abundance per target sequence.
 //!
 
+pub mod classify;
 pub mod containment;
 pub mod length;
 pub mod minimizers;
@@ -20,6 +21,8 @@ pub use length::{
     LengthHistogramConfig, LengthHistogramParameters, LengthHistogramReport, LengthHistogramResult,
     run_length_histogram_analysis,
 };
+
+pub use classify::{BuildConfig, ClassifyConfig, build_classification_index, run_classification};
 
 pub use minimizers::{
     Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, KmerHasher, MinimizerVec, decode_u64,
