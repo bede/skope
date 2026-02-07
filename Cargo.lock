@@ -370,29 +370,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grate"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "bincode",
- "clap",
- "csv",
- "flate2",
- "indicatif",
- "liblzma",
- "niffler",
- "packed-seq",
- "paraseq",
- "parking_lot",
- "rapidhash",
- "rayon",
- "simd-minimizers",
- "tempfile",
- "thiserror 2.0.18",
- "zstd",
-]
-
-[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -911,6 +888,29 @@ dependencies = [
  "packed-seq",
  "seq-hash",
  "wide",
+]
+
+[[package]]
+name = "skope"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "clap",
+ "csv",
+ "flate2",
+ "indicatif",
+ "liblzma",
+ "niffler",
+ "packed-seq",
+ "paraseq",
+ "parking_lot",
+ "rapidhash",
+ "rayon",
+ "simd-minimizers",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zstd",
 ]
 
 [[package]]

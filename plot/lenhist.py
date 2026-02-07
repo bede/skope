@@ -17,9 +17,9 @@ import pandas as pd
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot read length distributions from Grate len output"
+        description="Plot read length distributions from Skope len output"
     )
-    parser.add_argument("input_files", nargs="+", help="Input TSV file(s) from 'grate len'")
+    parser.add_argument("input_files", nargs="+", help="Input TSV file(s) from 'skope len'")
     parser.add_argument("-o", "--output", help="Output PNG filename (default: <input_prefix>-lenhist.png)")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite existing output files")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output")

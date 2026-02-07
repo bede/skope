@@ -1,11 +1,11 @@
 [package]
-name = "grate"
-version = "0.4.0"
-description = "Fast containment estimation"
+name = "skope"
+version = "0.1.0"
+description = "Accelerated genome containment and abundance estimation"
 authors = ["Bede Constantinides <b@bede.im>"]
 edition = "2024"
-repository = "https://github.com/bede/grate"
-homepage = "https://github.com/bede/grate"
+repository = "https://github.com/bede/skope"
+homepage = "https://github.com/bede/skope"
 keywords = ["bioinformatics", "genomics"]
 categories = ["science", "command-line-utilities"]
 license = "MIT"
@@ -21,7 +21,7 @@ gz = ["niffler/gz", "flate2", "flate2/default"]
 default = ["compression"]
 
 [lib]
-name = "grate"
+name = "skope"
 path = "src/lib.rs"
 
 [dependencies]
