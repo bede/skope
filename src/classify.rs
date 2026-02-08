@@ -4,14 +4,13 @@ use crate::{
 };
 use crate::minimizers::{Buffers, KmerHasher, MinimizerVec, fill_syncmers};
 use anyhow::{Context, Result};
-use bincode::{Decode, Encode};
 use indicatif::ProgressBar;
 use paraseq::Record;
 use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read as IoRead, Write};
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,15 +18,7 @@ use std::time::Instant;
 // Index header constants and metadata
 const INDEX_MAGIC: &[u8; 4] = b"GRAT";
 const INDEX_FORMAT_VERSION: u8 = 1;
-
-#[derive(Debug, Clone, Encode, Decode)]
-struct ClassificationIndexHeader {
-    magic: [u8; 4],
-    format_version: u8,
-    kmer_length: u8,
-    smer_length: u8,
-    num_groups: u8,
-}
+type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8);
 
 /// Classification index mapping k-mers to group bitmasks (up to 64 groups)
 #[derive(Clone)]
@@ -421,28 +412,25 @@ fn save_index(
     };
     let mut writer = writer;
 
-    let header = ClassificationIndexHeader {
-        magic: *INDEX_MAGIC,
-        format_version: INDEX_FORMAT_VERSION,
+    let header: ClassificationIndexHeader = (
+        *INDEX_MAGIC,
+        INDEX_FORMAT_VERSION,
         kmer_length,
         smer_length,
-        num_groups: group_names.len() as u8,
-    };
+        group_names.len() as u8,
+    );
 
-    let bincode_config = bincode::config::standard().with_fixed_int_encoding();
-
-let header_bytes =        bincode::encode_to_vec(&header, bincode_config)
-            .context("Failed to encode index header")?;
+    let header_bytes = wincode::serialize(&header).context("Failed to encode index header")?;
     writer.write_all(&header_bytes)?;
 
-let names_bytes = bincode::encode_to_vec(group_names, bincode_config)        .context("Failed to encode group names")?;
+    let names_bytes = wincode::serialize(&group_names).context("Failed to encode group names")?;
     writer.write_all(&names_bytes)?;
 
-let count = index.len();    let count_bytes = bincode::encode_to_vec(count, bincode_config)
-        .context("Failed to encode entry count")?;
+    let count = index.len() as u64;
+    let count_bytes = wincode::serialize(&count).context("Failed to encode entry count")?;
     writer.write_all(&count_bytes)?;
 
-let kmer_bytes = (kmer_length as usize).div_ceil(4); // ceil(k / 4)
+    let kmer_bytes = (kmer_length as usize).div_ceil(4); // ceil(k / 4)
     match index {
         ClassificationIndex::U64(map) => {
             for (&kmer, &bitmask) in map {
@@ -465,44 +453,48 @@ let kmer_bytes = (kmer_length as usize).div_ceil(4); // ceil(k / 4)
 }
 
 pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, u8)> {
-    let file = File::open(path)
-        .with_context(|| format!("Failed to open index file: {}", path.display()))?;
-    let mut reader = BufReader::new(file);
-    let bincode_config = bincode::config::standard().with_fixed_int_encoding();
+    let file_bytes =
+        fs::read(path).with_context(|| format!("Failed to open index file: {}", path.display()))?;
+    let mut cursor = wincode::io::Cursor::new(file_bytes.as_slice());
 
-let header: ClassificationIndexHeader =        bincode::decode_from_std_read(&mut reader, bincode_config)
-            .context("Failed to decode index header")?;
+    let header: ClassificationIndexHeader =
+        wincode::deserialize_from(&mut cursor).context("Failed to decode index header")?;
+    let (magic, format_version, kmer_length, smer_length, num_groups) = header;
 
-    if &header.magic != INDEX_MAGIC {
+    if &magic != INDEX_MAGIC {
         return Err(anyhow::anyhow!(
             "Not a skope classification index (invalid magic bytes)"
         ));
     }
 
-    if header.format_version != INDEX_FORMAT_VERSION {
+    if format_version != INDEX_FORMAT_VERSION {
         return Err(anyhow::anyhow!(
             "Unsupported index format version: {} (expected {})",
-            header.format_version,
+            format_version,
             INDEX_FORMAT_VERSION
         ));
     }
 
-let group_names: Vec<String> =        bincode::decode_from_std_read(&mut reader, bincode_config)
-            .context("Failed to decode group names")?;
+    let group_names: Vec<String> =
+        wincode::deserialize_from(&mut cursor).context("Failed to decode group names")?;
 
-    if group_names.len() != header.num_groups as usize {
+    if group_names.len() != num_groups as usize {
         return Err(anyhow::anyhow!(
             "Group count mismatch: header says {} but found {} names",
-            header.num_groups,
+            num_groups,
             group_names.len()
         ));
     }
 
-let count: usize = bincode::decode_from_std_read(&mut reader, bincode_config)        .context("Failed to decode entry count")?;
+    let count_u64: u64 =
+        wincode::deserialize_from(&mut cursor).context("Failed to decode entry count")?;
+    let count = usize::try_from(count_u64)
+        .with_context(|| format!("Entry count is too large for this platform: {count_u64}"))?;
 
-let kmer_bytes = (header.kmer_length as usize).div_ceil(4);    let entry_size = kmer_bytes + 8; // k-mer bytes + group bitmask
+    let kmer_bytes = (kmer_length as usize).div_ceil(4);
+    let entry_size = kmer_bytes + 8; // k-mer bytes + group bitmask
 
-let mut raw_data = Vec::new();    reader.read_to_end(&mut raw_data)?;
+    let raw_data = &file_bytes[cursor.position()..];
 
     let expected_size = count * entry_size;
     if raw_data.len() < expected_size {
@@ -513,7 +505,7 @@ let mut raw_data = Vec::new();    reader.read_to_end(&mut raw_data)?;
         ));
     }
 
-    let index = if header.kmer_length <= 32 {
+    let index = if kmer_length <= 32 {
         let mut map: HashMap<u64, u64, FixedRapidHasher> =
             HashMap::with_capacity_and_hasher(count, FixedRapidHasher);
         for i in 0..count {
@@ -553,7 +545,7 @@ let mut raw_data = Vec::new();    reader.read_to_end(&mut raw_data)?;
         ClassificationIndex::U128(map)
     };
 
-    Ok((index, group_names, header.kmer_length, header.smer_length))
+    Ok((index, group_names, kmer_length, smer_length))
 }
 
 /// Classify one sequecne using per-group hit counts
