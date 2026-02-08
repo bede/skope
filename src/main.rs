@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use skope::{derive_sample_name, find_fastx_files, validate_k_s};
 
@@ -30,6 +30,25 @@ fn validate_sample_names(names: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Check if a path is a special input (FIFO / process substitution)
+#[cfg(unix)]
+fn is_special_input_path(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let path_str = path.to_string_lossy();
+    if path_str.starts_with("/dev/fd/") || path_str.starts_with("/proc/self/fd/") {
+        return true;
+    }
+    if let Ok(metadata) = std::fs::metadata(path) {
+        return metadata.file_type().is_fifo();
+    }
+    false
+}
+
+#[cfg(not(unix))]
+fn is_special_input_path(_path: &Path) -> bool {
+    false
+}
+
 /// Expand sample inputs (files and directories) into lists of files per sample
 fn expand_sample_inputs(inputs: &[PathBuf]) -> Result<(Vec<Vec<PathBuf>>, Vec<bool>)> {
     let mut expanded_samples = Vec::new();
@@ -38,6 +57,13 @@ fn expand_sample_inputs(inputs: &[PathBuf]) -> Result<(Vec<Vec<PathBuf>>, Vec<bo
     for input in inputs {
         // Check stdin special case
         if input.to_string_lossy() == "-" {
+            expanded_samples.push(vec![input.clone()]);
+            is_directory.push(false);
+            continue;
+        }
+
+        // Check for special input paths (FIFOs / process substitution)
+        if is_special_input_path(input) {
             expanded_samples.push(vec![input.clone()]);
             is_directory.push(false);
             continue;

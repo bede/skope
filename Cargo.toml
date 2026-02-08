@@ -47,6 +47,7 @@ zstd = { version = "0.13", optional = true }
 
 [dev-dependencies]
 tempfile = "3.24"
+nix = { version = "0.30", features = ["fs"] }
 
 [profile.release]
 opt-level = 3

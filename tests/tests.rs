@@ -1,6 +1,8 @@
 use skope::{ContainmentConfig, LengthHistogramConfig, OutputFormat, SortOrder};
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
+#[cfg(unix)]
+use tempfile::TempDir;
 
 #[test]
 fn test_multisample_processing() {
@@ -223,5 +225,54 @@ fn test_length_histogram() {
     assert!(
         lines[1].starts_with("test\t"),
         "Data rows should start with sample name"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_fifo_sample_input() {
+    use nix::sys::stat;
+    use nix::unistd;
+    use std::io::Write;
+
+    let tmp_dir = TempDir::new().unwrap();
+    let fifo_path = tmp_dir.path().join("test.fastq");
+
+    // Create named pipe
+    unistd::mkfifo(&fifo_path, stat::Mode::S_IRWXU).unwrap();
+
+    let fifo_path_clone = fifo_path.clone();
+    let writer = std::thread::spawn(move || {
+        // Write minimal FASTQ data
+        let fastq = b"@read1\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n";
+        let mut f = std::fs::File::create(&fifo_path_clone).unwrap();
+        f.write_all(fastq).unwrap();
+    });
+
+    // Run the binary with the FIFO as sample input
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_skope"))
+        .args([
+            "query",
+            "data/zmrp21.viruses.fa",
+            fifo_path.to_str().unwrap(),
+            "-q",
+        ])
+        .output()
+        .expect("failed to execute skope");
+
+    writer.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "skope query with FIFO failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.len() > 1, "Expected header + data rows from FIFO input");
+    assert!(
+        lines[0].starts_with("target\tsample\t"),
+        "Expected TSV header"
     );
 }
