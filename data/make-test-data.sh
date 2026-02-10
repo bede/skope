@@ -1,3 +1,2 @@
-cargo run -r -- con -f csv ../../zmrp/zmrp21.combined-segments.fa ../../zmrp/zmrp21.combined-segments.fa ../../deacon/data/rsviruses17900.fastq.zst > multi.csv
-uv run ../plot/query.py multi.csv
-
+cargo run -r -- query zmrp21.viruses.fa zmrp21.viruses.fa rsviruses17900.1k.fastq.zst > multi.tsv
+uv run ../plot/query.py -f multi.tsv

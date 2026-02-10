@@ -39,7 +39,7 @@ def main():
     parser.add_argument("--log-y", action="store_true",
                         help="Use logarithmic scale for y-axis (scatter mode only)")
     # Appearance
-    parser.add_argument("-t", "--title", default="Containment analysis (Skope)",
+    parser.add_argument("-t", "--title", default="Containment analysis",
                         help="Plot title (default: %(default)s)")
     parser.add_argument("--short-names", action="store_true",
                         help="Remove accession prefix (before first space) from target names")

@@ -1,6 +1,6 @@
 # Skope
 
-Fast containment and abundance estimation.
+Fast syncmer containment and abundance estimation.
 
 ## Install & update
 
@@ -17,8 +17,8 @@ skope query refs.fa reads.fastq.gz
 # Calculate target containment in multiple samples
 skope query refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
 
-# Output as table instead of TSV
-skope query -f table refs.fa reads.fastq.gz
+# Calculate containment at depth>=100 using only discriminatory k-mers
+skope query -a 100 --discriminatory refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
 
 # Plot query results (containment bar chart or scatter)
 skope query refs.fa s1.fq.gz s2.fq.gz > query.tsv
@@ -27,7 +27,7 @@ uv run plot/query.py query.tsv --mode scatter -o query_scatter.png
 
 # Plot sequence length histograms
 skope lenhist - s1.fq.gz s2.fq.gz > len.tsv
-uv run plot/lenhist.py len.tsv -f -b 500
+uv run plot/lenhist.py len.tsv
 
 # Stdin
 zstdcat reads3.fq.zst | skope query refs.fa -
@@ -35,7 +35,6 @@ zstdcat reads3.fq.zst | skope query refs.fa -
 # View help for any command
 skope query -h
 skope lenhist -h
-skope classify -h
 skope index build -h
 ```
 

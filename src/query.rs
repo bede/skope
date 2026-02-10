@@ -895,7 +895,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             }
         ));
 
-        eprintln!("Skope v{}; mode: con; options: {}", version, options);
+        eprintln!("Skope v{}; mode: query; options: {}", version, options);
     }
 
     // Process targets file
