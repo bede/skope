@@ -378,22 +378,20 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION").to_string();
 
-    if !config.quiet {
-        let mut options = format!(
-            "k={}, s={}, threads={}",
-            config.kmer_length, config.smer_length, config.threads
-        );
+    let mut options = format!(
+        "k={}, s={}, threads={}",
+        config.kmer_length, config.smer_length, config.threads
+    );
 
-        if config.sample_paths.len() > 1 {
-            options.push_str(&format!(", samples={}", config.sample_paths.len()));
-        }
-
-        if let Some(limit) = config.limit_bp {
-            options.push_str(&format!(", limit={}", format_bp(limit as usize)));
-        }
-
-        eprintln!("Skope v{}; mode: len; options: {}", version, options);
+    if config.sample_paths.len() > 1 {
+        options.push_str(&format!(", samples={}", config.sample_paths.len()));
     }
+
+    if let Some(limit) = config.limit_bp {
+        options.push_str(&format!(", limit={}", format_bp(limit as usize)));
+    }
+
+    eprintln!("Skope v{}; mode: len; options: {}", version, options);
 
     // Process targets file OR skip if including all seqs
     let (targets_minimizers, targets_time) = if config.include_all_seqs {

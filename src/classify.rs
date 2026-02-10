@@ -366,12 +366,10 @@ pub fn build_classification_index(config: &BuildConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
 
-    if !config.quiet {
-        eprintln!(
-            "Skope v{}; mode: index build; options: k={}, s={}, threads={}",
-            version, config.kmer_length, config.smer_length, config.threads
-        );
-    }
+    eprintln!(
+        "Skope v{}; mode: index build; options: k={}, s={}, threads={}",
+        version, config.kmer_length, config.smer_length, config.threads
+    );
 
     let (index, group_names) = build_index_in_memory(
         &config.groups_dir,
@@ -1015,13 +1013,11 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
 
-let (index, group_names, kmer_length, smer_length) = if config.index_path.is_dir() {        if !config.quiet {
-            let limit_str = config.limit_bp.map_or(String::new(), |v| format!(", limit_bp={}", v));
-            eprintln!(
-                "Skope v{}; mode: classify (from directory); options: k={}, s={}, threads={}, min_hits={}, min_fraction={:.2}{}",
-                version, config.kmer_length, config.smer_length, config.threads, config.min_hits, config.min_fraction, limit_str
-            );
-        }
+let (index, group_names, kmer_length, smer_length) = if config.index_path.is_dir() {        let limit_str = config.limit_bp.map_or(String::new(), |v| format!(", limit_bp={}", v));
+        eprintln!(
+            "Skope v{}; mode: classify (from directory); options: k={}, s={}, threads={}, min_hits={}, min_fraction={:.2}{}",
+            version, config.kmer_length, config.smer_length, config.threads, config.min_hits, config.min_fraction, limit_str
+        );
 
         let (index, group_names) = build_index_in_memory(
             &config.index_path,
@@ -1033,12 +1029,11 @@ let (index, group_names, kmer_length, smer_length) = if config.index_path.is_dir
 
         (index, group_names, config.kmer_length, config.smer_length)
     } else {
-if !config.quiet {            let limit_str = config.limit_bp.map_or(String::new(), |v| format!(", limit_bp={}", v));
-            eprintln!(
-                "Skope v{}; mode: classify (from index); options: threads={}, min_hits={}, min_fraction={:.2}{}",
-                version, config.threads, config.min_hits, config.min_fraction, limit_str
-            );
-        }
+        let limit_str = config.limit_bp.map_or(String::new(), |v| format!(", limit_bp={}", v));
+        eprintln!(
+            "Skope v{}; mode: classify (from index); options: threads={}, min_hits={}, min_fraction={:.2}{}",
+            version, config.threads, config.min_hits, config.min_fraction, limit_str
+        );
 
         let load_start = Instant::now();
         let (index, group_names, k, s) = load_index(&config.index_path)?;

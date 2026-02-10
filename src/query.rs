@@ -857,46 +857,44 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION").to_string();
 
-    if !config.quiet {
-        let mut options = format!(
-            "k={}, s={}, threads={}",
-            config.kmer_length, config.smer_length, config.threads
-        );
+    let mut options = format!(
+        "k={}, s={}, threads={}",
+        config.kmer_length, config.smer_length, config.threads
+    );
 
-        if config.sample_paths.len() > 1 {
-            options.push_str(&format!(", samples={}", config.sample_paths.len()));
-        }
-
-        if !config.abundance_thresholds.is_empty() {
-            options.push_str(&format!(
-                ", abundance-thresholds={}",
-                config
-                    .abundance_thresholds
-                    .iter()
-                    .map(|t| t.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ));
-        }
-
-        if config.discriminatory {
-            options.push_str(", discriminatory");
-        }
-
-        if let Some(limit) = config.limit_bp {
-            options.push_str(&format!(", limit={}", format_bp(limit as usize)));
-        }
-
-        options.push_str(&format!(
-            ", format={}",
-            match config.output_format {
-                OutputFormat::Table => "table",
-                OutputFormat::Tsv => "tsv",
-            }
-        ));
-
-        eprintln!("Skope v{}; mode: query; options: {}", version, options);
+    if config.sample_paths.len() > 1 {
+        options.push_str(&format!(", samples={}", config.sample_paths.len()));
     }
+
+    if !config.abundance_thresholds.is_empty() {
+        options.push_str(&format!(
+            ", abundance-thresholds={}",
+            config
+                .abundance_thresholds
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+
+    if config.discriminatory {
+        options.push_str(", discriminatory");
+    }
+
+    if let Some(limit) = config.limit_bp {
+        options.push_str(&format!(", limit={}", format_bp(limit as usize)));
+    }
+
+    options.push_str(&format!(
+        ", format={}",
+        match config.output_format {
+            OutputFormat::Table => "table",
+            OutputFormat::Tsv => "tsv",
+        }
+    ));
+
+    eprintln!("Skope v{}; mode: query; options: {}", version, options);
 
     // Process targets file
     let targets_start = Instant::now();
