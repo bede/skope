@@ -123,17 +123,26 @@ pub fn fill_syncmers_with_positions(
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
+    let k = kmer_length as u32;
     match minimizers {
         MinimizerVec::U64(vec) => {
+            let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u64() {
-                vec.push(val);
-                positions_out.push(pos as usize);
+                if pos >= next_allowed {
+                    vec.push(val);
+                    positions_out.push(pos as usize);
+                    next_allowed = pos.saturating_add(k);
+                }
             }
         }
         MinimizerVec::U128(vec) => {
+            let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u128() {
-                vec.push(val);
-                positions_out.push(pos as usize);
+                if pos >= next_allowed {
+                    vec.push(val);
+                    positions_out.push(pos as usize);
+                    next_allowed = pos.saturating_add(k);
+                }
             }
         }
     }
@@ -171,12 +180,25 @@ pub fn fill_syncmers(
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
+    let k = kmer_length as u32;
     match minimizers {
         MinimizerVec::U64(vec) => {
-            vec.extend(m.pos_and_values_u64().map(|(_, val)| val));
+            let mut next_allowed: u32 = 0;
+            for (pos, val) in m.pos_and_values_u64() {
+                if pos >= next_allowed {
+                    vec.push(val);
+                    next_allowed = pos.saturating_add(k);
+                }
+            }
         }
         MinimizerVec::U128(vec) => {
-            vec.extend(m.pos_and_values_u128().map(|(_, val)| val));
+            let mut next_allowed: u32 = 0;
+            for (pos, val) in m.pos_and_values_u128() {
+                if pos >= next_allowed {
+                    vec.push(val);
+                    next_allowed = pos.saturating_add(k);
+                }
+            }
         }
     };
 }
@@ -221,6 +243,11 @@ mod tests {
         // All positions should be valid
         for &pos in &positions {
             assert!(pos + k as usize <= seq.len());
+        }
+
+        // Syncmers should be non-overlapping by construction
+        for window in positions.windows(2) {
+            assert!(window[1] >= window[0] + k as usize);
         }
     }
 }
