@@ -250,4 +250,35 @@ mod tests {
             assert!(window[1] >= window[0] + k as usize);
         }
     }
+
+    #[test]
+    fn test_non_overlapping_syncmers_match_between_apis() {
+        let seq = b"ACGTTGCATGTCGCATGATGCATGAGAGCTACGTTGCATGTCGCATGATGCATGAGAGCT";
+        let k = 15;
+        let s = 7;
+        let hasher = KmerHasher::new(s as usize);
+
+        let mut values_only_buffers = Buffers::new_u64();
+        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers);
+        let values_only = match &values_only_buffers.minimizers {
+            MinimizerVec::U64(v) => v.clone(),
+            MinimizerVec::U128(_) => panic!("Expected u64 minimizers for k <= 32"),
+        };
+
+        let mut with_pos_buffers = Buffers::new_u64();
+        let mut positions = Vec::new();
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions);
+        let with_pos_values = match &with_pos_buffers.minimizers {
+            MinimizerVec::U64(v) => v.clone(),
+            MinimizerVec::U128(_) => panic!("Expected u64 minimizers for k <= 32"),
+        };
+
+        // Both APIs should retain the same non-overlapping syncmers in the same order.
+        assert_eq!(values_only, with_pos_values);
+        assert_eq!(with_pos_values.len(), positions.len());
+
+        for window in positions.windows(2) {
+            assert!(window[1] >= window[0] + k as usize);
+        }
+    }
 }

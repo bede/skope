@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use skope::{derive_sample_name, find_fastx_files, validate_k_s};
 
 const DEFAULT_KMER_LENGTH: u8 = 31;
-const DEFAULT_SMER_LENGTH: u8 = 9;
+const DEFAULT_SMER_LENGTH: u8 = 15;
 
 /// Validate that sample names are unique
 fn validate_sample_names(names: &[String]) -> Result<()> {
