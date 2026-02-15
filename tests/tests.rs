@@ -271,7 +271,10 @@ fn test_fifo_sample_input() {
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert!(lines.len() > 1, "Expected header + data rows from FIFO input");
+    assert!(
+        lines.len() > 1,
+        "Expected header + data rows from FIFO input"
+    );
     assert!(
         lines[0].starts_with("target\tsample\t"),
         "Expected TSV header"

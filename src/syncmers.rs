@@ -5,64 +5,64 @@ pub const DEFAULT_SMER_LENGTH: u8 = 15;
 
 pub type KmerHasher = simd_minimizers::seq_hash::NtHasher<true, 1>;
 
-/// Zero-cost abstraction over u64 and u128 minimizer vectors
+/// Zero-cost abstraction over u64 and u128 syncmer vectors
 #[derive(Debug, Clone)]
-pub enum MinimizerVec {
+pub enum SyncmerVec {
     U64(Vec<u64>),
     U128(Vec<u128>),
 }
 
-impl MinimizerVec {
+impl SyncmerVec {
     pub fn clear(&mut self) {
         match self {
-            MinimizerVec::U64(v) => v.clear(),
-            MinimizerVec::U128(v) => v.clear(),
+            SyncmerVec::U64(v) => v.clear(),
+            SyncmerVec::U128(v) => v.clear(),
         }
     }
 
     pub fn len(&self) -> usize {
         match self {
-            MinimizerVec::U64(v) => v.len(),
-            MinimizerVec::U128(v) => v.len(),
+            SyncmerVec::U64(v) => v.len(),
+            SyncmerVec::U128(v) => v.len(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         match self {
-            MinimizerVec::U64(v) => v.is_empty(),
-            MinimizerVec::U128(v) => v.is_empty(),
+            SyncmerVec::U64(v) => v.is_empty(),
+            SyncmerVec::U128(v) => v.is_empty(),
         }
     }
 }
 
-/// Decode u64 minimizer (2-bit canonical k-mer)
-pub fn decode_u64(minimizer: u64, k: u8) -> Vec<u8> {
+/// Decode u64 syncmer (2-bit canonical k-mer)
+pub fn decode_u64(syncmer: u64, k: u8) -> Vec<u8> {
     (0..k)
         .map(|i| {
-            let base_bits = ((minimizer >> (2 * i)) & 0b11) as u8;
+            let base_bits = ((syncmer >> (2 * i)) & 0b11) as u8;
             unpack_base(base_bits)
         })
         .rev()
         .collect()
 }
 
-/// Decode u128 minimizer (2-bit canonical k-mer)
-pub fn decode_u128(minimizer: u128, k: u8) -> Vec<u8> {
+/// Decode u128 syncmer (2-bit canonical k-mer)
+pub fn decode_u128(syncmer: u128, k: u8) -> Vec<u8> {
     (0..k)
         .map(|i| {
-            let base_bits = ((minimizer >> (2 * i)) & 0b11) as u8;
+            let base_bits = ((syncmer >> (2 * i)) & 0b11) as u8;
             unpack_base(base_bits)
         })
         .rev()
         .collect()
 }
 
-/// Reusable buffers for minimizer computation
+/// Reusable buffers for syncmer computation
 #[derive(Clone)]
 pub struct Buffers {
     pub packed_nseq: PackedNSeqVec,
     pub positions: Vec<u32>,
-    pub minimizers: MinimizerVec,
+    pub syncmers: SyncmerVec,
 }
 
 impl Buffers {
@@ -73,7 +73,7 @@ impl Buffers {
                 ambiguous: Default::default(),
             },
             positions: Default::default(),
-            minimizers: MinimizerVec::U64(Vec::new()),
+            syncmers: SyncmerVec::U64(Vec::new()),
         }
     }
 
@@ -84,7 +84,7 @@ impl Buffers {
                 ambiguous: Default::default(),
             },
             positions: Default::default(),
-            minimizers: MinimizerVec::U128(Vec::new()),
+            syncmers: SyncmerVec::U128(Vec::new()),
         }
     }
 }
@@ -101,12 +101,12 @@ pub fn fill_syncmers_with_positions(
     let Buffers {
         packed_nseq,
         positions,
-        minimizers,
+        syncmers,
     } = buffers;
 
     packed_nseq.seq.clear();
     packed_nseq.ambiguous.clear();
-    minimizers.clear();
+    syncmers.clear();
     positions.clear();
     positions_out.clear();
 
@@ -124,8 +124,8 @@ pub fn fill_syncmers_with_positions(
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
     let k = kmer_length as u32;
-    match minimizers {
-        MinimizerVec::U64(vec) => {
+    match syncmers {
+        SyncmerVec::U64(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u64() {
                 if pos >= next_allowed {
@@ -135,7 +135,7 @@ pub fn fill_syncmers_with_positions(
                 }
             }
         }
-        MinimizerVec::U128(vec) => {
+        SyncmerVec::U128(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u128() {
                 if pos >= next_allowed {
@@ -159,12 +159,12 @@ pub fn fill_syncmers(
     let Buffers {
         packed_nseq,
         positions,
-        minimizers,
+        syncmers,
     } = buffers;
 
     packed_nseq.seq.clear();
     packed_nseq.ambiguous.clear();
-    minimizers.clear();
+    syncmers.clear();
     positions.clear();
 
     if seq.len() < kmer_length as usize {
@@ -181,8 +181,8 @@ pub fn fill_syncmers(
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
     let k = kmer_length as u32;
-    match minimizers {
-        MinimizerVec::U64(vec) => {
+    match syncmers {
+        SyncmerVec::U64(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u64() {
                 if pos >= next_allowed {
@@ -191,7 +191,7 @@ pub fn fill_syncmers(
                 }
             }
         }
-        MinimizerVec::U128(vec) => {
+        SyncmerVec::U128(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u128() {
                 if pos >= next_allowed {
@@ -218,12 +218,12 @@ mod tests {
         fill_syncmers(seq, &hasher, k, s, &mut buffers);
 
         // We should have at least one syncmer
-        assert!(!buffers.minimizers.is_empty());
+        assert!(!buffers.syncmers.is_empty());
 
         // Test with a sequence shorter than k
         let short_seq = b"ACGT";
         fill_syncmers(short_seq, &hasher, k, s, &mut buffers);
-        assert!(buffers.minimizers.is_empty());
+        assert!(buffers.syncmers.is_empty());
     }
 
     #[test]
@@ -238,7 +238,7 @@ mod tests {
         fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions);
 
         // Should have same number of syncmers and positions
-        assert_eq!(buffers.minimizers.len(), positions.len());
+        assert_eq!(buffers.syncmers.len(), positions.len());
 
         // All positions should be valid
         for &pos in &positions {
@@ -260,17 +260,17 @@ mod tests {
 
         let mut values_only_buffers = Buffers::new_u64();
         fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers);
-        let values_only = match &values_only_buffers.minimizers {
-            MinimizerVec::U64(v) => v.clone(),
-            MinimizerVec::U128(_) => panic!("Expected u64 minimizers for k <= 32"),
+        let values_only = match &values_only_buffers.syncmers {
+            SyncmerVec::U64(v) => v.clone(),
+            SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
         };
 
         let mut with_pos_buffers = Buffers::new_u64();
         let mut positions = Vec::new();
         fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions);
-        let with_pos_values = match &with_pos_buffers.minimizers {
-            MinimizerVec::U64(v) => v.clone(),
-            MinimizerVec::U128(_) => panic!("Expected u64 minimizers for k <= 32"),
+        let with_pos_values = match &with_pos_buffers.syncmers {
+            SyncmerVec::U64(v) => v.clone(),
+            SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
         };
 
         // Both APIs should retain the same non-overlapping syncmers in the same order.

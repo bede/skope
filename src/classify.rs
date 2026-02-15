@@ -1,8 +1,8 @@
+use crate::syncmers::{Buffers, KmerHasher, SyncmerVec, fill_syncmers};
 use crate::{
     FixedRapidHasher, ProcessingStats, create_spinner, format_bp, format_bp_per_sec,
     handle_process_result, reader_with_inferred_batch_size, sample_limit_reached_io_error,
 };
-use crate::minimizers::{Buffers, KmerHasher, MinimizerVec, fill_syncmers};
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
 use paraseq::Record;
@@ -140,15 +140,9 @@ impl GroupKmerProcessor {
         };
 
         let (local_map_u64, local_map_u128) = if kmer_length <= 32 {
-            (
-                Some(HashMap::with_hasher(FixedRapidHasher)),
-                None,
-            )
+            (Some(HashMap::with_hasher(FixedRapidHasher)), None)
         } else {
-            (
-                None,
-                Some(HashMap::with_hasher(FixedRapidHasher)),
-            )
+            (None, Some(HashMap::with_hasher(FixedRapidHasher)))
         };
 
         Self {
@@ -181,14 +175,14 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
             &mut self.buffers,
         );
 
-        match &self.buffers.minimizers {
-            MinimizerVec::U64(vec) => {
+        match &self.buffers.syncmers {
+            SyncmerVec::U64(vec) => {
                 let local = self.local_map_u64.as_mut().unwrap();
                 for &kmer in vec {
                     *local.entry(kmer).or_insert(0) |= self.group_bit;
                 }
             }
-            MinimizerVec::U128(vec) => {
+            SyncmerVec::U128(vec) => {
                 let local = self.local_map_u128.as_mut().unwrap();
                 for &kmer in vec {
                     *local.entry(kmer).or_insert(0) |= self.group_bit;
@@ -200,7 +194,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
     }
 
     fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
-if let Some(local) = &mut self.local_map_u64 {            let mut global = self.global_map_u64.lock();
+        if let Some(local) = &mut self.local_map_u64 {
+            let mut global = self.global_map_u64.lock();
             let global_map = global.as_mut().unwrap();
             for (&kmer, &bits) in local.iter() {
                 *global_map.entry(kmer).or_insert(0) |= bits;
@@ -215,7 +210,8 @@ if let Some(local) = &mut self.local_map_u64 {            let mut global = self.
             local.clear();
         }
 
-{            let mut stats = self.global_stats.lock();
+        {
+            let mut stats = self.global_stats.lock();
             stats.total_seqs += self.local_stats.total_seqs;
             stats.total_bp += self.local_stats.total_bp;
             self.local_stats = ProcessingStats::default();
@@ -244,9 +240,13 @@ fn build_index_in_memory(
         ));
     }
 
-    let group_names: Vec<String> = group_files.iter().map(|p| derive_sample_name(p, false)).collect();
+    let group_names: Vec<String> = group_files
+        .iter()
+        .map(|p| derive_sample_name(p, false))
+        .collect();
 
-{        let mut seen = std::collections::HashSet::new();
+    {
+        let mut seen = std::collections::HashSet::new();
         for name in &group_names {
             if !seen.insert(name) {
                 return Err(anyhow::anyhow!(
@@ -265,7 +265,8 @@ fn build_index_in_memory(
         );
     }
 
-let global_map_u64: Arc<Mutex<Option<HashMap<u64, u64, FixedRapidHasher>>>> =        if kmer_length <= 32 {
+    let global_map_u64: Arc<Mutex<Option<HashMap<u64, u64, FixedRapidHasher>>>> =
+        if kmer_length <= 32 {
             Arc::new(Mutex::new(Some(HashMap::with_hasher(FixedRapidHasher))))
         } else {
             Arc::new(Mutex::new(None))
@@ -278,9 +279,7 @@ let global_map_u64: Arc<Mutex<Option<HashMap<u64, u64, FixedRapidHasher>>>> =   
             Arc::new(Mutex::new(None))
         };
 
-    for (group_idx, (group_file, group_name)) in
-        group_files.iter().zip(&group_names).enumerate()
-    {
+    for (group_idx, (group_file, group_name)) in group_files.iter().zip(&group_names).enumerate() {
         let group_bit = 1u64 << group_idx;
         let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
 
@@ -298,7 +297,8 @@ let global_map_u64: Arc<Mutex<Option<HashMap<u64, u64, FixedRapidHasher>>>> =   
 
         let stats = global_stats.lock().clone();
 
-let (group_kmers, unique_kmers) = if kmer_length <= 32 {            let map = global_map_u64.lock();
+        let (group_kmers, unique_kmers) = if kmer_length <= 32 {
+            let map = global_map_u64.lock();
             let map = map.as_ref().unwrap();
             let group_kmers = map.values().filter(|&&v| v & group_bit != 0).count();
             let unique = map
@@ -330,7 +330,8 @@ let (group_kmers, unique_kmers) = if kmer_length <= 32 {            let map = gl
         }
     }
 
-let index = if kmer_length <= 32 {        let map = Arc::try_unwrap(global_map_u64)
+    let index = if kmer_length <= 32 {
+        let map = Arc::try_unwrap(global_map_u64)
             .unwrap()
             .into_inner()
             .unwrap();
@@ -345,12 +346,8 @@ let index = if kmer_length <= 32 {        let map = Arc::try_unwrap(global_map_u
 
     if !quiet {
         let shared = match &index {
-            ClassificationIndex::U64(m) => {
-                m.values().filter(|v| v.count_ones() > 1).count()
-            }
-            ClassificationIndex::U128(m) => {
-                m.values().filter(|v| v.count_ones() > 1).count()
-            }
+            ClassificationIndex::U64(m) => m.values().filter(|v| v.count_ones() > 1).count(),
+            ClassificationIndex::U128(m) => m.values().filter(|v| v.count_ones() > 1).count(),
         };
         eprintln!(
             "Index: {} total syncmers, {} shared across groups",
@@ -563,9 +560,7 @@ fn classify_seq(
     let mut single_match = 0usize;
 
     for (group_idx, &group_hits) in hits[..num_groups].iter().enumerate() {
-        if group_hits >= min_hits
-            && (group_hits as f64 / total_kmers as f64) >= min_fraction
-        {
+        if group_hits >= min_hits && (group_hits as f64 / total_kmers as f64) >= min_fraction {
             matching_mask |= 1u64 << group_idx;
             match_count += 1;
             single_match = group_idx;
@@ -620,10 +615,10 @@ fn classify_seq_kmers(
         *h = 0;
     }
 
-    let total_kmers = buffers.minimizers.len();
+    let total_kmers = buffers.syncmers.len();
 
-    match (&buffers.minimizers, index) {
-        (MinimizerVec::U64(vec), ClassificationIndex::U64(map)) => {
+    match (&buffers.syncmers, index) {
+        (SyncmerVec::U64(vec), ClassificationIndex::U64(map)) => {
             for &kmer in vec {
                 if let Some(&bitmask) = map.get(&kmer) {
                     let mut bits = bitmask;
@@ -635,7 +630,7 @@ fn classify_seq_kmers(
                 }
             }
         }
-        (MinimizerVec::U128(vec), ClassificationIndex::U128(map)) => {
+        (SyncmerVec::U128(vec), ClassificationIndex::U128(map)) => {
             for &kmer in vec {
                 if let Some(&bitmask) = map.get(&kmer) {
                     let mut bits = bitmask;
@@ -647,16 +642,10 @@ fn classify_seq_kmers(
                 }
             }
         }
-        _ => panic!("Mismatch between MinimizerVec and ClassificationIndex types"),
+        _ => panic!("Mismatch between SyncmerVec and ClassificationIndex types"),
     }
 
-    let classification = classify_seq(
-        hits,
-        num_groups,
-        total_kmers,
-        min_hits,
-        min_fraction,
-    );
+    let classification = classify_seq(hits, num_groups, total_kmers, min_hits, min_fraction);
 
     (total_kmers, classification)
 }
@@ -701,14 +690,16 @@ struct ClassifySummaryProcessor {
     buffers: Buffers,
     hits: [u64; 64],
 
-local_group_seqs: Vec<u64>,    local_group_bases: Vec<u64>,
+    local_group_seqs: Vec<u64>,
+    local_group_bases: Vec<u64>,
     local_ambiguous_seqs: u64,
     local_ambiguous_bases: u64,
     local_unclassified_seqs: u64,
     local_unclassified_bases: u64,
     local_stats: ProcessingStats,
 
-global: Arc<Mutex<GlobalClassifyState>>,    spinner: Option<Arc<Mutex<ProgressBar>>>,
+    global: Arc<Mutex<GlobalClassifyState>>,
+    spinner: Option<Arc<Mutex<ProgressBar>>>,
     start_time: Instant,
     limit_bp: Option<u64>,
 }
@@ -758,7 +749,8 @@ impl ClassifySummaryProcessor {
 
 impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
     fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
-if let Some(limit) = self.limit_bp {            let global_bp = self.global.lock().stats.total_bp;
+        if let Some(limit) = self.limit_bp {
+            let global_bp = self.global.lock().stats.total_bp;
             if global_bp >= limit {
                 return Err(paraseq::parallel::ProcessError::IoError(
                     sample_limit_reached_io_error(),
@@ -772,9 +764,16 @@ if let Some(limit) = self.limit_bp {            let global_bp = self.global.lock
         self.local_stats.total_bp += seq_len as u64;
 
         let (_total_kmers, classification) = classify_seq_kmers(
-            &seq, &self.hasher, self.kmer_length, self.smer_length,
-            &mut self.buffers, &mut self.hits, self.num_groups,
-            &self.index, self.min_hits, self.min_fraction,
+            &seq,
+            &self.hasher,
+            self.kmer_length,
+            self.smer_length,
+            &mut self.buffers,
+            &mut self.hits,
+            self.num_groups,
+            &self.index,
+            self.min_hits,
+            self.min_fraction,
         );
 
         match classification {
@@ -821,7 +820,8 @@ if let Some(limit) = self.limit_bp {            let global_bp = self.global.lock
         if current_progress > g.stats.last_reported {
             g.stats.last_reported = current_progress;
             drop(g);
-if let Some(ref spinner) = self.spinner {                let g = self.global.lock();
+            if let Some(ref spinner) = self.spinner {
+                let g = self.global.lock();
                 let elapsed = self.start_time.elapsed();
                 let seqs_per_sec = g.stats.total_seqs as f64 / elapsed.as_secs_f64();
                 let bp_per_sec = g.stats.total_bp as f64 / elapsed.as_secs_f64();
@@ -857,7 +857,8 @@ struct ClassifyPerSeqProcessor {
     buffers: Buffers,
     hits: [u64; 64],
 
-local_output: Vec<u8>,    output_writer: Arc<Mutex<BufWriter<Box<dyn Write + Send>>>>,
+    local_output: Vec<u8>,
+    output_writer: Arc<Mutex<BufWriter<Box<dyn Write + Send>>>>,
 
     local_stats: ProcessingStats,
     global_stats: Arc<Mutex<ProcessingStats>>,
@@ -908,7 +909,6 @@ impl ClassifyPerSeqProcessor {
             limit_bp,
         }
     }
-
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerSeqProcessor {
@@ -929,9 +929,16 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerSeqProcessor {
         self.local_stats.total_bp += seq_len as u64;
 
         let (total_kmers, classification) = classify_seq_kmers(
-            &seq, &self.hasher, self.kmer_length, self.smer_length,
-            &mut self.buffers, &mut self.hits, self.num_groups,
-            &self.index, self.min_hits, self.min_fraction,
+            &seq,
+            &self.hasher,
+            self.kmer_length,
+            self.smer_length,
+            &mut self.buffers,
+            &mut self.hits,
+            self.num_groups,
+            &self.index,
+            self.min_hits,
+            self.min_fraction,
         );
 
         use std::fmt::Write as FmtWrite;
@@ -957,7 +964,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerSeqProcessor {
                 );
             }
             Classification::Ambiguous(mask) => {
-let mut groups = String::new();                let mut hits_str = String::new();
+                let mut groups = String::new();
+                let mut hits_str = String::new();
                 let mut bits = mask;
                 let mut first = true;
                 while bits != 0 {
@@ -984,14 +992,16 @@ let mut groups = String::new();                let mut hits_str = String::new();
     }
 
     fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
-if !self.local_output.is_empty() {            let mut writer = self.output_writer.lock();
+        if !self.local_output.is_empty() {
+            let mut writer = self.output_writer.lock();
             writer
                 .write_all(&self.local_output)
                 .map_err(paraseq::parallel::ProcessError::IoError)?;
             self.local_output.clear();
         }
 
-{            let mut stats = self.global_stats.lock();
+        {
+            let mut stats = self.global_stats.lock();
             stats.total_seqs += self.local_stats.total_seqs;
             stats.total_bp += self.local_stats.total_bp;
 
@@ -1013,10 +1023,19 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
 
-let (index, group_names, kmer_length, smer_length) = if config.index_path.is_dir() {        let limit_str = config.limit_bp.map_or(String::new(), |v| format!(", limit_bp={}", v));
+    let (index, group_names, kmer_length, smer_length) = if config.index_path.is_dir() {
+        let limit_str = config
+            .limit_bp
+            .map_or(String::new(), |v| format!(", limit_bp={}", v));
         eprintln!(
             "Skope v{}; mode: classify (from directory); options: k={}, s={}, threads={}, min_hits={}, min_fraction={:.2}{}",
-            version, config.kmer_length, config.smer_length, config.threads, config.min_hits, config.min_fraction, limit_str
+            version,
+            config.kmer_length,
+            config.smer_length,
+            config.threads,
+            config.min_hits,
+            config.min_fraction,
+            limit_str
         );
 
         let (index, group_names) = build_index_in_memory(
@@ -1029,7 +1048,9 @@ let (index, group_names, kmer_length, smer_length) = if config.index_path.is_dir
 
         (index, group_names, config.kmer_length, config.smer_length)
     } else {
-        let limit_str = config.limit_bp.map_or(String::new(), |v| format!(", limit_bp={}", v));
+        let limit_str = config
+            .limit_bp
+            .map_or(String::new(), |v| format!(", limit_bp={}", v));
         eprintln!(
             "Skope v{}; mode: classify (from index); options: threads={}, min_hits={}, min_fraction={:.2}{}",
             version, config.threads, config.min_hits, config.min_fraction, limit_str
@@ -1072,24 +1093,24 @@ let (index, group_names, kmer_length, smer_length) = if config.index_path.is_dir
     let group_names = Arc::new(group_names);
     let num_groups = group_names.len();
 
-use rayon::prelude::*;
+    use rayon::prelude::*;
     if config.per_seq {
-let writer: Box<dyn Write + Send> = if let Some(path) = &config.output_path {            Box::new(BufWriter::new(File::create(path)?))
+        let writer: Box<dyn Write + Send> = if let Some(path) = &config.output_path {
+            Box::new(BufWriter::new(File::create(path)?))
         } else {
             Box::new(BufWriter::new(io::stdout()))
         };
         let writer = Arc::new(Mutex::new(BufWriter::new(writer)));
 
-{            let mut w = writer.lock();
+        {
+            let mut w = writer.lock();
             writeln!(
                 w,
                 "sample\tseq_id\tclassification\tgroup\thits\tseq_kmers\tseq_length"
             )?;
         }
 
-        for (sample_paths, sample_name) in
-            config.sample_paths.iter().zip(&config.sample_names)
-        {
+        for (sample_paths, sample_name) in config.sample_paths.iter().zip(&config.sample_names) {
             for seq_path in sample_paths {
                 let in_path = if seq_path.to_string_lossy() == "-" {
                     None
@@ -1141,7 +1162,7 @@ let writer: Box<dyn Write + Send> = if let Some(path) = &config.output_path {   
 
         writer.lock().flush()?;
     } else {
-let is_multisample = config.sample_paths.len() > 1;
+        let is_multisample = config.sample_paths.len() > 1;
         let completed = if is_multisample && !config.quiet {
             eprint!(
                 "\x1B[2K\rSamples: processed 0 of {}…",
@@ -1192,22 +1213,20 @@ let is_multisample = config.sample_paths.len() > 1;
             eprintln!();
         }
 
-let writer: Box<dyn Write> = if let Some(path) = &config.output_path {            Box::new(BufWriter::new(File::create(path)?))
+        let writer: Box<dyn Write> = if let Some(path) = &config.output_path {
+            Box::new(BufWriter::new(File::create(path)?))
         } else {
             Box::new(BufWriter::new(io::stdout()))
         };
         let mut writer = writer;
 
-        writeln!(
-            writer,
-            "sample\tgroup\tseqs_pct\tseqs\tbases_pct\tbases"
-        )?;
+        writeln!(writer, "sample\tgroup\tseqs_pct\tseqs\tbases_pct\tbases")?;
 
         for (sample_name, result) in &sample_results {
             let total_seqs = result.total_seqs as f64;
             let total_bases = result.total_bases as f64;
 
-let mut rows: Vec<(&str, u64, f64, u64, f64)> = Vec::new();
+            let mut rows: Vec<(&str, u64, f64, u64, f64)> = Vec::new();
             for (group_idx, counts) in result.group_counts.iter().enumerate() {
                 let pct_seqs = if total_seqs > 0.0 {
                     counts.seqs as f64 / total_seqs * 100.0
@@ -1219,10 +1238,17 @@ let mut rows: Vec<(&str, u64, f64, u64, f64)> = Vec::new();
                 } else {
                     0.0
                 };
-                rows.push((&group_names[group_idx], counts.seqs, pct_seqs, counts.bases, pct_bases));
+                rows.push((
+                    &group_names[group_idx],
+                    counts.seqs,
+                    pct_seqs,
+                    counts.bases,
+                    pct_bases,
+                ));
             }
 
-{                let pct_seqs = if total_seqs > 0.0 {
+            {
+                let pct_seqs = if total_seqs > 0.0 {
                     result.ambiguous_seqs as f64 / total_seqs * 100.0
                 } else {
                     0.0
@@ -1232,10 +1258,17 @@ let mut rows: Vec<(&str, u64, f64, u64, f64)> = Vec::new();
                 } else {
                     0.0
                 };
-                rows.push(("ambiguous", result.ambiguous_seqs, pct_seqs, result.ambiguous_bases, pct_bases));
+                rows.push((
+                    "ambiguous",
+                    result.ambiguous_seqs,
+                    pct_seqs,
+                    result.ambiguous_bases,
+                    pct_bases,
+                ));
             }
 
-{                let pct_seqs = if total_seqs > 0.0 {
+            {
+                let pct_seqs = if total_seqs > 0.0 {
                     result.unclassified_seqs as f64 / total_seqs * 100.0
                 } else {
                     0.0
@@ -1245,7 +1278,13 @@ let mut rows: Vec<(&str, u64, f64, u64, f64)> = Vec::new();
                 } else {
                     0.0
                 };
-                rows.push(("unclassified", result.unclassified_seqs, pct_seqs, result.unclassified_bases, pct_bases));
+                rows.push((
+                    "unclassified",
+                    result.unclassified_seqs,
+                    pct_seqs,
+                    result.unclassified_bases,
+                    pct_bases,
+                ));
             }
 
             rows.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
@@ -1320,7 +1359,8 @@ fn process_sample_summary(
             pb.lock().finish_and_clear();
         }
 
-let g = processor.global.lock();        for i in 0..num_groups {
+        let g = processor.global.lock();
+        for i in 0..num_groups {
             combined.group_counts[i].seqs += g.group_seqs[i];
             combined.group_counts[i].bases += g.group_bases[i];
         }
@@ -1347,7 +1387,8 @@ let g = processor.global.lock();        for i in 0..num_groups {
             );
         }
 
-if let Some(limit) = limit_bp            && combined.total_bases >= limit
+        if let Some(limit) = limit_bp
+            && combined.total_bases >= limit
         {
             break;
         }

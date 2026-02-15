@@ -14,10 +14,9 @@ fn validate_sample_names(names: &[String]) -> Result<()> {
     let mut duplicates = Vec::new();
 
     for name in names {
-        if !seen.insert(name)
-            && !duplicates.contains(name) {
-                duplicates.push(name.clone());
-            }
+        if !seen.insert(name) && !duplicates.contains(name) {
+            duplicates.push(name.clone());
+        }
     }
 
     if !duplicates.is_empty() {
@@ -454,8 +453,7 @@ fn main() -> Result<()> {
                 quiet: *quiet,
             };
 
-            skope::run_classification(&config)
-                .context("Failed to run classification")?;
+            skope::run_classification(&config).context("Failed to run classification")?;
         }
 
         Commands::Query {

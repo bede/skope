@@ -1,9 +1,9 @@
+use crate::query::{SyncmerSet, TimingStats, process_targets_file};
+use crate::syncmers::{Buffers, KmerHasher, SyncmerVec, fill_syncmers};
 use crate::{
     ProcessingStats, RapidHashSet, create_spinner, format_bp, format_bp_per_sec,
     handle_process_result, reader_with_inferred_batch_size, sample_limit_reached_io_error,
 };
-use crate::query::{MinimizerSet, TimingStats, process_targets_file};
-use crate::minimizers::{Buffers, KmerHasher, MinimizerVec, fill_syncmers};
 use anyhow::Result;
 use indicatif::ProgressBar;
 use paraseq::Record;
@@ -72,7 +72,7 @@ struct LengthHistogramProcessor {
     kmer_length: u8,
     smer_length: u8,
     hasher: KmerHasher,
-    targets_minimizers: Arc<MinimizerSet>,
+    targets_syncmers: Arc<SyncmerSet>,
     include_all_seqs: bool,
 
     // Local buffers
@@ -96,7 +96,7 @@ impl LengthHistogramProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
-        targets_minimizers: Arc<MinimizerSet>,
+        targets_syncmers: Arc<SyncmerSet>,
         include_all_seqs: bool,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
@@ -112,7 +112,7 @@ impl LengthHistogramProcessor {
             kmer_length,
             smer_length,
             hasher: KmerHasher::new(smer_length as usize),
-            targets_minimizers,
+            targets_syncmers,
             include_all_seqs,
             buffers,
             local_stats: ProcessingStats::default(),
@@ -149,7 +149,8 @@ impl LengthHistogramProcessor {
 
 impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
     fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
-if let Some(limit) = self.limit_bp {            let global_bp = self.global_stats.lock().total_bp;
+        if let Some(limit) = self.limit_bp {
+            let global_bp = self.global_stats.lock().total_bp;
             if global_bp >= limit {
                 return Err(paraseq::parallel::ProcessError::IoError(
                     sample_limit_reached_io_error(),
@@ -173,13 +174,14 @@ if let Some(limit) = self.limit_bp {            let global_bp = self.global_stat
                 &mut self.buffers,
             );
 
-match (&self.buffers.minimizers, &*self.targets_minimizers) {                (MinimizerVec::U64(vec), MinimizerSet::U64(targets_set)) => {
-                    vec.iter().any(|minimizer| targets_set.contains(minimizer))
+            match (&self.buffers.syncmers, &*self.targets_syncmers) {
+                (SyncmerVec::U64(vec), SyncmerSet::U64(targets_set)) => {
+                    vec.iter().any(|syncmer| targets_set.contains(syncmer))
                 }
-                (MinimizerVec::U128(vec), MinimizerSet::U128(targets_set)) => {
-                    vec.iter().any(|minimizer| targets_set.contains(minimizer))
+                (SyncmerVec::U128(vec), SyncmerSet::U128(targets_set)) => {
+                    vec.iter().any(|syncmer| targets_set.contains(syncmer))
                 }
-                _ => panic!("Mismatch between MinimizerVec and MinimizerSet types"),
+                _ => panic!("Mismatch between SyncmerVec and SyncmerSet types"),
             }
         };
 
@@ -234,7 +236,7 @@ match (&self.buffers.minimizers, &*self.targets_minimizers) {                (Mi
 
 fn process_seqs_file(
     seq_path: &Path,
-    targets_minimizers: Arc<MinimizerSet>,
+    targets_syncmers: Arc<SyncmerSet>,
     kmer_length: u8,
     smer_length: u8,
     threads: usize,
@@ -258,7 +260,7 @@ fn process_seqs_file(
     let mut processor = LengthHistogramProcessor::new(
         kmer_length,
         smer_length,
-        targets_minimizers,
+        targets_syncmers,
         include_all_seqs,
         spinner.clone(),
         start_time,
@@ -306,7 +308,7 @@ fn process_single_sample(
     _idx: usize,
     sample_paths: &[PathBuf],
     sample_name: &str,
-    targets_minimizers: Arc<MinimizerSet>,
+    targets_syncmers: Arc<SyncmerSet>,
     config: &LengthHistogramConfig,
 ) -> Result<LengthHistogramResult> {
     // Silence per-sample progress for >1 sample
@@ -324,7 +326,7 @@ fn process_single_sample(
         let (file_histogram, file_seqs, file_bp, file_with_hits, file_without_hits) =
             process_seqs_file(
                 seq_path,
-                Arc::clone(&targets_minimizers),
+                Arc::clone(&targets_syncmers),
                 config.kmer_length,
                 config.smer_length,
                 config.threads,
@@ -345,9 +347,10 @@ fn process_single_sample(
 
         // Check if limit reached
         if let Some(limit) = config.limit_bp
-            && total_bp >= limit {
-                break;
-            }
+            && total_bp >= limit
+        {
+            break;
+        }
     }
 
     // Convert histogram to sorted vec
@@ -394,16 +397,16 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
     eprintln!("Skope v{}; mode: len; options: {}", version, options);
 
     // Process targets file OR skip if including all seqs
-    let (targets_minimizers, targets_time) = if config.include_all_seqs {
+    let (targets_syncmers, targets_time) = if config.include_all_seqs {
         if !config.quiet {
             eprintln!("Targets: none (target filtering disabled)");
         }
         // Create empty set - won't be used
 
         let empty_set = if config.kmer_length <= 32 {
-            MinimizerSet::U64(RapidHashSet::default())
+            SyncmerSet::U64(RapidHashSet::default())
         } else {
-            MinimizerSet::U128(RapidHashSet::default())
+            SyncmerSet::U128(RapidHashSet::default())
         };
         (Arc::new(empty_set), std::time::Duration::from_secs(0))
     } else {
@@ -421,27 +424,25 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         if !config.quiet {
             eprint!("Building syncmer set…\r");
         }
-        let targets_minimizers = if config.kmer_length <= 32 {
-
+        let targets_syncmers = if config.kmer_length <= 32 {
             let mut set = RapidHashSet::default();
             for target in &targets {
-                if let MinimizerSet::U64(target_set) = &target.minimizers {
+                if let SyncmerSet::U64(target_set) = &target.syncmers {
                     set.extend(target_set.iter());
                 }
             }
-            MinimizerSet::U64(set)
+            SyncmerSet::U64(set)
         } else {
-
             let mut set = RapidHashSet::default();
             for target in &targets {
-                if let MinimizerSet::U128(target_set) = &target.minimizers {
+                if let SyncmerSet::U128(target_set) = &target.syncmers {
                     set.extend(target_set.iter());
                 }
             }
-            MinimizerSet::U128(set)
+            SyncmerSet::U128(set)
         };
 
-        let total_target_syncmers = targets_minimizers.len();
+        let total_target_syncmers = targets_syncmers.len();
         let total_bp: usize = targets.iter().map(|t| t.length).sum();
 
         if !config.quiet {
@@ -454,7 +455,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
             );
         }
 
-        (Arc::new(targets_minimizers), targets_time)
+        (Arc::new(targets_syncmers), targets_time)
     };
 
     // Process each sample in parallel
@@ -484,7 +485,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
                 idx,
                 sample_paths,
                 sample_name,
-                Arc::clone(&targets_minimizers),
+                Arc::clone(&targets_syncmers),
                 config,
             );
 

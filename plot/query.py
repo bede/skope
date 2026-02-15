@@ -112,7 +112,7 @@ def main():
             sys.exit(1)
 
         # Coerce numeric columns in case they're strings
-        for c in (containment_col, hits_col, "median_nz_abundance", "length_bp", "contained_minimizers"):
+        for c in (containment_col, hits_col, "median_nz_abundance", "length_bp", "contained_syncmers"):
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 

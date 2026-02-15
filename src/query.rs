@@ -1,9 +1,9 @@
+use crate::syncmers::{
+    Buffers, KmerHasher, SyncmerVec, fill_syncmers, fill_syncmers_with_positions,
+};
 use crate::{
     ProcessingStats, RapidHashSet, create_spinner, format_bp, format_bp_per_sec,
     handle_process_result, reader_with_inferred_batch_size, sample_limit_reached_io_error,
-};
-use crate::minimizers::{
-    Buffers, KmerHasher, MinimizerVec, fill_syncmers, fill_syncmers_with_positions,
 };
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -29,18 +29,18 @@ pub enum SortOrder {
     Containment, // Descending by containment1 (highest first)
 }
 
-/// Zero-cost (hopefully?) abstraction over u64 and u128 minimizer sets
+/// Zero-cost (hopefully?) abstraction over u64 and u128 syncmer sets
 #[derive(Debug, Clone)]
-pub enum MinimizerSet {
+pub enum SyncmerSet {
     U64(RapidHashSet<u64>),
     U128(RapidHashSet<u128>),
 }
 
-impl MinimizerSet {
+impl SyncmerSet {
     pub fn len(&self) -> usize {
         match self {
-            MinimizerSet::U64(set) => set.len(),
-            MinimizerSet::U128(set) => set.len(),
+            SyncmerSet::U64(set) => set.len(),
+            SyncmerSet::U128(set) => set.len(),
         }
     }
 
@@ -49,7 +49,7 @@ impl MinimizerSet {
     }
 
     pub fn is_u64(&self) -> bool {
-        matches!(self, MinimizerSet::U64(_))
+        matches!(self, SyncmerSet::U64(_))
     }
 }
 
@@ -57,8 +57,8 @@ impl MinimizerSet {
 pub struct TargetInfo {
     pub name: String,
     pub length: usize,
-    pub minimizers: MinimizerSet,
-    pub minimizer_positions: Vec<usize>,
+    pub syncmers: SyncmerSet,
+    pub syncmer_positions: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +66,7 @@ pub struct ContainmentResult {
     pub target: String,
     pub length: usize,
     pub target_kmers: usize,
-    pub contained_minimizers: usize,
+    pub contained_syncmers: usize,
     pub containment1: f64,
     pub median_nz_abundance: f64,
     pub abundance_histogram: Vec<(CountDepth, usize)>, // (abundance, count)
@@ -87,7 +87,7 @@ pub struct ContainmentParameters {
 pub struct TotalStats {
     pub total_targets: usize,
     pub target_kmers: usize,
-    pub total_contained_minimizers: usize,
+    pub total_contained_syncmers: usize,
     pub total_containment1: f64,
     pub total_median_nz_abundance: f64,
     pub total_seqs_processed: u64,
@@ -236,24 +236,24 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         );
 
         // Build unique syncmer set for this target
-        let minimizers = match &self.buffers.minimizers {
-            MinimizerVec::U64(vec) => {
+        let syncmers = match &self.buffers.syncmers {
+            SyncmerVec::U64(vec) => {
                 let set: RapidHashSet<u64> = vec.iter().copied().collect();
-                MinimizerSet::U64(set)
+                SyncmerSet::U64(set)
             }
-            MinimizerVec::U128(vec) => {
+            SyncmerVec::U128(vec) => {
                 let set: RapidHashSet<u128> = vec.iter().copied().collect();
-                MinimizerSet::U128(set)
+                SyncmerSet::U128(set)
             }
         };
 
-        let minimizer_positions = self.positions.clone();
+        let syncmer_positions = self.positions.clone();
 
         self.targets.lock().push(TargetInfo {
             name: target_name,
             length: sequence.len(),
-            minimizers,
-            minimizer_positions,
+            syncmers,
+            syncmer_positions,
         });
 
         Ok(())
@@ -320,7 +320,7 @@ struct SeqsProcessor {
     kmer_length: u8,
     smer_length: u8,
     hasher: KmerHasher,
-    targets_minimizers: Arc<MinimizerSet>,
+    targets_syncmers: Arc<SyncmerSet>,
 
     // Local buffers
     buffers: Buffers,
@@ -341,7 +341,7 @@ impl SeqsProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
-        targets_minimizers: Arc<MinimizerSet>,
+        targets_syncmers: Arc<SyncmerSet>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
         limit_bp: Option<u64>,
@@ -374,7 +374,7 @@ impl SeqsProcessor {
             kmer_length,
             smer_length,
             hasher: KmerHasher::new(smer_length as usize),
-            targets_minimizers,
+            targets_syncmers,
             buffers,
             local_stats: ProcessingStats::default(),
             local_counts_u64,
@@ -408,7 +408,8 @@ impl SeqsProcessor {
 
 impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
     fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
-if let Some(limit) = self.limit_bp {            let global_bp = self.global_stats.lock().total_bp;
+        if let Some(limit) = self.limit_bp {
+            let global_bp = self.global_stats.lock().total_bp;
             if global_bp >= limit {
                 return Err(paraseq::parallel::ProcessError::IoError(
                     sample_limit_reached_io_error(),
@@ -429,30 +430,30 @@ if let Some(limit) = self.limit_bp {            let global_bp = self.global_stat
         );
 
         // Count syncmers present in targets
-        match (&self.buffers.minimizers, &*self.targets_minimizers) {
-            (MinimizerVec::U64(vec), MinimizerSet::U64(targets_set)) => {
+        match (&self.buffers.syncmers, &*self.targets_syncmers) {
+            (SyncmerVec::U64(vec), SyncmerSet::U64(targets_set)) => {
                 let local_counts = self.local_counts_u64.as_mut().unwrap();
-                for &minimizer in vec {
-                    if targets_set.contains(&minimizer) {
+                for &syncmer in vec {
+                    if targets_set.contains(&syncmer) {
                         local_counts
-                            .entry(minimizer)
+                            .entry(syncmer)
                             .and_modify(|e| *e = e.saturating_add(1))
                             .or_insert(1);
                     }
                 }
             }
-            (MinimizerVec::U128(vec), MinimizerSet::U128(targets_set)) => {
+            (SyncmerVec::U128(vec), SyncmerSet::U128(targets_set)) => {
                 let local_counts = self.local_counts_u128.as_mut().unwrap();
-                for &minimizer in vec {
-                    if targets_set.contains(&minimizer) {
+                for &syncmer in vec {
+                    if targets_set.contains(&syncmer) {
                         local_counts
-                            .entry(minimizer)
+                            .entry(syncmer)
                             .and_modify(|e| *e = e.saturating_add(1))
                             .or_insert(1);
                     }
                 }
             }
-            _ => panic!("Mismatch between MinimizerVec and MinimizerSet types"),
+            _ => panic!("Mismatch between SyncmerVec and SyncmerSet types"),
         }
 
         Ok(())
@@ -463,9 +464,9 @@ if let Some(limit) = self.limit_bp {            let global_bp = self.global_stat
         if let Some(local) = &mut self.local_counts_u64 {
             let mut global = self.global_counts_u64.lock();
             let global_map = global.as_mut().unwrap();
-            for (&minimizer, &count) in local.iter() {
+            for (&syncmer, &count) in local.iter() {
                 global_map
-                    .entry(minimizer)
+                    .entry(syncmer)
                     .and_modify(|e| *e = e.saturating_add(count))
                     .or_insert(count);
             }
@@ -474,9 +475,9 @@ if let Some(limit) = self.limit_bp {            let global_bp = self.global_stat
             let mut global = self.global_counts_u128.lock();
             let global_map = global.as_mut().unwrap();
             let local = self.local_counts_u128.as_mut().unwrap();
-            for (&minimizer, &count) in local.iter() {
+            for (&syncmer, &count) in local.iter() {
                 global_map
-                    .entry(minimizer)
+                    .entry(syncmer)
                     .and_modify(|e| *e = e.saturating_add(count))
                     .or_insert(count);
             }
@@ -512,7 +513,7 @@ enum AbundanceMap {
 
 fn process_seqs_file(
     seq_path: &Path,
-    targets_minimizers: Arc<MinimizerSet>,
+    targets_syncmers: Arc<SyncmerSet>,
     kmer_length: u8,
     smer_length: u8,
     threads: usize,
@@ -531,13 +532,13 @@ fn process_seqs_file(
         pb.lock().set_message("Processing sample: 0 seqs (0bp)");
     }
 
-    let total_target_syncmers = targets_minimizers.len();
+    let total_target_syncmers = targets_syncmers.len();
 
     let start_time = Instant::now();
     let mut processor = SeqsProcessor::new(
         kmer_length,
         smer_length,
-        targets_minimizers,
+        targets_syncmers,
         spinner.clone(),
         start_time,
         limit_bp,
@@ -594,31 +595,31 @@ fn calculate_containment_statistics(
     targets
         .iter()
         .map(|target| {
-            let target_kmers = target.minimizers.len();
+            let target_kmers = target.syncmers.len();
             let mut abundances: Vec<CountDepth> = Vec::new();
             let mut contained_count = 0;
 
-            // Collect abundances for all unique minimizers in this target
-            match (&target.minimizers, abundance_map) {
-                (MinimizerSet::U64(set), AbundanceMap::U64(map)) => {
-                    for &minimizer in set {
-                        let abundance = map.get(&minimizer).copied().unwrap_or(0);
+            // Collect abundances for all unique syncmers in this target
+            match (&target.syncmers, abundance_map) {
+                (SyncmerSet::U64(set), AbundanceMap::U64(map)) => {
+                    for &syncmer in set {
+                        let abundance = map.get(&syncmer).copied().unwrap_or(0);
                         abundances.push(abundance);
                         if abundance > 0 {
                             contained_count += 1;
                         }
                     }
                 }
-                (MinimizerSet::U128(set), AbundanceMap::U128(map)) => {
-                    for &minimizer in set {
-                        let abundance = map.get(&minimizer).copied().unwrap_or(0);
+                (SyncmerSet::U128(set), AbundanceMap::U128(map)) => {
+                    for &syncmer in set {
+                        let abundance = map.get(&syncmer).copied().unwrap_or(0);
                         abundances.push(abundance);
                         if abundance > 0 {
                             contained_count += 1;
                         }
                     }
                 }
-                _ => panic!("Mismatch between MinimizerSet and AbundanceMap types"),
+                _ => panic!("Mismatch between SyncmerSet and AbundanceMap types"),
             }
 
             let containment1 = if target_kmers > 0 {
@@ -627,7 +628,7 @@ fn calculate_containment_statistics(
                 0.0
             };
 
-            // Ignore zero-abundance minimizers for median calc
+            // Ignore zero-abundance syncmers for median calc
             let non_zero_abundances: Vec<CountDepth> =
                 abundances.iter().copied().filter(|&a| a > 0).collect();
 
@@ -676,7 +677,7 @@ fn calculate_containment_statistics(
                 target: target.name.clone(),
                 length: target.length,
                 target_kmers,
-                contained_minimizers: contained_count,
+                contained_syncmers: contained_count,
                 containment1,
                 median_nz_abundance,
                 abundance_histogram,
@@ -696,14 +697,13 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     }
 }
 
-
 /// Process a single sample's sequences and calculate statistics
 fn process_single_sample(
     _idx: usize,
     sample_paths: &[PathBuf], // Multiple files per sample
     sample_name: &str,
     targets: &[TargetInfo],
-    targets_minimizers: Arc<MinimizerSet>,
+    targets_syncmers: Arc<SyncmerSet>,
     config: &ContainmentConfig,
 ) -> Result<SampleResults> {
     // Silence per-sample progress for >1 sample
@@ -724,7 +724,7 @@ fn process_single_sample(
     for seq_path in sample_paths {
         let (file_abundance_map, file_seqs, file_bp) = process_seqs_file(
             seq_path,
-            Arc::clone(&targets_minimizers),
+            Arc::clone(&targets_syncmers),
             config.kmer_length,
             config.smer_length,
             config.threads,
@@ -735,17 +735,17 @@ fn process_single_sample(
         // Merge abundance maps
         match (&mut combined_abundance_map, file_abundance_map) {
             (AbundanceMap::U64(combined), AbundanceMap::U64(new)) => {
-                for (minimizer, count) in new {
+                for (syncmer, count) in new {
                     combined
-                        .entry(minimizer)
+                        .entry(syncmer)
                         .and_modify(|e| *e = e.saturating_add(count))
                         .or_insert(count);
                 }
             }
             (AbundanceMap::U128(combined), AbundanceMap::U128(new)) => {
-                for (minimizer, count) in new {
+                for (syncmer, count) in new {
                     combined
-                        .entry(minimizer)
+                        .entry(syncmer)
                         .and_modify(|e| *e = e.saturating_add(count))
                         .or_insert(count);
                 }
@@ -758,9 +758,10 @@ fn process_single_sample(
 
         // Check if limit reached
         if let Some(limit) = config.limit_bp
-            && total_bp >= limit {
-                break;
-            }
+            && total_bp >= limit
+        {
+            break;
+        }
     }
 
     let seqs_time = seqs_start.elapsed();
@@ -778,12 +779,12 @@ fn process_single_sample(
 
     // Overall stats for this sample
     let target_kmers: usize = containment_results.iter().map(|r| r.target_kmers).sum();
-    let total_contained_minimizers: usize = containment_results
+    let total_contained_syncmers: usize = containment_results
         .iter()
-        .map(|r| r.contained_minimizers)
+        .map(|r| r.contained_syncmers)
         .sum();
     let total_containment1 = if target_kmers > 0 {
-        total_contained_minimizers as f64 / target_kmers as f64
+        total_contained_syncmers as f64 / target_kmers as f64
     } else {
         0.0
     };
@@ -835,7 +836,7 @@ fn process_single_sample(
         total_stats: TotalStats {
             total_targets: targets.len(),
             target_kmers,
-            total_contained_minimizers,
+            total_contained_syncmers,
             total_containment1,
             total_median_nz_abundance,
             total_seqs_processed: total_seqs,
@@ -910,57 +911,57 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     if !config.quiet {
         eprint!("Counting shared syncmers…\r");
     }
-    let mut minimizer_target_counts: HashMap<u64, usize> = HashMap::new();
-    let mut minimizer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
+    let mut syncmer_target_counts: HashMap<u64, usize> = HashMap::new();
+    let mut syncmer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
 
     for target in &targets {
-        match &target.minimizers {
-            MinimizerSet::U64(set) => {
-                for &minimizer in set {
-                    *minimizer_target_counts.entry(minimizer).or_insert(0) += 1;
+        match &target.syncmers {
+            SyncmerSet::U64(set) => {
+                for &syncmer in set {
+                    *syncmer_target_counts.entry(syncmer).or_insert(0) += 1;
                 }
             }
-            MinimizerSet::U128(set) => {
-                for &minimizer in set {
-                    *minimizer_target_counts_u128.entry(minimizer).or_insert(0) += 1;
+            SyncmerSet::U128(set) => {
+                for &syncmer in set {
+                    *syncmer_target_counts_u128.entry(syncmer).or_insert(0) += 1;
                 }
             }
         }
     }
 
-    let shared_minimizers = if config.kmer_length <= 32 {
-        minimizer_target_counts
+    let shared_syncmers = if config.kmer_length <= 32 {
+        syncmer_target_counts
             .values()
             .filter(|&&count| count > 1)
             .count()
     } else {
-        minimizer_target_counts_u128
+        syncmer_target_counts_u128
             .values()
             .filter(|&&count| count > 1)
             .count()
     };
 
     let unique_across_all = if config.kmer_length <= 32 {
-        minimizer_target_counts.len()
+        syncmer_target_counts.len()
     } else {
-        minimizer_target_counts_u128.len()
+        syncmer_target_counts_u128.len()
     };
 
     // Apply discriminatory filtering if enabled
     if config.discriminatory {
         for target in &mut targets {
-            match &mut target.minimizers {
-                MinimizerSet::U64(set) => {
-                    set.retain(|minimizer| {
-                        minimizer_target_counts
-                            .get(minimizer)
+            match &mut target.syncmers {
+                SyncmerSet::U64(set) => {
+                    set.retain(|syncmer| {
+                        syncmer_target_counts
+                            .get(syncmer)
                             .is_none_or(|&count| count == 1)
                     });
                 }
-                MinimizerSet::U128(set) => {
-                    set.retain(|minimizer| {
-                        minimizer_target_counts_u128
-                            .get(minimizer)
+                SyncmerSet::U128(set) => {
+                    set.retain(|syncmer| {
+                        syncmer_target_counts_u128
+                            .get(syncmer)
                             .is_none_or(|&count| count == 1)
                     });
                 }
@@ -970,7 +971,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
 
     if !config.quiet {
         eprint!("\r"); // Clear space
-        let total_unique_syncmers: usize = targets.iter().map(|t| t.minimizers.len()).sum();
+        let total_unique_syncmers: usize = targets.iter().map(|t| t.syncmers.len()).sum();
         let total_bp: usize = targets.iter().map(|t| t.length).sum();
 
         if config.discriminatory {
@@ -979,11 +980,11 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
                 targets.len(),
                 format_bp(total_bp),
                 total_unique_syncmers,
-                shared_minimizers
+                shared_syncmers
             );
         } else {
             let shared_pct = if unique_across_all > 0 {
-                shared_minimizers as f64 / unique_across_all as f64 * 100.0
+                shared_syncmers as f64 / unique_across_all as f64 * 100.0
             } else {
                 0.0
             };
@@ -992,7 +993,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
                 targets.len(),
                 format_bp(total_bp),
                 total_unique_syncmers,
-                shared_minimizers,
+                shared_syncmers,
                 shared_pct
             );
         }
@@ -1002,37 +1003,37 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     if !config.quiet {
         eprint!("Building syncmer set…\r");
     }
-    let targets_minimizers = if config.kmer_length <= 32 {
+    let targets_syncmers = if config.kmer_length <= 32 {
         let mut set = RapidHashSet::default();
         for target in &targets {
-            if let MinimizerSet::U64(target_set) = &target.minimizers {
+            if let SyncmerSet::U64(target_set) = &target.syncmers {
                 set.extend(target_set.iter());
             }
         }
-        MinimizerSet::U64(set)
+        SyncmerSet::U64(set)
     } else {
         let mut set = RapidHashSet::default();
         for target in &targets {
-            if let MinimizerSet::U128(target_set) = &target.minimizers {
+            if let SyncmerSet::U128(target_set) = &target.syncmers {
                 set.extend(target_set.iter());
             }
         }
-        MinimizerSet::U128(set)
+        SyncmerSet::U128(set)
     };
 
-    let targets_minimizers = Arc::new(targets_minimizers);
+    let targets_syncmers = Arc::new(targets_syncmers);
 
     // Dump syncmer positions if requested
     if let Some(ref path) = config.dump_positions_path {
         let mut file = BufWriter::new(File::create(path)?);
         for target in &targets {
-            for &pos in &target.minimizer_positions {
+            for &pos in &target.syncmer_positions {
                 writeln!(file, "{}\t{}", target.name, pos)?;
             }
         }
         file.flush()?;
         if !config.quiet {
-            let total_positions: usize = targets.iter().map(|t| t.minimizer_positions.len()).sum();
+            let total_positions: usize = targets.iter().map(|t| t.syncmer_positions.len()).sum();
             eprintln!(
                 "Dumped {} syncmer positions to {}",
                 total_positions,
@@ -1071,7 +1072,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
                 sample_paths, // Now a &Vec<PathBuf>
                 sample_name,
                 &targets,
-                Arc::clone(&targets_minimizers),
+                Arc::clone(&targets_syncmers),
                 config,
             );
 
@@ -1126,7 +1127,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             analysis_time: total_analysis_time,
             total_time: total_time.as_secs_f64(),
             seqs_per_second: 0.0, // Not meaningful across samples
-            bp_per_second: 0.0,    // Not meaningful across samples
+            bp_per_second: 0.0,   // Not meaningful across samples
         },
     };
 
@@ -1243,11 +1244,7 @@ fn output_table_sorted(
 
     for sample in &report.samples {
         let sample_display = if sample.seq_files.len() > 1 {
-            format!(
-                "{} ({} files)",
-                sample.sample_name,
-                sample.seq_files.len()
-            )
+            format!("{} ({} files)", sample.sample_name, sample.seq_files.len())
         } else {
             sample.sample_name.clone()
         };
@@ -1321,11 +1318,7 @@ fn output_table_sorted(
     if !no_total {
         for sample in &report.samples {
             let sample_display = if sample.seq_files.len() > 1 {
-                format!(
-                    "{} ({} files)",
-                    sample.sample_name,
-                    sample.seq_files.len()
-                )
+                format!("{} ({} files)", sample.sample_name, sample.seq_files.len())
             } else {
                 sample.sample_name.clone()
             };
@@ -1378,7 +1371,7 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                 result.target,
                 sample.sample_name,
                 result.containment1,
-                result.contained_minimizers // Use contained_minimizers for threshold 1 hits
+                result.contained_syncmers // Use contained_syncmers for threshold 1 hits
             );
             for threshold in &thresholds {
                 let containment = result
@@ -1402,7 +1395,7 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                 "TOTAL",
                 sample.sample_name,
                 sample.total_stats.total_containment1,
-                sample.total_stats.total_contained_minimizers
+                sample.total_stats.total_contained_syncmers
             );
             for threshold in &thresholds {
                 let containment = sample

@@ -5,9 +5,9 @@
 //! Skope analyses the containment of open syncmers from reference sequences in sequence datasets,
 //! providing detailed statistics on containment and abundance per target sequence
 pub mod classify;
-pub mod query;
 pub mod length;
-pub mod minimizers;
+pub mod query;
+pub mod syncmers;
 
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -29,8 +29,8 @@ pub use length::{
 
 pub use classify::{BuildConfig, ClassifyConfig, build_classification_index, run_classification};
 
-pub use minimizers::{
-    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, KmerHasher, MinimizerVec, decode_u64,
+pub use syncmers::{
+    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, KmerHasher, SyncmerVec, decode_u64,
     decode_u128, fill_syncmers, fill_syncmers_with_positions,
 };
 
@@ -126,7 +126,9 @@ pub fn create_spinner(quiet: bool) -> Result<Option<Arc<Mutex<indicatif::Progres
 }
 
 /// Treat sample-limit interruptions as normal completion
-pub fn handle_process_result(result: std::result::Result<(), paraseq::parallel::ProcessError>) -> Result<()> {
+pub fn handle_process_result(
+    result: std::result::Result<(), paraseq::parallel::ProcessError>,
+) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
         Err(e) if is_sample_limit_error(&e) => Ok(()),
@@ -137,10 +139,22 @@ pub fn handle_process_result(result: std::result::Result<(), paraseq::parallel::
 /// Find all fastx files in a directory (non-recursive, following symlinks)
 pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
     const FASTX_EXTENSIONS: &[&str] = &[
-        ".fasta", ".fa", ".fastq", ".fq",
-        ".fasta.gz", ".fa.gz", ".fastq.gz", ".fq.gz",
-        ".fasta.xz", ".fa.xz", ".fastq.xz", ".fq.xz",
-        ".fasta.zst", ".fa.zst", ".fastq.zst", ".fq.zst",
+        ".fasta",
+        ".fa",
+        ".fastq",
+        ".fq",
+        ".fasta.gz",
+        ".fa.gz",
+        ".fastq.gz",
+        ".fq.gz",
+        ".fasta.xz",
+        ".fa.xz",
+        ".fastq.xz",
+        ".fq.xz",
+        ".fasta.zst",
+        ".fa.zst",
+        ".fastq.zst",
+        ".fq.zst",
     ];
 
     let mut files = Vec::new();
@@ -149,8 +163,13 @@ pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
         .map_err(|e| anyhow::anyhow!("Failed to read directory: {}: {}", dir_path.display(), e))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|e| anyhow::anyhow!("Failed to read directory entry in {}: {}", dir_path.display(), e))?;
+        let entry = entry.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to read directory entry in {}: {}",
+                dir_path.display(),
+                e
+            )
+        })?;
 
         let path = entry.path();
 
@@ -222,7 +241,11 @@ pub fn derive_sample_name(path: &Path, is_directory: bool) -> String {
         }
     }
 
-    if name.is_empty() { filename.to_string() } else { name }
+    if name.is_empty() {
+        filename.to_string()
+    } else {
+        name
+    }
 }
 
 /// Validate k-mer and s-mer size constraints for open syncmers
@@ -233,7 +256,8 @@ pub fn validate_k_s(kmer_length: u8, smer_length: u8) -> Result<()> {
     if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
         return Err(anyhow::anyhow!(
             "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
-            k, s
+            k,
+            s
         ));
     }
     Ok(())
