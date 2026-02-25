@@ -185,6 +185,10 @@ enum Commands {
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
+        /// Use only non-overlapping (disjoint) syncmers
+        #[arg(long = "disjoint", default_value_t = false)]
+        disjoint: bool,
+
         // Processing options
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
@@ -468,6 +472,7 @@ fn main() -> Result<()> {
             format,
             abundance_thresholds,
             discriminatory,
+            disjoint,
             limit,
             sort,
             dump_positions,
@@ -547,6 +552,7 @@ fn main() -> Result<()> {
                 output_format,
                 abundance_thresholds: abundance_thresholds.clone(),
                 discriminatory: *discriminatory,
+                disjoint: *disjoint,
                 limit_bp,
                 sort_order,
                 dump_positions_path: dump_positions.as_ref().map(PathBuf::from),

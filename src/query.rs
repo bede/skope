@@ -144,6 +144,7 @@ pub struct ContainmentConfig {
     pub output_format: OutputFormat,
     pub abundance_thresholds: Vec<usize>,
     pub discriminatory: bool,
+    pub disjoint: bool,
     pub limit_bp: Option<u64>,
     pub sort_order: SortOrder,
     pub dump_positions_path: Option<PathBuf>,
@@ -165,6 +166,7 @@ struct TargetsProcessor {
     buffers: Buffers,
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
+    disjoint: bool,
 
     // Progress tracking
     local_stats: ProcessingStats,
@@ -179,6 +181,7 @@ impl TargetsProcessor {
         smer_length: u8,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: std::time::Instant,
+        disjoint: bool,
     ) -> Self {
         let buffers = if kmer_length <= 32 {
             Buffers::new_u64()
@@ -193,6 +196,7 @@ impl TargetsProcessor {
             buffers,
             positions: Vec::new(),
             targets: Arc::new(Mutex::new(Vec::new())),
+            disjoint,
             local_stats: ProcessingStats::default(),
             global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
             spinner,
@@ -233,6 +237,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
             self.smer_length,
             &mut self.buffers,
             &mut self.positions,
+            self.disjoint,
         );
 
         // Build unique syncmer set for this target
@@ -286,6 +291,7 @@ pub fn process_targets_file(
     kmer_length: u8,
     smer_length: u8,
     quiet: bool,
+    disjoint: bool,
 ) -> Result<Vec<TargetInfo>> {
     let in_path = if targets_path.to_string_lossy() == "-" {
         None
@@ -299,7 +305,7 @@ pub fn process_targets_file(
 
     let start_time = std::time::Instant::now();
     let mut processor =
-        TargetsProcessor::new(kmer_length, smer_length, spinner.clone(), start_time);
+        TargetsProcessor::new(kmer_length, smer_length, spinner.clone(), start_time, disjoint);
 
     // Single thread to preserve order
     reader.process_parallel(&mut processor, 1)?;
@@ -321,6 +327,7 @@ struct SeqsProcessor {
     smer_length: u8,
     hasher: KmerHasher,
     targets_syncmers: Arc<SyncmerSet>,
+    disjoint: bool,
 
     // Local buffers
     buffers: Buffers,
@@ -345,6 +352,7 @@ impl SeqsProcessor {
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
         limit_bp: Option<u64>,
+        disjoint: bool,
     ) -> Self {
         let buffers = if kmer_length <= 32 {
             Buffers::new_u64()
@@ -375,6 +383,7 @@ impl SeqsProcessor {
             smer_length,
             hasher: KmerHasher::new(smer_length as usize),
             targets_syncmers,
+            disjoint,
             buffers,
             local_stats: ProcessingStats::default(),
             local_counts_u64,
@@ -427,6 +436,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
             self.kmer_length,
             self.smer_length,
             &mut self.buffers,
+            self.disjoint,
         );
 
         // Count syncmers present in targets
@@ -519,6 +529,7 @@ fn process_seqs_file(
     threads: usize,
     quiet: bool,
     limit_bp: Option<u64>,
+    disjoint: bool,
 ) -> Result<(AbundanceMap, u64, u64)> {
     let in_path = if seq_path.to_string_lossy() == "-" {
         None
@@ -542,6 +553,7 @@ fn process_seqs_file(
         spinner.clone(),
         start_time,
         limit_bp,
+        disjoint,
     );
 
     let process_result = reader.process_parallel(&mut processor, threads);
@@ -730,6 +742,7 @@ fn process_single_sample(
             config.threads,
             quiet_sample,
             config.limit_bp.map(|limit| limit.saturating_sub(total_bp)),
+            config.disjoint,
         )?;
 
         // Merge abundance maps
@@ -904,6 +917,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         config.kmer_length,
         config.smer_length,
         config.quiet,
+        config.disjoint,
     )?;
     let targets_time = targets_start.elapsed();
 

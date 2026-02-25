@@ -172,6 +172,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
                 self.kmer_length,
                 self.smer_length,
                 &mut self.buffers,
+                false,
             );
 
             match (&self.buffers.syncmers, &*self.targets_syncmers) {
@@ -417,6 +418,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
             config.kmer_length,
             config.smer_length,
             config.quiet,
+            false,
         )?;
         let targets_time = targets_start.elapsed();
 

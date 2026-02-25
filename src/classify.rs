@@ -173,6 +173,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
             self.kmer_length,
             self.smer_length,
             &mut self.buffers,
+            false,
         );
 
         match &self.buffers.syncmers {
@@ -609,7 +610,7 @@ fn classify_seq_kmers(
     min_hits: u64,
     min_fraction: f64,
 ) -> (usize, Classification) {
-    fill_syncmers(seq, hasher, kmer_length, smer_length, buffers);
+    fill_syncmers(seq, hasher, kmer_length, smer_length, buffers, false);
 
     for h in hits[..num_groups].iter_mut() {
         *h = 0;

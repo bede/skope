@@ -97,6 +97,7 @@ pub fn fill_syncmers_with_positions(
     smer_length: u8,
     buffers: &mut Buffers,
     positions_out: &mut Vec<usize>,
+    disjoint: bool,
 ) {
     let Buffers {
         packed_nseq,
@@ -128,7 +129,7 @@ pub fn fill_syncmers_with_positions(
         SyncmerVec::U64(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u64() {
-                if pos >= next_allowed {
+                if !disjoint || pos >= next_allowed {
                     vec.push(val);
                     positions_out.push(pos as usize);
                     next_allowed = pos.saturating_add(k);
@@ -138,7 +139,7 @@ pub fn fill_syncmers_with_positions(
         SyncmerVec::U128(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u128() {
-                if pos >= next_allowed {
+                if !disjoint || pos >= next_allowed {
                     vec.push(val);
                     positions_out.push(pos as usize);
                     next_allowed = pos.saturating_add(k);
@@ -155,6 +156,7 @@ pub fn fill_syncmers(
     kmer_length: u8,
     smer_length: u8,
     buffers: &mut Buffers,
+    disjoint: bool,
 ) {
     let Buffers {
         packed_nseq,
@@ -185,7 +187,7 @@ pub fn fill_syncmers(
         SyncmerVec::U64(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u64() {
-                if pos >= next_allowed {
+                if !disjoint || pos >= next_allowed {
                     vec.push(val);
                     next_allowed = pos.saturating_add(k);
                 }
@@ -194,7 +196,7 @@ pub fn fill_syncmers(
         SyncmerVec::U128(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u128() {
-                if pos >= next_allowed {
+                if !disjoint || pos >= next_allowed {
                     vec.push(val);
                     next_allowed = pos.saturating_add(k);
                 }
@@ -215,14 +217,14 @@ mod tests {
         let hasher = KmerHasher::new(s as usize);
         let mut buffers = Buffers::new_u64();
 
-        fill_syncmers(seq, &hasher, k, s, &mut buffers);
+        fill_syncmers(seq, &hasher, k, s, &mut buffers, false);
 
         // We should have at least one syncmer
         assert!(!buffers.syncmers.is_empty());
 
         // Test with a sequence shorter than k
         let short_seq = b"ACGT";
-        fill_syncmers(short_seq, &hasher, k, s, &mut buffers);
+        fill_syncmers(short_seq, &hasher, k, s, &mut buffers, false);
         assert!(buffers.syncmers.is_empty());
     }
 
@@ -235,7 +237,7 @@ mod tests {
         let mut buffers = Buffers::new_u64();
         let mut positions = Vec::new();
 
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions);
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, false);
 
         // Should have same number of syncmers and positions
         assert_eq!(buffers.syncmers.len(), positions.len());
@@ -259,7 +261,7 @@ mod tests {
         let hasher = KmerHasher::new(s as usize);
 
         let mut values_only_buffers = Buffers::new_u64();
-        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers);
+        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers, false);
         let values_only = match &values_only_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),
             SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
@@ -267,7 +269,7 @@ mod tests {
 
         let mut with_pos_buffers = Buffers::new_u64();
         let mut positions = Vec::new();
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions);
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions, false);
         let with_pos_values = match &with_pos_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),
             SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
