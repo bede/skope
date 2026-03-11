@@ -143,21 +143,26 @@ def main():
         else:
             min_len = args.min_len
             max_len = args.max_len if args.max_len else int(df["length"].max())
-            bin_extent = [min_len, max_len]
+
+            # aggregate in pandas land
+            binned = df.copy()
+            binned["bin"] = (binned["length"] // args.bin_step) * args.bin_step
+            agg = binned.groupby(["sample", "bin"], as_index=False)["count"].sum()
+            agg["density"] = agg["count"] / args.bin_step
 
             base = (
-                alt.Chart(df)
+                alt.Chart(agg)
                 .mark_line(interpolate="step-after", strokeWidth=2)
                 .encode(
                     x=alt.X(
-                        "length:Q",
-                        bin=alt.Bin(step=args.bin_step, extent=bin_extent),
+                        "bin:Q",
                         title="Read length (bp)",
+                        scale=alt.Scale(domain=[min_len, max_len]),
                     ),
                     y=alt.Y(
-                        "sum(count):Q",
+                        "density:Q",
                         stack=None,
-                        title="Read count",
+                        title="Read count / bp",
                         scale=y_scale,
                     ),
                     color=alt.Color(
