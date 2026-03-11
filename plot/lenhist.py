@@ -33,8 +33,12 @@ def main():
                         help="Minimum x-axis limit (default: 0)")
     parser.add_argument("--facet", action="store_true",
                         help="Facet by sample instead of overlaying")
+    parser.add_argument("-m", "--mode", choices=["hist", "kde"], default="hist",
+                        help="Plot mode: hist (histogram, default) or kde (kernel density estimation)")
     parser.add_argument("-b", "--bin-step", type=int, default=100,
-                        help="Bin step size in bp (default: 100)")
+                        help="Bin step size in bp for hist mode (default: 100)")
+    parser.add_argument("--bandwidth", type=float, default=100.0,
+                        help="Bandwidth for KDE smoothing in kde mode (default: 100.0)")
     parser.add_argument("-c", "--colours", "--colors", default="category20",
                         help="Altair/Vega-Lite color scheme (default: %(default)s)")
 
@@ -98,33 +102,72 @@ def main():
 
         y_scale = alt.Scale(type="log") if args.log_scale else alt.Scale(type="linear")
 
-        min_len = args.min_len
-        max_len = args.max_len if args.max_len else int(df["length"].max())
-        bin_extent = [min_len, max_len]
+        if args.mode == "kde":
+            # Expand data for KDE: repeat each length by its count
+            expanded_rows = []
+            for _, row in df.iterrows():
+                for _ in range(int(row["count"])):
+                    expanded_rows.append({
+                        "sample": row["sample"],
+                        "length": row["length"]
+                    })
+            kde_df = pd.DataFrame(expanded_rows)
+            kde_df["total_count"] = kde_df.groupby(["sample"])["length"].transform("count")
 
-        base = (
-            alt.Chart(df)
-            .mark_line(interpolate="step-after", strokeWidth=2)
-            .encode(
-                x=alt.X(
-                    "length:Q",
-                    bin=alt.Bin(step=args.bin_step, extent=bin_extent),
-                    title="Read length (bp)",
-                ),
-                y=alt.Y(
-                    "sum(count):Q",
-                    stack=None,
-                    title="Read count",
-                    scale=y_scale,
-                ),
-                color=alt.Color(
-                    "sample:N",
-                    title="Sample",
-                    sort=sample_order,
-                    scale=alt.Scale(scheme=args.colours),
-                ),
+            x_scale_kwargs = {"zero": False}
+            if args.max_len is not None:
+                x_scale_kwargs["domain"] = [args.min_len, args.max_len]
+
+            base = (
+                alt.Chart(kde_df)
+                .transform_density(
+                    density="length",
+                    groupby=["sample", "total_count"],
+                    bandwidth=args.bandwidth,
+                    as_=["length", "density"],
+                )
+                .transform_calculate(frequency="datum.density * datum.total_count")
+                .mark_line(strokeWidth=2, interpolate="monotone", clip=True)
+                .encode(
+                    x=alt.X("length:Q", title="Read length (bp)",
+                            scale=alt.Scale(**x_scale_kwargs)),
+                    y=alt.Y("frequency:Q", title="Frequency", scale=y_scale),
+                    color=alt.Color(
+                        "sample:N",
+                        title="Sample",
+                        sort=sample_order,
+                        scale=alt.Scale(scheme=args.colours),
+                    ),
+                )
             )
-        )
+        else:
+            min_len = args.min_len
+            max_len = args.max_len if args.max_len else int(df["length"].max())
+            bin_extent = [min_len, max_len]
+
+            base = (
+                alt.Chart(df)
+                .mark_line(interpolate="step-after", strokeWidth=2)
+                .encode(
+                    x=alt.X(
+                        "length:Q",
+                        bin=alt.Bin(step=args.bin_step, extent=bin_extent),
+                        title="Read length (bp)",
+                    ),
+                    y=alt.Y(
+                        "sum(count):Q",
+                        stack=None,
+                        title="Read count",
+                        scale=y_scale,
+                    ),
+                    color=alt.Color(
+                        "sample:N",
+                        title="Sample",
+                        sort=sample_order,
+                        scale=alt.Scale(scheme=args.colours),
+                    ),
+                )
+            )
 
         if args.facet:
             chart = (
