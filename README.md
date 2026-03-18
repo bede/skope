@@ -1,3 +1,5 @@
+[![Crates.io version](https://img.shields.io/crates/v/skope?style=flat-square)](https://crates.io/crates/skope)
+
 # Skope
 
 Fast syncmer containment and abundance estimation.
@@ -5,6 +7,10 @@ Fast syncmer containment and abundance estimation.
 ## Install & update
 
 ```bash
+# Latest stable
+RUSTFLAGS="-C target-cpu=native" cargo install skope
+
+# Latest from git
 RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/bede/skope
 ```
 
