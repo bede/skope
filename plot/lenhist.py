@@ -149,6 +149,7 @@ def main():
             binned["bin"] = (binned["length"] // args.bin_step) * args.bin_step
             agg = binned.groupby(["sample", "bin"], as_index=False)["count"].sum()
             agg["density"] = agg["count"] / args.bin_step
+            agg = agg[(agg["bin"] >= min_len) & (agg["bin"] <= max_len)]
 
             base = (
                 alt.Chart(agg)
