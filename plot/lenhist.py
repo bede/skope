@@ -31,6 +31,10 @@ def main():
                         help="Maximum x-axis limit")
     parser.add_argument("--min-len", type=int, default=0,
                         help="Minimum x-axis limit (default: 0)")
+    parser.add_argument("--min-y", type=float, default=None,
+                        help="Minimum y-axis limit")
+    parser.add_argument("--max-y", type=float, default=None,
+                        help="Maximum y-axis limit")
     parser.add_argument("--facet", action="store_true",
                         help="Facet by sample instead of overlaying")
     parser.add_argument("-m", "--mode", choices=["hist", "kde"], default="hist",
@@ -100,12 +104,24 @@ def main():
 
         alt.data_transformers.enable("json")
 
-        y_scale = alt.Scale(type="log") if args.log_scale else alt.Scale(type="linear")
+        y_scale_kwargs = {"type": "log" if args.log_scale else "linear"}
+        if args.min_y is not None or args.max_y is not None:
+            y_scale_kwargs["domain"] = [
+                args.min_y if args.min_y is not None else 0,
+                args.max_y,
+            ]
+        y_scale = alt.Scale(**y_scale_kwargs)
 
         if args.mode == "kde":
+            # Filter data by x limits before expanding
+            kde_source = df.copy()
+            kde_source = kde_source[kde_source["length"] >= args.min_len]
+            if args.max_len is not None:
+                kde_source = kde_source[kde_source["length"] <= args.max_len]
+
             # Expand data for KDE: repeat each length by its count
             expanded_rows = []
-            for _, row in df.iterrows():
+            for _, row in kde_source.iterrows():
                 for _ in range(int(row["count"])):
                     expanded_rows.append({
                         "sample": row["sample"],
@@ -150,10 +166,14 @@ def main():
             agg = binned.groupby(["sample", "bin"], as_index=False)["count"].sum()
             agg["density"] = agg["count"] / args.bin_step
             agg = agg[(agg["bin"] >= min_len) & (agg["bin"] <= max_len)]
+            if args.min_y is not None:
+                agg = agg[agg["density"] >= args.min_y]
+            if args.max_y is not None:
+                agg = agg[agg["density"] <= args.max_y]
 
             base = (
                 alt.Chart(agg)
-                .mark_line(interpolate="step-after", strokeWidth=2)
+                .mark_line(interpolate="step-after", strokeWidth=2, clip=True)
                 .encode(
                     x=alt.X(
                         "bin:Q",
