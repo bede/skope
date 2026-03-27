@@ -136,27 +136,33 @@ pub fn handle_process_result(
     }
 }
 
+const FASTX_EXTENSIONS: &[&str] = &[
+    ".fasta",
+    ".fa",
+    ".fastq",
+    ".fq",
+    ".fasta.gz",
+    ".fa.gz",
+    ".fastq.gz",
+    ".fq.gz",
+    ".fasta.xz",
+    ".fa.xz",
+    ".fastq.xz",
+    ".fq.xz",
+    ".fasta.zst",
+    ".fa.zst",
+    ".fastq.zst",
+    ".fq.zst",
+];
+
+/// Check whether a path has a recognised fastx extension
+pub fn is_fastx_file(path: &Path) -> bool {
+    let path_str = path.to_string_lossy().to_lowercase();
+    FASTX_EXTENSIONS.iter().any(|ext| path_str.ends_with(ext))
+}
+
 /// Find all fastx files in a directory (non-recursive, following symlinks)
 pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
-    const FASTX_EXTENSIONS: &[&str] = &[
-        ".fasta",
-        ".fa",
-        ".fastq",
-        ".fq",
-        ".fasta.gz",
-        ".fa.gz",
-        ".fastq.gz",
-        ".fq.gz",
-        ".fasta.xz",
-        ".fa.xz",
-        ".fastq.xz",
-        ".fq.xz",
-        ".fasta.zst",
-        ".fa.zst",
-        ".fastq.zst",
-        ".fq.zst",
-    ];
-
     let mut files = Vec::new();
 
     let entries = std::fs::read_dir(dir_path)
@@ -188,8 +194,7 @@ pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
             continue;
         }
 
-        let path_str = path.to_string_lossy().to_lowercase();
-        if FASTX_EXTENSIONS.iter().any(|ext| path_str.ends_with(ext)) {
+        if is_fastx_file(&path) {
             files.push(path);
         }
     }

@@ -2,8 +2,9 @@ use crate::syncmers::{
     Buffers, KmerHasher, SyncmerVec, fill_syncmers, fill_syncmers_with_positions,
 };
 use crate::{
-    ProcessingStats, RapidHashSet, create_spinner, format_bp, format_bp_per_sec,
-    handle_process_result, reader_with_inferred_batch_size, sample_limit_reached_io_error,
+    ProcessingStats, RapidHashSet, create_spinner, derive_sample_name, find_fastx_files,
+    format_bp, format_bp_per_sec, handle_process_result, is_fastx_file,
+    reader_with_inferred_batch_size, sample_limit_reached_io_error,
 };
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -50,6 +51,14 @@ impl SyncmerSet {
 
     pub fn is_u64(&self) -> bool {
         matches!(self, SyncmerSet::U64(_))
+    }
+
+    pub fn extend(&mut self, other: &SyncmerSet) {
+        match (self, other) {
+            (SyncmerSet::U64(a), SyncmerSet::U64(b)) => a.extend(b.iter().copied()),
+            (SyncmerSet::U128(a), SyncmerSet::U128(b)) => a.extend(b.iter().copied()),
+            _ => panic!("Cannot extend SyncmerSet: mismatched variants"),
+        }
     }
 }
 
@@ -318,6 +327,104 @@ pub fn process_targets_file(
     let targets = Arc::try_unwrap(processor.targets).unwrap().into_inner();
 
     Ok(targets)
+}
+
+/// Merge multiple TargetInfos into one with the given name
+fn merge_targets(targets: Vec<TargetInfo>, name: String) -> Result<TargetInfo> {
+    if targets.is_empty() {
+        return Err(anyhow::anyhow!("No targets to merge for '{}'", name));
+    }
+
+    let mut iter = targets.into_iter();
+    let mut merged = iter.next().unwrap();
+    merged.name = name;
+
+    for t in iter {
+        merged.syncmers.extend(&t.syncmers);
+        merged.syncmer_positions.extend(t.syncmer_positions);
+        merged.length += t.length;
+    }
+
+    Ok(merged)
+}
+
+/// Process a directory of fastx files/subdirectories as targets
+/// Each top-level fastx file becomes one target (all records merged).
+/// Each subdirectory becomes one target (all fastx files within merged).
+pub fn process_targets_dir(
+    dir_path: &Path,
+    kmer_length: u8,
+    smer_length: u8,
+    quiet: bool,
+    disjoint: bool,
+) -> Result<Vec<TargetInfo>> {
+    let mut fastx_files: Vec<PathBuf> = Vec::new();
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+
+    let entries = std::fs::read_dir(dir_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read directory: {}: {}", dir_path.display(), e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to read directory entry in {}: {}",
+                dir_path.display(),
+                e
+            )
+        })?;
+
+        let path = entry.path();
+
+        // Skip hidden entries
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with('.') {
+                continue;
+            }
+        }
+
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to access: {}: {}", path.display(), e))?;
+
+        if metadata.is_dir() {
+            subdirs.push(path);
+        } else if metadata.is_file() && is_fastx_file(&path) {
+            fastx_files.push(path);
+        }
+    }
+
+    fastx_files.sort();
+    subdirs.sort();
+
+    if fastx_files.is_empty() && subdirs.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Directory contains no fastx files or subdirectories: {}",
+            dir_path.display()
+        ));
+    }
+
+    let mut results: Vec<TargetInfo> = Vec::new();
+
+    // Each top-level fastx file becomes one merged target
+    for file_path in &fastx_files {
+        let name = derive_sample_name(file_path, false);
+        let targets = process_targets_file(file_path, kmer_length, smer_length, quiet, disjoint)?;
+        results.push(merge_targets(targets, name)?);
+    }
+
+    // Each subdirectory becomes one merged target
+    for subdir in &subdirs {
+        let name = derive_sample_name(subdir, true);
+        let subdir_files = find_fastx_files(subdir)?;
+        let mut all_targets: Vec<TargetInfo> = Vec::new();
+        for file_path in &subdir_files {
+            let targets =
+                process_targets_file(file_path, kmer_length, smer_length, quiet, disjoint)?;
+            all_targets.extend(targets);
+        }
+        results.push(merge_targets(all_targets, name)?);
+    }
+
+    Ok(results)
 }
 
 /// Processor for counting syncmer depths from sequences
@@ -908,17 +1015,33 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         }
     ));
 
-    eprintln!("Skope v{}; mode: query; options: {}", version, options);
+    let is_targets_dir = config.targets_path.is_dir();
+    eprintln!(
+        "Skope v{}; mode: query{}; options: {}",
+        version,
+        if is_targets_dir { " (from directory)" } else { "" },
+        options
+    );
 
-    // Process targets file
+    // Process targets file or directory
     let targets_start = Instant::now();
-    let mut targets = process_targets_file(
-        &config.targets_path,
-        config.kmer_length,
-        config.smer_length,
-        config.quiet,
-        config.disjoint,
-    )?;
+    let mut targets = if is_targets_dir {
+        process_targets_dir(
+            &config.targets_path,
+            config.kmer_length,
+            config.smer_length,
+            config.quiet,
+            config.disjoint,
+        )?
+    } else {
+        process_targets_file(
+            &config.targets_path,
+            config.kmer_length,
+            config.smer_length,
+            config.quiet,
+            config.disjoint,
+        )?
+    };
     let targets_time = targets_start.elapsed();
 
     // Count syncmers shared between targets

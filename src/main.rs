@@ -156,7 +156,7 @@ enum IndexCommands {
 enum Commands {
     /// Estimate k-mer containment & abundance in fastx file(s) or directories thereof
     Query {
-        /// Path to fastx file containing target sequence record(s)
+        /// Path to fastx file or directory of fastx files/subdirectories containing targets
         targets: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample

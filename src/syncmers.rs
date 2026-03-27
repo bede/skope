@@ -247,7 +247,10 @@ mod tests {
             assert!(pos + k as usize <= seq.len());
         }
 
-        // Syncmers should be non-overlapping by construction
+        // Syncmers should be non-overlapping when disjoint=true
+        positions.clear();
+        buffers = Buffers::new_u64();
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, true);
         for window in positions.windows(2) {
             assert!(window[1] >= window[0] + k as usize);
         }
@@ -261,7 +264,7 @@ mod tests {
         let hasher = KmerHasher::new(s as usize);
 
         let mut values_only_buffers = Buffers::new_u64();
-        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers, false);
+        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers, true);
         let values_only = match &values_only_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),
             SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
@@ -269,7 +272,7 @@ mod tests {
 
         let mut with_pos_buffers = Buffers::new_u64();
         let mut positions = Vec::new();
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions, false);
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions, true);
         let with_pos_values = match &with_pos_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),
             SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
