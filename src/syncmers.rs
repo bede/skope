@@ -272,7 +272,15 @@ mod tests {
 
         let mut with_pos_buffers = Buffers::new_u64();
         let mut positions = Vec::new();
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions, true);
+        fill_syncmers_with_positions(
+            seq,
+            &hasher,
+            k,
+            s,
+            &mut with_pos_buffers,
+            &mut positions,
+            true,
+        );
         let with_pos_values = match &with_pos_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),
             SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),

@@ -2,9 +2,9 @@ use crate::syncmers::{
     Buffers, KmerHasher, SyncmerVec, fill_syncmers, fill_syncmers_with_positions,
 };
 use crate::{
-    ProcessingStats, RapidHashSet, create_spinner, derive_sample_name, find_fastx_files,
-    format_bp, format_bp_per_sec, handle_process_result, is_fastx_file,
-    reader_with_inferred_batch_size, sample_limit_reached_io_error,
+    ProcessingStats, RapidHashSet, create_spinner, derive_sample_name, find_fastx_files, format_bp,
+    format_bp_per_sec, handle_process_result, is_fastx_file, reader_with_inferred_batch_size,
+    sample_limit_reached_io_error,
 };
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -313,8 +313,13 @@ pub fn process_targets_file(
     let spinner = create_spinner(quiet)?;
 
     let start_time = std::time::Instant::now();
-    let mut processor =
-        TargetsProcessor::new(kmer_length, smer_length, spinner.clone(), start_time, disjoint);
+    let mut processor = TargetsProcessor::new(
+        kmer_length,
+        smer_length,
+        spinner.clone(),
+        start_time,
+        disjoint,
+    );
 
     // Single thread to preserve order
     reader.process_parallel(&mut processor, 1)?;
@@ -1019,7 +1024,11 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     eprintln!(
         "Skope v{}; mode: query{}; options: {}",
         version,
-        if is_targets_dir { " (from directory)" } else { "" },
+        if is_targets_dir {
+            " (from directory)"
+        } else {
+            ""
+        },
         options
     );
 
@@ -1347,6 +1356,8 @@ struct TableRow<'a> {
     sample_name: &'a str,
     sample_display: String,
     result: &'a ContainmentResult,
+    sample_seqs: u64,
+    sample_bases: u64,
 }
 
 /// Output table with cross-sample sorting
@@ -1368,6 +1379,8 @@ fn output_table_sorted(
         header.push_str(&format!(" | {:>15}", format!("containment{}", threshold)));
     }
     header.push_str(&format!(" | {:>18}", "median_nz_abundance"));
+    header.push_str(&format!(" | {:>12}", "sample_seqs"));
+    header.push_str(&format!(" | {:>13}", "sample_bases"));
 
     let separator = "-".repeat(header.len());
 
@@ -1393,6 +1406,8 @@ fn output_table_sorted(
                 sample_name: &sample.sample_name,
                 sample_display: sample_display.clone(),
                 result,
+                sample_seqs: sample.total_stats.total_seqs_processed,
+                sample_bases: sample.total_stats.total_bp_processed,
             });
         }
     }
@@ -1447,7 +1462,9 @@ fn output_table_sorted(
                 .unwrap_or(&0.0);
             output_row.push_str(&format!(" | {:>14.2}%", containment * 100.0));
         }
-        output_row.push_str(&format!(" | {:>18.0}", row.result.median_nz_abundance,));
+        output_row.push_str(&format!(" | {:>18.0}", row.result.median_nz_abundance));
+        output_row.push_str(&format!(" | {:>12}", row.sample_seqs));
+        output_row.push_str(&format!(" | {:>13}", row.sample_bases));
         writeln!(writer, "{}", output_row)?;
     }
 
@@ -1478,6 +1495,11 @@ fn output_table_sorted(
                 " | {:>18.0}",
                 sample.total_stats.total_median_nz_abundance,
             ));
+            total_row.push_str(&format!(
+                " | {:>12}",
+                sample.total_stats.total_seqs_processed
+            ));
+            total_row.push_str(&format!(" | {:>13}", sample.total_stats.total_bp_processed));
             writeln!(writer, "{}", total_row)?;
         }
     }
@@ -1497,7 +1519,8 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
             threshold, threshold
         ));
     }
-    header.push_str("\ttarget_length\ttarget_kmers\tmedian_nz_abundance");
+    header
+        .push_str("\ttarget_length\ttarget_kmers\tmedian_nz_abundance\tsample_seqs\tsample_bases");
     writeln!(writer, "{}", header)?;
 
     // Output data rows for all samples
@@ -1519,8 +1542,12 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                 row.push_str(&format!("\t{:.5}\t{}", containment, hits));
             }
             row.push_str(&format!(
-                "\t{}\t{}\t{:.0}",
-                result.length, result.target_kmers, result.median_nz_abundance,
+                "\t{}\t{}\t{:.0}\t{}\t{}",
+                result.length,
+                result.target_kmers,
+                result.median_nz_abundance,
+                sample.total_stats.total_seqs_processed,
+                sample.total_stats.total_bp_processed,
             ));
             writeln!(writer, "{}", row)?;
         }
@@ -1544,8 +1571,11 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                 total_row.push_str(&format!("\t{:.5}\t{}", containment, hits));
             }
             total_row.push_str(&format!(
-                "\t0\t{}\t{:.0}",
-                sample.total_stats.target_kmers, sample.total_stats.total_median_nz_abundance,
+                "\t0\t{}\t{:.0}\t{}\t{}",
+                sample.total_stats.target_kmers,
+                sample.total_stats.total_median_nz_abundance,
+                sample.total_stats.total_seqs_processed,
+                sample.total_stats.total_bp_processed,
             ));
             writeln!(writer, "{}", total_row)?;
         }

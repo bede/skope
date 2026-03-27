@@ -65,6 +65,7 @@ fn test_multisample_report_structure() {
 
     // Check header
     assert!(lines[0].starts_with("target\tsample\t"));
+    assert!(lines[0].contains("\tsample_seqs\tsample_bases"));
 
     // Count data rows per sample (excluding header and TOTAL rows)
     let sample_a_rows = lines
@@ -87,6 +88,33 @@ fn test_multisample_report_structure() {
         .filter(|line| line.starts_with("TOTAL\t"))
         .count();
     assert_eq!(total_rows, 2, "Expected 2 TOTAL rows (one per sample)");
+
+    // Check sample_seqs and sample_bases are non-zero and equal across both samples
+    // (both samples use the same input file)
+    let get_last_two_cols = |line: &str| -> (u64, u64) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let n = cols.len();
+        (cols[n - 2].parse().unwrap(), cols[n - 1].parse().unwrap())
+    };
+    let first_a = lines
+        .iter()
+        .skip(1)
+        .find(|l| l.contains("\tsample_a\t") && !l.starts_with("TOTAL"))
+        .unwrap();
+    let first_b = lines
+        .iter()
+        .skip(1)
+        .find(|l| l.contains("\tsample_b\t") && !l.starts_with("TOTAL"))
+        .unwrap();
+    let (seqs_a, bases_a) = get_last_two_cols(first_a);
+    let (seqs_b, bases_b) = get_last_two_cols(first_b);
+    assert!(seqs_a > 0, "sample_seqs should be non-zero");
+    assert!(bases_a > 0, "sample_bases should be non-zero");
+    assert_eq!(seqs_a, seqs_b, "sample_seqs should be equal for same input");
+    assert_eq!(
+        bases_a, bases_b,
+        "sample_bases should be equal for same input"
+    );
 }
 
 #[test]
