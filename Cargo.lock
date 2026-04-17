@@ -580,9 +580,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "packed-seq"
-version = "4.4.1"
+version = "4.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dabfead55492c45dbd560d8f057d45a701e78412f4a97a043583b7d745ce899"
+checksum = "dfb66483c3186c6582f3046d6ec8cd5e9e4db8039f6bd3ca60dce3f895b6a56c"
 dependencies = [
  "cfg-if",
  "ensure_simd",
@@ -874,9 +874,9 @@ checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 
 [[package]]
 name = "simd-minimizers"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d337c81bca2fc990b480ed2fe3421c66227e4ca427a9b9d7cfcfe97e9b4f986"
+checksum = "e4b1ac421046823fcba0f71fd49ce0870f2b9f3a3a46bf6a0bbd037f3a6d3118"
 dependencies = [
  "clap",
  "itertools",
