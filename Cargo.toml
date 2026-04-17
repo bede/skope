@@ -18,6 +18,8 @@ too_many_arguments = "allow"
 compression = ["zstd", "liblzma", "flate2"]
 # Use to still handle .gz files when "compression" is not enabled.
 gz = ["niffler/gz", "flate2", "flate2/default"]
+# Disable AVX2/NEON requirement for compatibility with older CPUs (e.g. x86-64-v2).
+scalar = ["packed-seq/scalar", "simd-minimizers/scalar"]
 default = ["compression"]
 
 [lib]
