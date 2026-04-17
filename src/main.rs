@@ -333,7 +333,7 @@ fn main() -> Result<()> {
     #[cfg(not(any(target_feature = "avx2", target_feature = "neon")))]
     {
         eprintln!(
-            "Warning: SIMD acceleration is unavailable. For best performance, compile with `cargo build --release -C target-cpu=native`"
+            "Warning: AVX2/NEON SIMD unavailable; running in scalar mode. For best performance, compile with `RUSTFLAGS=\"-C target-cpu=native\" cargo build --release`"
         );
     }
 

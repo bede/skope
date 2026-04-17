@@ -7,12 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends pkg-config \
 
 ARG TARGETARCH
 
-RUN if [ "$TARGETARCH" = "amd64" ] && ! grep -q avx2 /proc/cpuinfo; then \
-        echo "ERROR: building skope for amd64 requires an AVX2-capable host CPU (Intel Haswell / AMD Ryzen or newer)." >&2; \
-        exit 1; \
-    fi && \
-    case "$TARGETARCH" in \
-        amd64) echo 'export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v3"' ;; \
+RUN case "$TARGETARCH" in \
+        amd64) echo 'export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=x86-64-v2"' ;; \
         arm64) echo 'export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-cpu=neoverse-n1"' ;; \
         *)     echo ':' ;; \
     esac > /cargo_rustflags.sh
