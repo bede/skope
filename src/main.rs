@@ -329,11 +329,14 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    // Check we have either AVX2 or NEON for SIMD acceleration
-    #[cfg(not(any(target_feature = "avx2", target_feature = "neon")))]
+    // Warn if AVX2/NEON is unavailable and scalar mode was not explicitly requested
+    #[cfg(all(
+        not(any(target_feature = "avx2", target_feature = "neon")),
+        not(feature = "scalar")
+    ))]
     {
         eprintln!(
-            "Warning: SIMD acceleration is unavailable. For best performance, compile with `cargo build --release -C target-cpu=native`"
+            "Warning: AVX2/NEON SIMD unavailable; running in scalar mode. For best performance, compile with `RUSTFLAGS=\"-C target-cpu=native\" cargo build --release`"
         );
     }
 
