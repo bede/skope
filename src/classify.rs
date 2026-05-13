@@ -20,7 +20,7 @@ const INDEX_MAGIC: &[u8; 4] = b"GRAT";
 const INDEX_FORMAT_VERSION: u8 = 1;
 type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8);
 
-/// Classification index mapping k-mers to group bitmasks (up to 64 groups)
+/// Classification index mapping syncmers to group bitmasks (up to 64 groups)
 #[derive(Clone)]
 pub enum ClassificationIndex {
     U64(HashMap<u64, u64, FixedRapidHasher>),
@@ -36,8 +36,8 @@ impl ClassificationIndex {
     }
 }
 
-/// Remove k-mers shared across groups, keeping only group-unique k-mers
-/// Returns how many shared k-mers were removed
+/// Remove syncmers shared across groups, keeping only group-unique syncmers
+/// Returns how many shared syncmers were removed
 fn apply_discriminatory_filter(index: &mut ClassificationIndex) -> usize {
     match index {
         ClassificationIndex::U64(map) => {
@@ -104,7 +104,7 @@ pub struct ClassifyConfig {
     pub quiet: bool,
 }
 
-/// Collect k-mers from one group FASTA file
+/// Collect syncmers from one group FASTA file
 #[derive(Clone)]
 struct GroupKmerProcessor {
     kmer_length: u8,

@@ -2,7 +2,7 @@
 
 # Skope
 
-Fast syncmer containment and abundance estimation.
+Accelerated syncmer containment and abundance estimation.
 
 ## Install & update
 
@@ -23,7 +23,7 @@ skope query refs.fa reads.fastq.gz
 # Calculate target containment in multiple samples
 skope query refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
 
-# Calculate containment at depth>=100 using only discriminatory k-mers
+# Calculate containment at depth>=100 using only discriminatory syncmers
 skope query -a 100 --discriminatory refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
 
 # Plot query results (containment bar chart or scatter)
@@ -54,23 +54,24 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
 
 ### CLI Reference
 
-**Main commands:**
+**Main commands**
 ```
-  query     Estimate k-mer containment & abundance in fastx file(s) or directories thereof
-  classify  Classify sequences into groups based on k-mer membership
-  lenhist   Generate length histogram for sequences with k-mer hits to target sequence(s)
+  query     Estimate syncmer containment & abundance in fastx file(s) or directories thereof
+  classify  Classify sequences into groups based on syncmer membership
+  lenhist   Generate length histogram for sequences with syncmer hits to target sequence(s)
   index     Build and manage classification indexes
 ```
 
-**Query containment:**
+**Query containment**
+
 ```bash
 $ skope query -h
-Estimate k-mer containment & abundance in fastx file(s) or directories thereof
+Estimate syncmer containment & abundance in fastx file(s) or directories thereof
 
 Usage: skope query [OPTIONS] <TARGETS> <SAMPLES>...
 
 Arguments:
-  <TARGETS>     Path to fastx file containing target sequence record(s)
+  <TARGETS>     Path to fastx file or directory of fastx files/subdirectories containing targets
   <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
 
 Options:
@@ -82,6 +83,8 @@ Options:
           Comma-separated additional abundance thresholds for containment estimation [default: 10]
   -d, --discriminatory
           Consider only syncmers unique to each target
+      --disjoint
+          Use only non-overlapping (disjoint) syncmers
   -t, --threads <THREADS>
           Number of execution threads (0 = auto) [default: 8]
   -l, --limit <LIMIT>
@@ -104,10 +107,11 @@ Options:
           Print help
 ```
 
-**Length histogram:**
+**Length histogram**
+
 ```bash
 $ skope lenhist -h
-Generate length histogram for sequences with k-mer hits to target sequence(s)
+Generate length histogram for sequences with syncmer hits to target sequence(s)
 
 Usage: skope lenhist [OPTIONS] <TARGETS> <SAMPLES>...
 

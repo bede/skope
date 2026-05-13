@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use skope::{derive_sample_name, find_fastx_files, validate_k_s};
 
 const DEFAULT_KMER_LENGTH: u8 = 31;
-const DEFAULT_SMER_LENGTH: u8 = 15;
+const DEFAULT_SMER_LENGTH: u8 = 9;
 
 /// Validate that sample names are unique
 fn validate_sample_names(names: &[String]) -> Result<()> {
@@ -154,7 +154,7 @@ enum IndexCommands {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Estimate k-mer containment & abundance in fastx file(s) or directories thereof
+    /// Estimate syncmer containment & abundance in fastx file(s) or directories thereof
     Query {
         /// Path to fastx file or directory of fastx files/subdirectories containing targets
         targets: PathBuf,
@@ -228,7 +228,7 @@ enum Commands {
         dump_positions: Option<String>,
     },
 
-    /// Classify sequences into groups based on k-mer membership
+    /// Classify sequences into groups based on syncmer membership
     Classify {
         /// Path to .idx index file or directory of FASTA files (one per group)
         index: PathBuf,
@@ -245,15 +245,15 @@ enum Commands {
         #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
-        /// Minimum k-mer hits to classify a sequence to a group
+        /// Minimum syncmer hits to classify a sequence to a group
         #[arg(short = 'm', long = "min-hits", default_value_t = 1)]
         min_hits: u64,
 
-        /// Minimum fraction of sequence k-mers hitting a group
+        /// Minimum fraction of sequence syncmers hitting a group
         #[arg(short = 'r', long = "min-fraction", default_value_t = 0.0)]
         min_fraction: f64,
 
-        /// Consider only k-mers unique to each group
+        /// Consider only syncmers unique to each group
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
@@ -282,7 +282,7 @@ enum Commands {
         quiet: bool,
     },
 
-    /// Generate length histogram for sequences with k-mer hits to target sequence(s)
+    /// Generate length histogram for sequences with syncmer hits to target sequence(s)
     Lenhist {
         /// Path to fastx file containing target sequence record(s) (- to disable target filtering)
         targets: PathBuf,

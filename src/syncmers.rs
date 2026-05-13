@@ -1,7 +1,7 @@
 use packed_seq::{PackedNSeqVec, SeqVec, unpack_base};
 
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
-pub const DEFAULT_SMER_LENGTH: u8 = 15;
+pub const DEFAULT_SMER_LENGTH: u8 = 9;
 
 pub type KmerHasher = simd_minimizers::seq_hash::NtHasher<true, 1>;
 
