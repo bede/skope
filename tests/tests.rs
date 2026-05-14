@@ -1,8 +1,9 @@
-use skope::{ContainmentConfig, LengthHistogramConfig, OutputFormat, SortOrder};
+use skope::{
+    BuildConfig, ClassifyConfig, ContainmentConfig, LengthHistogramConfig, OutputFormat, SortOrder,
+    discover_sequence_groups,
+};
 use std::path::PathBuf;
-use tempfile::NamedTempFile;
-#[cfg(unix)]
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 
 #[test]
 fn test_multisample_processing() {
@@ -259,6 +260,212 @@ fn test_length_histogram() {
         lines[1].starts_with("test\t"),
         "Data rows should start with sample name"
     );
+}
+
+fn write_fasta(path: &std::path::Path, header: &str, seq: &str) {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path).unwrap();
+    writeln!(f, ">{}", header).unwrap();
+    writeln!(f, "{}", seq).unwrap();
+}
+
+const SEQ_A: &str =
+    "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+const SEQ_B: &str =
+    "GTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCA";
+
+#[test]
+fn test_discover_sequence_groups_mixed_layout() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+
+    // Top-level file
+    write_fasta(&root.join("class_a.fa"), "a1", SEQ_A);
+    // Subdirectory with two fastx files
+    std::fs::create_dir(root.join("class_b")).unwrap();
+    write_fasta(&root.join("class_b/part1.fa"), "b1", SEQ_A);
+    write_fasta(&root.join("class_b/part2.fa"), "b2", SEQ_B);
+    // Hidden top-level entries (skipped)
+    write_fasta(&root.join(".hidden.fa"), "h", SEQ_A);
+    std::fs::create_dir(root.join(".hidden_dir")).unwrap();
+    // Non-fastx file (skipped)
+    std::fs::write(root.join("README.txt"), b"ignore me").unwrap();
+    // Hidden file inside subdir (skipped)
+    write_fasta(&root.join("class_b/.skip.fa"), "x", SEQ_A);
+
+    let groups = discover_sequence_groups(root).unwrap();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].name, "class_a");
+    assert_eq!(groups[0].files.len(), 1);
+    assert!(groups[0].files[0].ends_with("class_a.fa"));
+    assert_eq!(groups[1].name, "class_b");
+    assert_eq!(groups[1].files.len(), 2);
+    assert!(groups[1].files[0].ends_with("part1.fa"));
+    assert!(groups[1].files[1].ends_with("part2.fa"));
+}
+
+#[test]
+fn test_discover_sequence_groups_nested_subdir_errors() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("class_a/nested")).unwrap();
+    write_fasta(&root.join("class_a/part1.fa"), "a", SEQ_A);
+
+    let err = discover_sequence_groups(root).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Nested subdirectory"), "got: {}", msg);
+}
+
+#[test]
+fn test_discover_sequence_groups_empty_subdir_errors() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join("class_a")).unwrap();
+    std::fs::write(root.join("class_a/notes.txt"), b"no fastx here").unwrap();
+
+    let err = discover_sequence_groups(root).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("no fastx files"), "got: {}", msg);
+    assert!(msg.contains("class_a"), "got: {}", msg);
+}
+
+#[test]
+fn test_discover_sequence_groups_duplicate_name_errors() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_fasta(&root.join("foo.fa"), "f", SEQ_A);
+    std::fs::create_dir(root.join("foo")).unwrap();
+    write_fasta(&root.join("foo/inner.fa"), "i", SEQ_B);
+
+    let err = discover_sequence_groups(root).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Duplicate group name"), "got: {}", msg);
+    assert!(msg.contains("foo"), "got: {}", msg);
+}
+
+#[test]
+fn test_query_directory_mixed_layout() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_fasta(&root.join("class_a.fa"), "a1", SEQ_A);
+    std::fs::create_dir(root.join("class_b")).unwrap();
+    write_fasta(&root.join("class_b/part1.fa"), "b1", SEQ_A);
+    write_fasta(&root.join("class_b/part2.fa"), "b2", SEQ_B);
+
+    let sample = NamedTempFile::new().unwrap();
+    write_fasta(sample.path(), "s1", SEQ_A);
+
+    let output = NamedTempFile::new().unwrap();
+    let config = ContainmentConfig {
+        targets_path: root.to_path_buf(),
+        sample_paths: vec![vec![sample.path().to_path_buf()]],
+        sample_names: vec!["s".to_string()],
+        kmer_length: 15,
+        smer_length: 7,
+        threads: 1,
+        output_path: Some(output.path().to_path_buf()),
+        quiet: true,
+        output_format: OutputFormat::Tsv,
+        abundance_thresholds: vec![1],
+        discriminatory: false,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_positions_path: None,
+        no_total: true,
+        disjoint: false,
+    };
+    skope::run_containment_analysis(&config).unwrap();
+
+    let content = std::fs::read_to_string(output.path()).unwrap();
+    let target_names: Vec<&str> = content
+        .lines()
+        .skip(1)
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert!(
+        target_names.contains(&"class_a"),
+        "missing class_a: {:?}",
+        target_names
+    );
+    assert!(
+        target_names.contains(&"class_b"),
+        "missing class_b: {:?}",
+        target_names
+    );
+    assert_eq!(target_names.len(), 2);
+}
+
+#[test]
+fn test_classify_build_mixed_layout() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write_fasta(&root.join("class_a.fa"), "a1", SEQ_A);
+    std::fs::create_dir(root.join("class_b")).unwrap();
+    write_fasta(&root.join("class_b/part1.fa"), "b1", SEQ_A);
+    write_fasta(&root.join("class_b/part2.fa"), "b2", SEQ_B);
+
+    let idx_out = NamedTempFile::new().unwrap();
+    let config = BuildConfig {
+        groups_dir: root.to_path_buf(),
+        kmer_length: 15,
+        smer_length: 7,
+        threads: 1,
+        output_path: Some(idx_out.path().to_path_buf()),
+        quiet: true,
+    };
+    skope::build_classification_index(&config).unwrap();
+
+    // Index file should exist and be non-empty
+    let meta = std::fs::metadata(idx_out.path()).unwrap();
+    assert!(meta.len() > 0);
+
+    // Run classify against it with a sample whose seq matches class_b
+    let sample = NamedTempFile::new().unwrap();
+    write_fasta(sample.path(), "s1", SEQ_B);
+
+    let classify_out = NamedTempFile::new().unwrap();
+    let cfg = ClassifyConfig {
+        index_path: idx_out.path().to_path_buf(),
+        sample_paths: vec![vec![sample.path().to_path_buf()]],
+        sample_names: vec!["s".to_string()],
+        kmer_length: 15,
+        smer_length: 7,
+        min_hits: 1,
+        min_fraction: 0.0,
+        threads: 1,
+        limit_bp: None,
+        output_path: Some(classify_out.path().to_path_buf()),
+        per_seq: false,
+        discriminatory: false,
+        quiet: true,
+    };
+    skope::run_classification(&cfg).unwrap();
+
+    let content = std::fs::read_to_string(classify_out.path()).unwrap();
+    // class_b should appear in the output (the sample matches it)
+    assert!(content.contains("class_b"), "classify output: {}", content);
+}
+
+#[test]
+fn test_classify_too_many_groups_errors() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    for i in 0..65 {
+        write_fasta(&root.join(format!("g{:02}.fa", i)), "x", SEQ_A);
+    }
+
+    let idx_out = NamedTempFile::new().unwrap();
+    let config = BuildConfig {
+        groups_dir: root.to_path_buf(),
+        kmer_length: 15,
+        smer_length: 7,
+        threads: 1,
+        output_path: Some(idx_out.path().to_path_buf()),
+        quiet: true,
+    };
+    let err = skope::build_classification_index(&config).unwrap_err();
+    let msg = format!("{:#}", err);
+    assert!(msg.contains("Too many groups"), "got: {}", msg);
 }
 
 #[cfg(unix)]

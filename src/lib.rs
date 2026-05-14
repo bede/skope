@@ -161,6 +161,139 @@ pub fn is_fastx_file(path: &Path) -> bool {
     FASTX_EXTENSIONS.iter().any(|ext| path_str.ends_with(ext))
 }
 
+/// One sequence group discovered under a target/class directory:
+/// either a single top-level FASTX file or all FASTX files directly inside a subdirectory.
+#[derive(Debug, Clone)]
+pub struct SequenceGroup {
+    pub name: String,
+    pub files: Vec<PathBuf>,
+}
+
+/// Discover sequence groups under a directory, one per top-level FASTX file or subdirectory.
+///
+/// - Top-level FASTX files are returned first (sorted), then top-level subdirectories (sorted).
+/// - Each subdirectory must contain at least one FASTX file directly inside it; nested
+///   sub-subdirectories are not allowed and are rejected with an error.
+/// - Hidden top-level entries and hidden files inside subdirectories are skipped.
+/// - Duplicate derived group names (including `foo.fa` colliding with `foo/`) are rejected.
+pub fn discover_sequence_groups(dir_path: &Path) -> Result<Vec<SequenceGroup>> {
+    let mut top_files: Vec<PathBuf> = Vec::new();
+    let mut top_subdirs: Vec<PathBuf> = Vec::new();
+
+    let entries = std::fs::read_dir(dir_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read directory: {}: {}", dir_path.display(), e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to read directory entry in {}: {}",
+                dir_path.display(),
+                e
+            )
+        })?;
+        let path = entry.path();
+
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.starts_with('.')
+        {
+            continue;
+        }
+
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to access: {}: {}", path.display(), e))?;
+
+        if metadata.is_dir() {
+            top_subdirs.push(path);
+        } else if metadata.is_file() && is_fastx_file(&path) {
+            top_files.push(path);
+        }
+    }
+
+    top_files.sort();
+    top_subdirs.sort();
+
+    if top_files.is_empty() && top_subdirs.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Directory contains no fastx files or subdirectories: {}",
+            dir_path.display()
+        ));
+    }
+
+    let mut groups: Vec<SequenceGroup> = Vec::with_capacity(top_files.len() + top_subdirs.len());
+
+    for file in top_files {
+        groups.push(SequenceGroup {
+            name: derive_sample_name(&file, false),
+            files: vec![file],
+        });
+    }
+
+    for subdir in top_subdirs {
+        let mut subdir_files: Vec<PathBuf> = Vec::new();
+
+        let entries = std::fs::read_dir(&subdir).map_err(|e| {
+            anyhow::anyhow!("Failed to read directory: {}: {}", subdir.display(), e)
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read directory entry in {}: {}",
+                    subdir.display(),
+                    e
+                )
+            })?;
+            let path = entry.path();
+
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.starts_with('.')
+            {
+                continue;
+            }
+
+            let metadata = std::fs::metadata(&path)
+                .map_err(|e| anyhow::anyhow!("Failed to access: {}: {}", path.display(), e))?;
+
+            if metadata.is_dir() {
+                return Err(anyhow::anyhow!(
+                    "Nested subdirectory not allowed in group directory '{}': {}. Group directories must contain only fastx files.",
+                    subdir.display(),
+                    path.display()
+                ));
+            }
+
+            if metadata.is_file() && is_fastx_file(&path) {
+                subdir_files.push(path);
+            }
+        }
+
+        if subdir_files.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Group directory contains no fastx files: {}",
+                subdir.display()
+            ));
+        }
+
+        subdir_files.sort();
+        groups.push(SequenceGroup {
+            name: derive_sample_name(&subdir, true),
+            files: subdir_files,
+        });
+    }
+
+    let mut seen = HashSet::new();
+    for group in &groups {
+        if !seen.insert(group.name.clone()) {
+            return Err(anyhow::anyhow!(
+                "Duplicate group name '{}' derived from directory entries. Top-level files and subdirectories must produce unique names (e.g. avoid 'foo.fa' next to 'foo/').",
+                group.name
+            ));
+        }
+    }
+
+    Ok(groups)
+}
+
 /// Find all fastx files in a directory (non-recursive, following symlinks)
 pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();

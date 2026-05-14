@@ -222,9 +222,9 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
     }
 }
 
-use crate::{derive_sample_name, find_fastx_files};
+use crate::discover_sequence_groups;
 
-/// Build a classification index in memory from group FASTA files in a directory
+/// Build a classification index in memory from group FASTX files/subdirectories in a directory
 fn build_index_in_memory(
     groups_dir: &Path,
     kmer_length: u8,
@@ -232,38 +232,19 @@ fn build_index_in_memory(
     threads: usize,
     quiet: bool,
 ) -> Result<(ClassificationIndex, Vec<String>)> {
-    let group_files = find_fastx_files(groups_dir)?;
+    let groups = discover_sequence_groups(groups_dir)?;
 
-    if group_files.len() > 64 {
+    if groups.len() > 64 {
         return Err(anyhow::anyhow!(
-            "Too many groups: {} (max 64). Each FASTA file in the directory is one group.",
-            group_files.len()
+            "Too many groups: {} (max 64). Each top-level fastx file or subdirectory is one group.",
+            groups.len()
         ));
     }
 
-    let group_names: Vec<String> = group_files
-        .iter()
-        .map(|p| derive_sample_name(p, false))
-        .collect();
-
-    {
-        let mut seen = std::collections::HashSet::new();
-        for name in &group_names {
-            if !seen.insert(name) {
-                return Err(anyhow::anyhow!(
-                    "Duplicate group name derived from filenames: '{}'. Rename the FASTA files to have unique names.",
-                    name
-                ));
-            }
-        }
-    }
+    let group_names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
 
     if !quiet {
-        eprintln!(
-            "Groups: {} files in {}",
-            group_files.len(),
-            groups_dir.display()
-        );
+        eprintln!("Groups: {} (from {})", groups.len(), groups_dir.display());
     }
 
     let global_map_u64: Arc<Mutex<Option<HashMap<u64, u64, FixedRapidHasher>>>> =
@@ -280,21 +261,23 @@ fn build_index_in_memory(
             Arc::new(Mutex::new(None))
         };
 
-    for (group_idx, (group_file, group_name)) in group_files.iter().zip(&group_names).enumerate() {
+    for (group_idx, group) in groups.iter().enumerate() {
         let group_bit = 1u64 << group_idx;
         let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
 
-        let mut processor = GroupKmerProcessor::new(
-            kmer_length,
-            smer_length,
-            group_bit,
-            Arc::clone(&global_map_u64),
-            Arc::clone(&global_map_u128),
-            Arc::clone(&global_stats),
-        );
+        for group_file in &group.files {
+            let mut processor = GroupKmerProcessor::new(
+                kmer_length,
+                smer_length,
+                group_bit,
+                Arc::clone(&global_map_u64),
+                Arc::clone(&global_map_u128),
+                Arc::clone(&global_stats),
+            );
 
-        let reader = reader_with_inferred_batch_size(Some(group_file))?;
-        reader.process_parallel(&mut processor, threads)?;
+            let reader = reader_with_inferred_batch_size(Some(group_file))?;
+            reader.process_parallel(&mut processor, threads)?;
+        }
 
         let stats = global_stats.lock().clone();
 
@@ -320,9 +303,11 @@ fn build_index_in_memory(
 
         if !quiet {
             eprintln!(
-                "  [{}] {}: {} seqs ({}), {} syncmers ({} unique)",
+                "  [{}] {} ({} file{}): {} seqs ({}), {} syncmers ({} unique)",
                 group_idx,
-                group_name,
+                group.name,
+                group.files.len(),
+                if group.files.len() == 1 { "" } else { "s" },
                 stats.total_seqs,
                 format_bp(stats.total_bp as usize),
                 group_kmers,

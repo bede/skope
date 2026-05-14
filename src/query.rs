@@ -2,8 +2,8 @@ use crate::syncmers::{
     Buffers, KmerHasher, SyncmerVec, fill_syncmers, fill_syncmers_with_positions,
 };
 use crate::{
-    ProcessingStats, RapidHashSet, create_spinner, derive_sample_name, find_fastx_files, format_bp,
-    format_bp_per_sec, handle_process_result, is_fastx_file, reader_with_inferred_batch_size,
+    ProcessingStats, RapidHashSet, create_spinner, discover_sequence_groups, format_bp,
+    format_bp_per_sec, handle_process_result, reader_with_inferred_batch_size,
     sample_limit_reached_io_error,
 };
 use anyhow::Result;
@@ -363,70 +363,17 @@ pub fn process_targets_dir(
     quiet: bool,
     disjoint: bool,
 ) -> Result<Vec<TargetInfo>> {
-    let mut fastx_files: Vec<PathBuf> = Vec::new();
-    let mut subdirs: Vec<PathBuf> = Vec::new();
+    let groups = discover_sequence_groups(dir_path)?;
 
-    let entries = std::fs::read_dir(dir_path)
-        .map_err(|e| anyhow::anyhow!("Failed to read directory: {}: {}", dir_path.display(), e))?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to read directory entry in {}: {}",
-                dir_path.display(),
-                e
-            )
-        })?;
-
-        let path = entry.path();
-
-        // Skip hidden entries
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') {
-                continue;
-            }
-        }
-
-        let metadata = std::fs::metadata(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to access: {}: {}", path.display(), e))?;
-
-        if metadata.is_dir() {
-            subdirs.push(path);
-        } else if metadata.is_file() && is_fastx_file(&path) {
-            fastx_files.push(path);
-        }
-    }
-
-    fastx_files.sort();
-    subdirs.sort();
-
-    if fastx_files.is_empty() && subdirs.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Directory contains no fastx files or subdirectories: {}",
-            dir_path.display()
-        ));
-    }
-
-    let mut results: Vec<TargetInfo> = Vec::new();
-
-    // Each top-level fastx file becomes one merged target
-    for file_path in &fastx_files {
-        let name = derive_sample_name(file_path, false);
-        let targets = process_targets_file(file_path, kmer_length, smer_length, quiet, disjoint)?;
-        results.push(merge_targets(targets, name)?);
-    }
-
-    // Each subdirectory becomes one merged target
-    for subdir in &subdirs {
-        let name = derive_sample_name(subdir, true);
-        let subdir_files = find_fastx_files(subdir)?;
+    let mut results: Vec<TargetInfo> = Vec::with_capacity(groups.len());
+    for group in groups {
         let mut all_targets: Vec<TargetInfo> = Vec::new();
-        for file_path in &subdir_files {
+        for file_path in &group.files {
             let targets =
                 process_targets_file(file_path, kmer_length, smer_length, quiet, disjoint)?;
             all_targets.extend(targets);
         }
-        results.push(merge_targets(all_targets, name)?);
+        results.push(merge_targets(all_targets, group.name)?);
     }
 
     Ok(results)

@@ -125,9 +125,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum IndexCommands {
-    /// Build a classification index from a directory of FASTA files (one per group)
+    /// Build a classification index from a directory of fastx files/subdirectories (one group per top-level file or directory)
     Build {
-        /// Directory containing FASTA files (one per group)
+        /// Directory of fastx files/subdirectories, one group per top-level file or directory
         groups: PathBuf,
 
         /// K-mer length (1-61, must be odd)
@@ -230,7 +230,7 @@ enum Commands {
 
     /// Classify sequences into groups based on syncmer membership
     Classify {
-        /// Path to .idx index file or directory of FASTA files (one per group)
+        /// Path to .idx index file or directory of fastx files/subdirectories (one group per top-level file or directory)
         index: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin)
