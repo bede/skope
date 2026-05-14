@@ -495,8 +495,8 @@ fn test_classify_build_mixed_layout() {
 fn test_classify_too_many_groups_errors() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
-    for i in 0..65 {
-        write_fasta(&root.join(format!("g{:02}.fa", i)), "x", SEQ_A);
+    for i in 0..129 {
+        write_fasta(&root.join(format!("g{:03}.fa", i)), "x", SEQ_A);
     }
 
     let idx_out = NamedTempFile::new().unwrap();

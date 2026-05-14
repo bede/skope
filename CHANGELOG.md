@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-15
+
 ### Added
 
 - `skope classify` and `skope index build`: accept subdirectories as groups, with one group per top-level fastx file or subdirectory of fastx files. Matches `skope query` target-directory behaviour.
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Target/class directory discovery is now unified across `skope query`, `skope classify`, and `skope index build`. Nested sub-subdirectories inside a group directory are now an error rather than silently ignored. Duplicate derived names (e.g. `foo.fa` alongside `foo/`) are rejected in both query and classify.
 - Classification index magic bytes changed from `SKPE` to `SKCL`. Indexes built with previous versions must be rebuilt.
+- Group bitmask widened from `u64` to `u128` in `skope classify` and `skope lenhist`, raising the maximum number of groups from 64 to 128. Index format version bumped to 2; previous indexes must be rebuilt.
 
 ## [0.2.0] - 2026-05-13
 

@@ -106,7 +106,7 @@ struct LengthHistogramProcessor {
 
     // Local buffers
     buffers: Buffers,
-    hits: [u64; 64],
+    hits: [u64; 128],
     local_stats: ProcessingStats,
     local_buckets: Vec<BucketState>,
 
@@ -151,7 +151,7 @@ impl LengthHistogramProcessor {
             min_fraction,
             include_all_seqs,
             buffers,
-            hits: [0u64; 64],
+            hits: [0u64; 128],
             local_stats: ProcessingStats::default(),
             local_buckets,
             global_stats: Arc::new(Mutex::new(ProcessingStats::default())),

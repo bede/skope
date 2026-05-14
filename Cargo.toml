@@ -1,6 +1,6 @@
 [package]
 name = "skope"
-version = "0.2.0"
+version = "0.3.0"
 description = "Accelerated genome containment and abundance estimation"
 authors = ["Bede Constantinides <b@bede.im>"]
 edition = "2024"
@@ -33,7 +33,7 @@ csv = "1.4"
 rapidhash = "4.1.0"
 parking_lot = "0.12"
 indicatif = "0.18"
-wincode = "0.4.1"
+wincode = "0.5.3"
 
 packed-seq = "4.2.0"
 simd-minimizers = "2.3.0"
@@ -41,13 +41,13 @@ simd-minimizers = "2.3.0"
 paraseq = { version = "0.4.2", default-features = false, features = ["anyhow", "niffler"] }
 niffler = "3"
 
-liblzma = { version = "0.3", optional = true }
+liblzma = { version = "0.4", optional = true }
 flate2 = { version = "1.1", features = ["zlib-rs"], optional = true }
 zstd = { version = "0.13", optional = true }
 
 [dev-dependencies]
 tempfile = "3.24"
-nix = { version = "0.30", features = ["fs"] }
+nix = { version = "0.31", features = ["fs"] }
 
 [profile.release]
 opt-level = 3

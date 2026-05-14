@@ -17,14 +17,14 @@ use std::time::Instant;
 
 // Index header constants and metadata
 const INDEX_MAGIC: &[u8; 4] = b"SKCL";
-const INDEX_FORMAT_VERSION: u8 = 1;
+const INDEX_FORMAT_VERSION: u8 = 2;
 type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8);
 
-/// Classification index mapping syncmers to group bitmasks (up to 64 groups)
+/// Classification index mapping syncmers to group bitmasks (up to 128 groups)
 #[derive(Clone)]
 pub enum ClassificationIndex {
-    U64(HashMap<u64, u64, FixedRapidHasher>),
-    U128(HashMap<u128, u64, FixedRapidHasher>),
+    U64(HashMap<u64, u128, FixedRapidHasher>),
+    U128(HashMap<u128, u128, FixedRapidHasher>),
 }
 
 impl ClassificationIndex {
@@ -62,7 +62,7 @@ pub(crate) fn apply_discriminatory_filter(index: &mut ClassificationIndex) -> us
 pub(crate) enum Classification {
     Unclassified,
     Classified(usize),
-    Ambiguous(u64),
+    Ambiguous(u128),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -115,15 +115,15 @@ struct GroupKmerProcessor {
     smer_length: u8,
     hasher: KmerHasher,
     buffers: Buffers,
-    group_bit: u64,
+    group_bit: u128,
 
     // Thread-local k-mer map
-    local_map_u64: Option<HashMap<u64, u64, FixedRapidHasher>>,
-    local_map_u128: Option<HashMap<u128, u64, FixedRapidHasher>>,
+    local_map_u64: Option<HashMap<u64, u128, FixedRapidHasher>>,
+    local_map_u128: Option<HashMap<u128, u128, FixedRapidHasher>>,
 
     // Shared global state
-    global_map_u64: Arc<Mutex<Option<HashMap<u64, u64, FixedRapidHasher>>>>,
-    global_map_u128: Arc<Mutex<Option<HashMap<u128, u64, FixedRapidHasher>>>>,
+    global_map_u64: Arc<Mutex<Option<HashMap<u64, u128, FixedRapidHasher>>>>,
+    global_map_u128: Arc<Mutex<Option<HashMap<u128, u128, FixedRapidHasher>>>>,
     local_stats: ProcessingStats,
     global_stats: Arc<Mutex<ProcessingStats>>,
 }
@@ -132,9 +132,9 @@ impl GroupKmerProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
-        group_bit: u64,
-        global_map_u64: Arc<Mutex<Option<HashMap<u64, u64, FixedRapidHasher>>>>,
-        global_map_u128: Arc<Mutex<Option<HashMap<u128, u64, FixedRapidHasher>>>>,
+        group_bit: u128,
+        global_map_u64: Arc<Mutex<Option<HashMap<u64, u128, FixedRapidHasher>>>>,
+        global_map_u128: Arc<Mutex<Option<HashMap<u128, u128, FixedRapidHasher>>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
     ) -> Self {
         let buffers = if kmer_length <= 32 {
@@ -238,9 +238,9 @@ pub(crate) fn build_index_in_memory(
 ) -> Result<(ClassificationIndex, Vec<String>)> {
     let groups = discover_sequence_groups(groups_dir)?;
 
-    if groups.len() > 64 {
+    if groups.len() > 128 {
         return Err(anyhow::anyhow!(
-            "Too many groups: {} (max 64). Each top-level fastx file or subdirectory is one group.",
+            "Too many groups: {} (max 128). Each top-level fastx file or subdirectory is one group.",
             groups.len()
         ));
     }
@@ -251,14 +251,14 @@ pub(crate) fn build_index_in_memory(
         eprintln!("Groups: {} (from {})", groups.len(), groups_dir.display());
     }
 
-    let global_map_u64: Arc<Mutex<Option<HashMap<u64, u64, FixedRapidHasher>>>> =
+    let global_map_u64: Arc<Mutex<Option<HashMap<u64, u128, FixedRapidHasher>>>> =
         if kmer_length <= 32 {
             Arc::new(Mutex::new(Some(HashMap::with_hasher(FixedRapidHasher))))
         } else {
             Arc::new(Mutex::new(None))
         };
 
-    let global_map_u128: Arc<Mutex<Option<HashMap<u128, u64, FixedRapidHasher>>>> =
+    let global_map_u128: Arc<Mutex<Option<HashMap<u128, u128, FixedRapidHasher>>>> =
         if kmer_length > 32 {
             Arc::new(Mutex::new(Some(HashMap::with_hasher(FixedRapidHasher))))
         } else {
@@ -266,7 +266,7 @@ pub(crate) fn build_index_in_memory(
         };
 
     for (group_idx, group) in groups.iter().enumerate() {
-        let group_bit = 1u64 << group_idx;
+        let group_bit = 1u128 << group_idx;
         let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
 
         for group_file in &group.files {
@@ -477,7 +477,7 @@ pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, 
         .with_context(|| format!("Entry count is too large for this platform: {count_u64}"))?;
 
     let kmer_bytes = (kmer_length as usize).div_ceil(4);
-    let entry_size = kmer_bytes + 8; // k-mer bytes + group bitmask
+    let entry_size = kmer_bytes + 16; // k-mer bytes + group bitmask (u128)
 
     let raw_data = &file_bytes[cursor.position()..];
 
@@ -491,7 +491,7 @@ pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, 
     }
 
     let index = if kmer_length <= 32 {
-        let mut map: HashMap<u64, u64, FixedRapidHasher> =
+        let mut map: HashMap<u64, u128, FixedRapidHasher> =
             HashMap::with_capacity_and_hasher(count, FixedRapidHasher);
         for i in 0..count {
             let offset = i * entry_size;
@@ -500,8 +500,8 @@ pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, 
             let kmer = u64::from_le_bytes(kmer_buf);
 
             let bitmask_offset = offset + kmer_bytes;
-            let bitmask = u64::from_le_bytes(
-                raw_data[bitmask_offset..bitmask_offset + 8]
+            let bitmask = u128::from_le_bytes(
+                raw_data[bitmask_offset..bitmask_offset + 16]
                     .try_into()
                     .unwrap(),
             );
@@ -510,7 +510,7 @@ pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, 
         }
         ClassificationIndex::U64(map)
     } else {
-        let mut map: HashMap<u128, u64, FixedRapidHasher> =
+        let mut map: HashMap<u128, u128, FixedRapidHasher> =
             HashMap::with_capacity_and_hasher(count, FixedRapidHasher);
         for i in 0..count {
             let offset = i * entry_size;
@@ -519,8 +519,8 @@ pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, 
             let kmer = u128::from_le_bytes(kmer_buf);
 
             let bitmask_offset = offset + kmer_bytes;
-            let bitmask = u64::from_le_bytes(
-                raw_data[bitmask_offset..bitmask_offset + 8]
+            let bitmask = u128::from_le_bytes(
+                raw_data[bitmask_offset..bitmask_offset + 16]
                     .try_into()
                     .unwrap(),
             );
@@ -535,7 +535,7 @@ pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, 
 
 /// Classify one sequecne using per-group hit counts
 fn classify_seq(
-    hits: &mut [u64; 64],
+    hits: &mut [u64; 128],
     num_groups: usize,
     total_kmers: usize,
     min_hits: u64,
@@ -545,13 +545,13 @@ fn classify_seq(
         return Classification::Unclassified;
     }
 
-    let mut matching_mask = 0u64;
+    let mut matching_mask = 0u128;
     let mut match_count = 0u32;
     let mut single_match = 0usize;
 
     for (group_idx, &group_hits) in hits[..num_groups].iter().enumerate() {
         if group_hits >= min_hits && (group_hits as f64 / total_kmers as f64) >= min_fraction {
-            matching_mask |= 1u64 << group_idx;
+            matching_mask |= 1u128 << group_idx;
             match_count += 1;
             single_match = group_idx;
         }
@@ -593,7 +593,7 @@ pub(crate) fn classify_seq_kmers(
     kmer_length: u8,
     smer_length: u8,
     buffers: &mut Buffers,
-    hits: &mut [u64; 64],
+    hits: &mut [u64; 128],
     num_groups: usize,
     index: &ClassificationIndex,
     min_hits: u64,
@@ -678,7 +678,7 @@ struct ClassifySummaryProcessor {
     min_fraction: f64,
 
     buffers: Buffers,
-    hits: [u64; 64],
+    hits: [u64; 128],
 
     local_group_seqs: Vec<u64>,
     local_group_bases: Vec<u64>,
@@ -721,7 +721,7 @@ impl ClassifySummaryProcessor {
             min_hits,
             min_fraction,
             buffers,
-            hits: [0u64; 64],
+            hits: [0u64; 128],
             local_group_seqs: vec![0; num_groups],
             local_group_bases: vec![0; num_groups],
             local_ambiguous_seqs: 0,
@@ -845,7 +845,7 @@ struct ClassifyPerSeqProcessor {
     sample_name: String,
 
     buffers: Buffers,
-    hits: [u64; 64],
+    hits: [u64; 128],
 
     local_output: Vec<u8>,
     output_writer: Arc<Mutex<BufWriter<Box<dyn Write + Send>>>>,
@@ -889,7 +889,7 @@ impl ClassifyPerSeqProcessor {
             min_fraction,
             sample_name,
             buffers,
-            hits: [0u64; 64],
+            hits: [0u64; 128],
             local_output: Vec::with_capacity(64 * 1024),
             output_writer,
             local_stats: ProcessingStats::default(),
