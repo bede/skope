@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `skope classify` and `skope index build`: accept subdirectories as groups, with one group per top-level fastx file or subdirectory of fastx files. Matches `skope query` target-directory behaviour.
 - Suggested `.skcl` file extension for classification indexes (documentation only; no on-disk format change).
+- `skope lenhist`: per-group length histograms. The first positional argument is now a `.skcl` index or a directory of groups (same input as `classify`); each read is binned into its single matching group, `ambiguous`, or `unclassified`. Output gains a `group` column and `group_seqs`/`group_bases` totals; `seqs_with_hits`/`seqs_without_hits` are removed (derivable from the non-`unclassified` rows). New flags `-m/--min-hits`, `-r/--min-fraction`, `-d/--discriminatory` mirror `classify`. Pass `-` to disable group filtering, in which case all reads go to a single `all` bucket.
 
 ### Changed
 

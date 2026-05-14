@@ -231,14 +231,25 @@ fn test_sort_containment() {
 
 #[test]
 fn test_length_histogram() {
+    // Wrap the viruses fasta in a temp dir so it's treated as a single group "viruses"
+    let groups_dir = TempDir::new().unwrap();
+    std::fs::copy(
+        "data/zmrp21.viruses.fa",
+        groups_dir.path().join("viruses.fa"),
+    )
+    .unwrap();
+
     let temp_output = NamedTempFile::new().unwrap();
 
     let config = LengthHistogramConfig {
-        targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
+        index_path: groups_dir.path().to_path_buf(),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
         kmer_length: 31,
         smer_length: 15,
+        min_hits: 1,
+        min_fraction: 0.0,
+        discriminatory: false,
         threads: 2,
         output_path: Some(temp_output.path().to_path_buf()),
         quiet: true,
@@ -248,17 +259,51 @@ fn test_length_histogram() {
 
     skope::run_length_histogram_analysis(&config).unwrap();
 
-    // Verify TSV output has header and data rows
+    // Verify TSV output has new per-group header and data rows
     let content = std::fs::read_to_string(temp_output.path()).unwrap();
     let lines: Vec<&str> = content.lines().collect();
-    assert!(
-        lines[0].starts_with("sample\tlength\tcount\t"),
-        "Header should be tab-separated"
+    assert_eq!(
+        lines[0],
+        "sample\tgroup\tlength\tcount\ttotal_seqs_processed\ttotal_bp_processed\tgroup_seqs\tgroup_bases",
+        "Header should include group column"
     );
     assert!(lines.len() > 1, "Should have data rows");
     assert!(
-        lines[1].starts_with("test\t"),
-        "Data rows should start with sample name"
+        lines[1].starts_with("test\tviruses\t"),
+        "Data rows should start with sample\\tgroup, got: {}",
+        lines[1]
+    );
+}
+
+#[test]
+fn test_length_histogram_all_seqs() {
+    let temp_output = NamedTempFile::new().unwrap();
+
+    let config = LengthHistogramConfig {
+        index_path: PathBuf::from("-"),
+        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_names: vec!["test".to_string()],
+        kmer_length: 31,
+        smer_length: 15,
+        min_hits: 1,
+        min_fraction: 0.0,
+        discriminatory: false,
+        threads: 2,
+        output_path: Some(temp_output.path().to_path_buf()),
+        quiet: true,
+        limit_bp: None,
+        include_all_seqs: true,
+    };
+
+    skope::run_length_histogram_analysis(&config).unwrap();
+
+    let content = std::fs::read_to_string(temp_output.path()).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert!(lines.len() > 1, "Should have data rows");
+    assert!(
+        lines[1].starts_with("test\tall\t"),
+        "All reads should go to the 'all' bucket, got: {}",
+        lines[1]
     );
 }
 

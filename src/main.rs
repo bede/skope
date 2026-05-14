@@ -282,23 +282,35 @@ enum Commands {
         quiet: bool,
     },
 
-    /// Generate length histogram for sequences with syncmer hits to target sequence(s)
+    /// Generate per-group length histograms based on syncmer classification
     Lenhist {
-        /// Path to fastx file containing target sequence record(s) (- to disable target filtering)
-        targets: PathBuf,
+        /// Path to .skcl classification index file, directory of fastx files/subdirectories (one group per top-level entry), or - to disable group filtering (single "all" bucket)
+        index: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
         #[arg(required = true)]
         samples: Vec<PathBuf>,
 
         // Algorithm parameters
-        /// k-mer length (1-61)
+        /// K-mer length (only used when index is a directory or -) (1-61, must be odd)
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// S-mer length used for open syncmer selection (s < k, s must be odd)
+        /// S-mer length used for open syncmer selection (only used when index is a directory or -)
         #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
+
+        /// Minimum syncmer hits to classify a sequence to a group
+        #[arg(short = 'm', long = "min-hits", default_value_t = 1)]
+        min_hits: u64,
+
+        /// Minimum fraction of sequence syncmers hitting a group
+        #[arg(short = 'r', long = "min-fraction", default_value_t = 0.0)]
+        min_fraction: f64,
+
+        /// Consider only syncmers unique to each group
+        #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
+        discriminatory: bool,
 
         // Processing options
         /// Number of execution threads (0 = auto)
@@ -564,11 +576,14 @@ fn main() -> Result<()> {
                 .context("Failed to run containment analysis")?;
         }
         Commands::Lenhist {
-            targets,
+            index,
             samples,
             sample_names,
             kmer_length,
             smer_length,
+            min_hits,
+            min_fraction,
+            discriminatory,
             threads,
             output,
             quiet,
@@ -617,15 +632,18 @@ fn main() -> Result<()> {
                 None
             };
 
-            // Detect if user wants all seqs (no target filtering)
-            let include_all_seqs = targets.to_string_lossy() == "-";
+            // Detect if user wants all seqs (no group filtering)
+            let include_all_seqs = index.to_string_lossy() == "-";
 
             let config = skope::LengthHistogramConfig {
-                targets_path: targets.clone(),
+                index_path: index.clone(),
                 sample_paths: expanded_samples,
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
                 smer_length: *smer_length,
+                min_hits: *min_hits,
+                min_fraction: *min_fraction,
+                discriminatory: *discriminatory,
                 threads: *threads,
                 output_path: if output == "-" {
                     None

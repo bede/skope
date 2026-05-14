@@ -31,9 +31,12 @@ skope query refs.fa s1.fq.gz s2.fq.gz > query.tsv
 uv run plot/query.py query.tsv --mode bar -o query_bar.png
 uv run plot/query.py query.tsv --mode scatter -o query_scatter.png
 
-# Plot sequence length histograms
-skope lenhist - s1.fq.gz s2.fq.gz > len.tsv
+# Plot per-group sequence length histograms (e.g. host vs viral)
+skope lenhist groups.skcl s1.fq.gz s2.fq.gz > len.tsv
 uv run plot/lenhist.py len.tsv
+
+# Or without group filtering — all reads go to a single "all" bucket
+skope lenhist - s1.fq.gz s2.fq.gz > len.tsv
 
 # Stdin
 zstdcat reads3.fq.zst | skope query refs.fa -
@@ -62,7 +65,7 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
 ```
   query     Estimate syncmer containment & abundance in fastx file(s) or directories thereof
   classify  Classify sequences into groups based on syncmer membership
-  lenhist   Generate length histogram for sequences with syncmer hits to target sequence(s)
+  lenhist   Generate per-group length histograms based on syncmer classification
   index     Build and manage classification indexes
 ```
 
@@ -113,24 +116,34 @@ Options:
 
 **Length histogram**
 
+`lenhist` shares its group-input model with `classify`: pass a `.skcl` index (or a
+directory of fastx files/subdirectories, one group per top-level entry) and each
+read is binned into exactly one bucket — its single matching group, `ambiguous`
+(multiple groups), or `unclassified` (no group). Pass `-` instead of an index to
+disable filtering; all reads then go to a single `all` bucket. Output is a TSV
+with one row per `(sample, group, length)` triple.
+
 ```bash
 $ skope lenhist -h
-Generate length histogram for sequences with syncmer hits to target sequence(s)
+Generate per-group length histograms based on syncmer classification
 
-Usage: skope lenhist [OPTIONS] <TARGETS> <SAMPLES>...
+Usage: skope lenhist [OPTIONS] <INDEX> <SAMPLES>...
 
 Arguments:
-  <TARGETS>     Path to fastx file containing target sequence record(s) (- to disable target filtering)
+  <INDEX>       Path to .skcl classification index file, directory of fastx files/subdirectories (one group per top-level entry), or - to disable group filtering (single "all" bucket)
   <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
 
 Options:
-  -k, --kmer-length <KMER_LENGTH>  k-mer length (1-61) [default: 31]
-  -s, --smer-length <SMER_LENGTH>  S-mer length used for open syncmer selection (s < k, s must be odd) [default: 9]
-  -t, --threads <THREADS>          Number of execution threads (0 = auto) [default: 8]
-  -l, --limit <LIMIT>              Terminate processing after approximately this many bases (e.g. 50M, 10G)
-  -o, --output <OUTPUT>            Path to output file (- for stdout) [default: -]
-  -n, --names <SAMPLE_NAMES>       Comma-separated sample names (default is file/dir name without extension)
-  -q, --quiet                      Suppress progress reporting
-  -h, --help                       Print help
+  -k, --kmer-length <KMER_LENGTH>    K-mer length (only used when index is a directory or -) (1-61, must be odd) [default: 31]
+  -s, --smer-length <SMER_LENGTH>    S-mer length used for open syncmer selection (only used when index is a directory or -) [default: 9]
+  -m, --min-hits <MIN_HITS>          Minimum syncmer hits to classify a sequence to a group [default: 1]
+  -r, --min-fraction <MIN_FRACTION>  Minimum fraction of sequence syncmers hitting a group [default: 0]
+  -d, --discriminatory               Consider only syncmers unique to each group
+  -t, --threads <THREADS>            Number of execution threads (0 = auto) [default: 8]
+  -l, --limit <LIMIT>                Terminate processing after approximately this many bases (e.g. 50M, 10G)
+  -o, --output <OUTPUT>              Path to output file (- for stdout) [default: -]
+  -n, --names <SAMPLE_NAMES>         Comma-separated sample names (default is file/dir name without extension)
+  -q, --quiet                        Suppress progress reporting
+  -h, --help                         Print help
 ```
 

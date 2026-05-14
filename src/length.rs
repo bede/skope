@@ -1,8 +1,12 @@
-use crate::query::{SyncmerSet, TimingStats, process_targets_file};
-use crate::syncmers::{Buffers, KmerHasher, SyncmerVec, fill_syncmers};
+use crate::classify::{
+    Classification, ClassificationIndex, apply_discriminatory_filter, build_index_in_memory,
+    classify_seq_kmers, load_index,
+};
+use crate::query::TimingStats;
+use crate::syncmers::{Buffers, KmerHasher};
 use crate::{
-    ProcessingStats, RapidHashSet, create_spinner, format_bp, format_bp_per_sec,
-    handle_process_result, reader_with_inferred_batch_size, sample_limit_reached_io_error,
+    ProcessingStats, create_spinner, format_bp, format_bp_per_sec, handle_process_result,
+    reader_with_inferred_batch_size, sample_limit_reached_io_error,
 };
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -16,23 +20,29 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Per-sample length histogram output
+const AMBIGUOUS_LABEL: &str = "ambiguous";
+const UNCLASSIFIED_LABEL: &str = "unclassified";
+const ALL_LABEL: &str = "all";
+
+/// Per-sample length histogram output. Buckets are indexed as
+/// `0..group_names.len()` for groups, then `ambiguous`, then `unclassified`.
 #[derive(Debug, Clone)]
 pub struct LengthHistogramResult {
     pub sample_name: String,
     pub seq_files: Vec<String>,
     pub total_seqs_processed: u64,
     pub total_bp_processed: u64,
-    pub seqs_with_hits: u64,
-    pub seqs_without_hits: u64,
-    pub length_histogram: Vec<(usize, usize)>, // (length, count) pairs
+    pub group_names: Vec<String>,
+    pub bucket_histograms: Vec<Vec<(usize, usize)>>,
+    pub bucket_seqs: Vec<u64>,
+    pub bucket_bases: Vec<u64>,
 }
 
 /// Combined `lenhist` output
 #[derive(Debug, Clone)]
 pub struct LengthHistogramReport {
     pub version: String,
-    pub targets_file: String,
+    pub index_source: String,
     pub parameters: LengthHistogramParameters,
     pub samples: Vec<LengthHistogramResult>,
     pub timing: TimingStats,
@@ -44,20 +54,28 @@ pub struct LengthHistogramParameters {
     pub kmer_length: u8,
     pub smer_length: u8,
     pub threads: usize,
+    pub min_hits: u64,
+    pub min_fraction: f64,
+    pub discriminatory: bool,
 }
 
 /// `lenhist` run settings
 pub struct LengthHistogramConfig {
-    pub targets_path: PathBuf,
-    pub sample_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
+    /// Path to .skcl index file, directory of groups, or "-" to disable group filtering
+    pub index_path: PathBuf,
+    pub sample_paths: Vec<Vec<PathBuf>>,
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
     pub smer_length: u8,
+    pub min_hits: u64,
+    pub min_fraction: f64,
+    pub discriminatory: bool,
     pub threads: usize,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
     pub limit_bp: Option<u64>,
-    pub include_all_seqs: bool, // true when targets_path == "-" (no filtering)
+    /// True when index_path == "-": no filtering, all reads go to a single "all" bucket
+    pub include_all_seqs: bool,
 }
 
 impl LengthHistogramConfig {
@@ -66,27 +84,35 @@ impl LengthHistogramConfig {
     }
 }
 
-/// Worker that bins lengths for matching sequences
+/// Per-bucket local state (cleared on each batch flush)
+#[derive(Clone, Default)]
+struct BucketState {
+    histogram: HashMap<usize, usize>,
+    seqs: u64,
+    bases: u64,
+}
+
+/// Worker that bins lengths per classification bucket
 #[derive(Clone)]
 struct LengthHistogramProcessor {
     kmer_length: u8,
     smer_length: u8,
     hasher: KmerHasher,
-    targets_syncmers: Arc<SyncmerSet>,
+    index: Arc<ClassificationIndex>,
+    num_groups: usize,
+    min_hits: u64,
+    min_fraction: f64,
     include_all_seqs: bool,
 
     // Local buffers
     buffers: Buffers,
+    hits: [u64; 64],
     local_stats: ProcessingStats,
-    local_histogram: HashMap<usize, usize>, // length -> count
-    local_seqs_with_hits: u64,
-    local_seqs_without_hits: u64,
+    local_buckets: Vec<BucketState>,
 
     // Global state
     global_stats: Arc<Mutex<ProcessingStats>>,
-    global_histogram: Arc<Mutex<HashMap<usize, usize>>>,
-    global_seqs_with_hits: Arc<Mutex<u64>>,
-    global_seqs_without_hits: Arc<Mutex<u64>>,
+    global_buckets: Arc<Vec<Mutex<BucketState>>>,
     spinner: Option<Arc<Mutex<ProgressBar>>>,
     start_time: Instant,
     limit_bp: Option<u64>,
@@ -96,8 +122,12 @@ impl LengthHistogramProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
-        targets_syncmers: Arc<SyncmerSet>,
+        index: Arc<ClassificationIndex>,
+        num_groups: usize,
+        min_hits: u64,
+        min_fraction: f64,
         include_all_seqs: bool,
+        global_buckets: Arc<Vec<Mutex<BucketState>>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
         limit_bp: Option<u64>,
@@ -108,21 +138,24 @@ impl LengthHistogramProcessor {
             Buffers::new_u128()
         };
 
+        let bucket_count = num_groups + 2;
+        let local_buckets = (0..bucket_count).map(|_| BucketState::default()).collect();
+
         Self {
             kmer_length,
             smer_length,
             hasher: KmerHasher::new(smer_length as usize),
-            targets_syncmers,
+            index,
+            num_groups,
+            min_hits,
+            min_fraction,
             include_all_seqs,
             buffers,
+            hits: [0u64; 64],
             local_stats: ProcessingStats::default(),
-            local_histogram: HashMap::new(),
-            local_seqs_with_hits: 0,
-            local_seqs_without_hits: 0,
+            local_buckets,
             global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
-            global_histogram: Arc::new(Mutex::new(HashMap::new())),
-            global_seqs_with_hits: Arc::new(Mutex::new(0)),
-            global_seqs_without_hits: Arc::new(Mutex::new(0)),
+            global_buckets,
             spinner,
             start_time,
             limit_bp,
@@ -163,55 +196,51 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
         self.local_stats.total_seqs += 1;
         self.local_stats.total_bp += seq_length as u64;
 
-        let has_hit = if self.include_all_seqs {
-            true
+        let bucket_idx = if self.include_all_seqs {
+            0
         } else {
-            fill_syncmers(
+            let (_total_kmers, classification) = classify_seq_kmers(
                 &seq,
                 &self.hasher,
                 self.kmer_length,
                 self.smer_length,
                 &mut self.buffers,
-                false,
+                &mut self.hits,
+                self.num_groups,
+                &self.index,
+                self.min_hits,
+                self.min_fraction,
             );
-
-            match (&self.buffers.syncmers, &*self.targets_syncmers) {
-                (SyncmerVec::U64(vec), SyncmerSet::U64(targets_set)) => {
-                    vec.iter().any(|syncmer| targets_set.contains(syncmer))
-                }
-                (SyncmerVec::U128(vec), SyncmerSet::U128(targets_set)) => {
-                    vec.iter().any(|syncmer| targets_set.contains(syncmer))
-                }
-                _ => panic!("Mismatch between SyncmerVec and SyncmerSet types"),
+            match classification {
+                Classification::Classified(g) => g,
+                Classification::Ambiguous(_) => self.num_groups,
+                Classification::Unclassified => self.num_groups + 1,
             }
         };
 
-        if has_hit {
-            *self.local_histogram.entry(seq_length).or_insert(0) += 1;
-            self.local_seqs_with_hits += 1;
-        } else {
-            self.local_seqs_without_hits += 1;
-        }
+        let bucket = &mut self.local_buckets[bucket_idx];
+        *bucket.histogram.entry(seq_length).or_insert(0) += 1;
+        bucket.seqs += 1;
+        bucket.bases += seq_length as u64;
 
         Ok(())
     }
 
     fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
-        // Merge local histogram into global
-        {
-            let mut global_hist = self.global_histogram.lock();
-            for (&length, &count) in &self.local_histogram {
-                *global_hist.entry(length).or_insert(0) += count;
+        // Merge local buckets into global
+        for (i, local) in self.local_buckets.iter_mut().enumerate() {
+            if local.seqs == 0 && local.histogram.is_empty() {
+                continue;
             }
-            self.local_histogram.clear();
-        }
-
-        // Merge hit counts
-        {
-            *self.global_seqs_with_hits.lock() += self.local_seqs_with_hits;
-            *self.global_seqs_without_hits.lock() += self.local_seqs_without_hits;
-            self.local_seqs_with_hits = 0;
-            self.local_seqs_without_hits = 0;
+            let mut global = self.global_buckets[i].lock();
+            for (&length, &count) in &local.histogram {
+                *global.histogram.entry(length).or_insert(0) += count;
+            }
+            global.seqs += local.seqs;
+            global.bases += local.bases;
+            local.histogram.clear();
+            local.seqs = 0;
+            local.bases = 0;
         }
 
         // Update global stats
@@ -235,16 +264,20 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_seqs_file(
     seq_path: &Path,
-    targets_syncmers: Arc<SyncmerSet>,
+    index: Arc<ClassificationIndex>,
+    num_groups: usize,
     kmer_length: u8,
     smer_length: u8,
+    min_hits: u64,
+    min_fraction: f64,
     threads: usize,
     quiet: bool,
     include_all_seqs: bool,
     limit_bp: Option<u64>,
-) -> Result<(HashMap<usize, usize>, u64, u64, u64, u64)> {
+) -> Result<(Vec<BucketState>, u64, u64)> {
     let in_path = if seq_path.to_string_lossy() == "-" {
         None
     } else {
@@ -257,12 +290,23 @@ fn process_seqs_file(
         pb.lock().set_message("Processing sample: 0 seqs (0bp)");
     }
 
+    let bucket_count = num_groups + 2;
+    let global_buckets: Arc<Vec<Mutex<BucketState>>> = Arc::new(
+        (0..bucket_count)
+            .map(|_| Mutex::new(BucketState::default()))
+            .collect(),
+    );
+
     let start_time = Instant::now();
     let mut processor = LengthHistogramProcessor::new(
         kmer_length,
         smer_length,
-        targets_syncmers,
+        index,
+        num_groups,
+        min_hits,
+        min_fraction,
         include_all_seqs,
+        Arc::clone(&global_buckets),
         spinner.clone(),
         start_time,
         limit_bp,
@@ -276,77 +320,76 @@ fn process_seqs_file(
     }
 
     let stats = processor.global_stats.lock().clone();
-    let histogram = Arc::try_unwrap(processor.global_histogram)
-        .unwrap()
-        .into_inner();
-    let seqs_with_hits = *processor.global_seqs_with_hits.lock();
-    let seqs_without_hits = *processor.global_seqs_without_hits.lock();
+    let buckets: Vec<BucketState> = global_buckets
+        .iter()
+        .map(|m| std::mem::take(&mut *m.lock()))
+        .collect();
 
     if !quiet {
         let elapsed = start_time.elapsed();
         let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
+        let classified: u64 = buckets[..num_groups].iter().map(|b| b.seqs).sum();
+        let ambiguous = buckets[num_groups].seqs;
+        let unclassified = buckets[num_groups + 1].seqs;
         eprintln!(
-            "Sample: {} records ({}), {} with hits, {} without hits ({})",
+            "Sample: {} records ({}), {} classified, {} ambiguous, {} unclassified ({})",
             stats.total_seqs,
             format_bp(stats.total_bp as usize),
-            seqs_with_hits,
-            seqs_without_hits,
+            classified,
+            ambiguous,
+            unclassified,
             format_bp_per_sec(bp_per_sec)
         );
     }
 
-    Ok((
-        histogram,
-        stats.total_seqs,
-        stats.total_bp,
-        seqs_with_hits,
-        seqs_without_hits,
-    ))
+    Ok((buckets, stats.total_seqs, stats.total_bp))
 }
 
-/// Process a single sample's sequences and calculate length histogram
+/// Process a single sample's sequences and calculate per-bucket length histograms
 fn process_single_sample(
-    _idx: usize,
     sample_paths: &[PathBuf],
     sample_name: &str,
-    targets_syncmers: Arc<SyncmerSet>,
+    index: Arc<ClassificationIndex>,
+    group_names: &[String],
+    kmer_length: u8,
+    smer_length: u8,
     config: &LengthHistogramConfig,
 ) -> Result<LengthHistogramResult> {
     // Silence per-sample progress for >1 sample
     let quiet_sample = config.quiet || config.sample_paths.len() > 1;
 
-    // Initialise empty histogram
-    let mut combined_histogram: HashMap<usize, usize> = HashMap::new();
+    let num_groups = group_names.len();
+    let bucket_count = num_groups + 2;
+    let mut combined_buckets: Vec<BucketState> = vec![BucketState::default(); bucket_count];
     let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
-    let mut total_seqs_with_hits = 0u64;
-    let mut total_seqs_without_hits = 0u64;
 
-    // Process each file and accumulate results
     for seq_path in sample_paths {
-        let (file_histogram, file_seqs, file_bp, file_with_hits, file_without_hits) =
-            process_seqs_file(
-                seq_path,
-                Arc::clone(&targets_syncmers),
-                config.kmer_length,
-                config.smer_length,
-                config.threads,
-                quiet_sample,
-                config.include_all_seqs,
-                config.limit_bp.map(|limit| limit.saturating_sub(total_bp)),
-            )?;
+        let (file_buckets, file_seqs, file_bp) = process_seqs_file(
+            seq_path,
+            Arc::clone(&index),
+            num_groups,
+            kmer_length,
+            smer_length,
+            config.min_hits,
+            config.min_fraction,
+            config.threads,
+            quiet_sample,
+            config.include_all_seqs,
+            config.limit_bp.map(|limit| limit.saturating_sub(total_bp)),
+        )?;
 
-        // Merge histograms
-        for (length, count) in file_histogram {
-            *combined_histogram.entry(length).or_insert(0) += count;
+        for (i, b) in file_buckets.into_iter().enumerate() {
+            for (length, count) in b.histogram {
+                *combined_buckets[i].histogram.entry(length).or_insert(0) += count;
+            }
+            combined_buckets[i].seqs += b.seqs;
+            combined_buckets[i].bases += b.bases;
         }
 
         total_seqs += file_seqs;
         total_bp += file_bp;
-        total_seqs_with_hits += file_with_hits;
-        total_seqs_without_hits += file_without_hits;
 
-        // Check if limit reached
         if let Some(limit) = config.limit_bp
             && total_bp >= limit
         {
@@ -354,9 +397,16 @@ fn process_single_sample(
         }
     }
 
-    // Convert histogram to sorted vec
-    let mut length_histogram: Vec<(usize, usize)> = combined_histogram.into_iter().collect();
-    length_histogram.sort_by_key(|(length, _)| *length);
+    let mut bucket_histograms = Vec::with_capacity(bucket_count);
+    let mut bucket_seqs = Vec::with_capacity(bucket_count);
+    let mut bucket_bases = Vec::with_capacity(bucket_count);
+    for b in combined_buckets {
+        let mut hist: Vec<(usize, usize)> = b.histogram.into_iter().collect();
+        hist.sort_by_key(|(length, _)| *length);
+        bucket_histograms.push(hist);
+        bucket_seqs.push(b.seqs);
+        bucket_bases.push(b.bases);
+    }
 
     Ok(LengthHistogramResult {
         sample_name: sample_name.to_string(),
@@ -372,9 +422,10 @@ fn process_single_sample(
             .collect(),
         total_seqs_processed: total_seqs,
         total_bp_processed: total_bp,
-        seqs_with_hits: total_seqs_with_hits,
-        seqs_without_hits: total_seqs_without_hits,
-        length_histogram,
+        group_names: group_names.to_vec(),
+        bucket_histograms,
+        bucket_seqs,
+        bucket_bases,
     })
 }
 
@@ -387,6 +438,16 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         config.kmer_length, config.smer_length, config.threads
     );
 
+    if !config.include_all_seqs {
+        options.push_str(&format!(
+            ", min_hits={}, min_fraction={:.2}",
+            config.min_hits, config.min_fraction
+        ));
+        if config.discriminatory {
+            options.push_str(", discriminatory");
+        }
+    }
+
     if config.sample_paths.len() > 1 {
         options.push_str(&format!(", samples={}", config.sample_paths.len()));
     }
@@ -395,70 +456,90 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         options.push_str(&format!(", limit={}", format_bp(limit as usize)));
     }
 
-    eprintln!("Skope v{}; mode: len; options: {}", version, options);
+    eprintln!("Skope v{}; mode: lenhist; options: {}", version, options);
 
-    // Process targets file OR skip if including all seqs
-    let (targets_syncmers, targets_time) = if config.include_all_seqs {
+    // Load or build the classification index
+    let index_start = Instant::now();
+    let (index, group_names, kmer_length, smer_length, index_source) = if config.include_all_seqs {
         if !config.quiet {
-            eprintln!("Targets: none (target filtering disabled)");
+            eprintln!("Groups: none (target filtering disabled, single \"all\" bucket)");
         }
-        // Create empty set - won't be used
-
-        let empty_set = if config.kmer_length <= 32 {
-            SyncmerSet::U64(RapidHashSet::default())
+        // Degenerate 1-group "all" setup; the index is never queried in this mode.
+        let empty_index = if config.kmer_length <= 32 {
+            ClassificationIndex::U64(HashMap::with_hasher(crate::FixedRapidHasher))
         } else {
-            SyncmerSet::U128(RapidHashSet::default())
+            ClassificationIndex::U128(HashMap::with_hasher(crate::FixedRapidHasher))
         };
-        (Arc::new(empty_set), std::time::Duration::from_secs(0))
-    } else {
-        // Process targets file
-        let targets_start = Instant::now();
-        let targets = process_targets_file(
-            &config.targets_path,
+        (
+            empty_index,
+            vec![ALL_LABEL.to_string()],
             config.kmer_length,
             config.smer_length,
+            "none (target filtering disabled)".to_string(),
+        )
+    } else if config.index_path.is_dir() {
+        let (index, group_names) = build_index_in_memory(
+            &config.index_path,
+            config.kmer_length,
+            config.smer_length,
+            config.threads,
             config.quiet,
-            false,
         )?;
-        let targets_time = targets_start.elapsed();
-
-        // Build set of all unique syncmers across targets
+        let src = config.index_path.to_string_lossy().to_string();
+        (
+            index,
+            group_names,
+            config.kmer_length,
+            config.smer_length,
+            src,
+        )
+    } else {
+        let (index, group_names, k, s) = load_index(&config.index_path)?;
         if !config.quiet {
-            eprint!("Building syncmer set…\r");
-        }
-        let targets_syncmers = if config.kmer_length <= 32 {
-            let mut set = RapidHashSet::default();
-            for target in &targets {
-                if let SyncmerSet::U64(target_set) = &target.syncmers {
-                    set.extend(target_set.iter());
-                }
-            }
-            SyncmerSet::U64(set)
-        } else {
-            let mut set = RapidHashSet::default();
-            for target in &targets {
-                if let SyncmerSet::U128(target_set) = &target.syncmers {
-                    set.extend(target_set.iter());
-                }
-            }
-            SyncmerSet::U128(set)
-        };
-
-        let total_target_syncmers = targets_syncmers.len();
-        let total_bp: usize = targets.iter().map(|t| t.length).sum();
-
-        if !config.quiet {
-            eprint!("\x1B[2K\r"); // Clear line
             eprintln!(
-                "Targets: {} records ({}), {} unique syncmers",
-                targets.len(),
-                format_bp(total_bp),
-                total_target_syncmers
+                "Index: {} k-mers, {} groups, k={}, s={}",
+                index.len(),
+                group_names.len(),
+                k,
+                s,
+            );
+            for (i, name) in group_names.iter().enumerate() {
+                eprintln!("  [{}] {}", i, name);
+            }
+        }
+        (
+            index,
+            group_names,
+            k,
+            s,
+            config.index_path.to_string_lossy().to_string(),
+        )
+    };
+
+    if !config.include_all_seqs
+        && (kmer_length != config.kmer_length || smer_length != config.smer_length)
+        && !config.quiet
+    {
+        eprintln!(
+            "Note: using k={}, s={} from index (CLI k/s ignored)",
+            kmer_length, smer_length
+        );
+    }
+
+    let mut index = index;
+    if !config.include_all_seqs && config.discriminatory {
+        let removed = apply_discriminatory_filter(&mut index);
+        if !config.quiet {
+            eprintln!(
+                "Discriminatory mode: removed {} shared k-mers, {} unique k-mers remain",
+                removed,
+                index.len()
             );
         }
+    }
 
-        (Arc::new(targets_syncmers), targets_time)
-    };
+    let index = Arc::new(index);
+    let index_time = index_start.elapsed();
 
     // Process each sample in parallel
     use rayon::prelude::*;
@@ -481,17 +562,17 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         .sample_paths
         .par_iter()
         .zip(&config.sample_names)
-        .enumerate()
-        .map(|(idx, (sample_paths, sample_name))| {
+        .map(|(sample_paths, sample_name)| {
             let result = process_single_sample(
-                idx,
                 sample_paths,
                 sample_name,
-                Arc::clone(&targets_syncmers),
+                Arc::clone(&index),
+                &group_names,
+                kmer_length,
+                smer_length,
                 config,
             );
 
-            // Report completion for multisample runs
             if let Some(ref counter) = completed {
                 let mut count = counter.lock();
                 *count += 1;
@@ -510,25 +591,23 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         eprintln!();
     }
 
-    let seqs_time = start_time.elapsed().as_secs_f64() - targets_time.as_secs_f64();
+    let seqs_time = start_time.elapsed().as_secs_f64() - index_time.as_secs_f64();
     let total_time = start_time.elapsed();
 
-    // Create report
     let report = LengthHistogramReport {
         version: format!("skope {}", version),
-        targets_file: if config.include_all_seqs {
-            "none (target filtering disabled)".to_string()
-        } else {
-            config.targets_path.to_string_lossy().to_string()
-        },
+        index_source,
         parameters: LengthHistogramParameters {
-            kmer_length: config.kmer_length,
-            smer_length: config.smer_length,
+            kmer_length,
+            smer_length,
             threads: config.threads,
+            min_hits: config.min_hits,
+            min_fraction: config.min_fraction,
+            discriminatory: config.discriminatory,
         },
         samples: sample_results,
         timing: TimingStats {
-            reference_processing_time: targets_time.as_secs_f64(),
+            reference_processing_time: index_time.as_secs_f64(),
             seqs_processing_time: seqs_time,
             analysis_time: 0.0,
             total_time: total_time.as_secs_f64(),
@@ -537,7 +616,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         },
     };
 
-    // Output CSV
+    // Output TSV
     let writer: Box<dyn Write> = if let Some(path) = &config.output_path {
         Box::new(BufWriter::new(File::create(path)?))
     } else {
@@ -548,29 +627,44 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         .delimiter(b'\t')
         .from_writer(writer);
 
-    // Write header
     csv_writer.write_record([
         "sample",
+        "group",
         "length",
         "count",
         "total_seqs_processed",
         "total_bp_processed",
-        "seqs_with_hits",
-        "seqs_without_hits",
+        "group_seqs",
+        "group_bases",
     ])?;
 
-    // Write one row per (sample, length, count) tuple
     for sample in &report.samples {
-        for (length, count) in &sample.length_histogram {
-            csv_writer.write_record([
-                &sample.sample_name,
-                &length.to_string(),
-                &count.to_string(),
-                &sample.total_seqs_processed.to_string(),
-                &sample.total_bp_processed.to_string(),
-                &sample.seqs_with_hits.to_string(),
-                &sample.seqs_without_hits.to_string(),
-            ])?;
+        let n = sample.group_names.len();
+        for (bucket_idx, hist) in sample.bucket_histograms.iter().enumerate() {
+            if hist.is_empty() {
+                continue;
+            }
+            let group_label: &str = if bucket_idx < n {
+                &sample.group_names[bucket_idx]
+            } else if bucket_idx == n {
+                AMBIGUOUS_LABEL
+            } else {
+                UNCLASSIFIED_LABEL
+            };
+            let group_seqs = sample.bucket_seqs[bucket_idx];
+            let group_bases = sample.bucket_bases[bucket_idx];
+            for (length, count) in hist {
+                csv_writer.write_record([
+                    &sample.sample_name,
+                    group_label,
+                    &length.to_string(),
+                    &count.to_string(),
+                    &sample.total_seqs_processed.to_string(),
+                    &sample.total_bp_processed.to_string(),
+                    &group_seqs.to_string(),
+                    &group_bases.to_string(),
+                ])?;
+            }
         }
     }
 

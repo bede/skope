@@ -28,17 +28,21 @@ pub enum ClassificationIndex {
 }
 
 impl ClassificationIndex {
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         match self {
             ClassificationIndex::U64(m) => m.len(),
             ClassificationIndex::U128(m) => m.len(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Remove syncmers shared across groups, keeping only group-unique syncmers
 /// Returns how many shared syncmers were removed
-fn apply_discriminatory_filter(index: &mut ClassificationIndex) -> usize {
+pub(crate) fn apply_discriminatory_filter(index: &mut ClassificationIndex) -> usize {
     match index {
         ClassificationIndex::U64(map) => {
             let before = map.len();
@@ -55,7 +59,7 @@ fn apply_discriminatory_filter(index: &mut ClassificationIndex) -> usize {
 
 // Classification result types
 #[derive(Debug, Clone, Copy)]
-enum Classification {
+pub(crate) enum Classification {
     Unclassified,
     Classified(usize),
     Ambiguous(u64),
@@ -225,7 +229,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
 use crate::discover_sequence_groups;
 
 /// Build a classification index in memory from group FASTX files/subdirectories in a directory
-fn build_index_in_memory(
+pub(crate) fn build_index_in_memory(
     groups_dir: &Path,
     kmer_length: u8,
     smer_length: u8,
@@ -583,7 +587,7 @@ fn update_classify_spinner(
 }
 
 /// Classify one sequence and populate per-group hit counts
-fn classify_seq_kmers(
+pub(crate) fn classify_seq_kmers(
     seq: &[u8],
     hasher: &KmerHasher,
     kmer_length: u8,
