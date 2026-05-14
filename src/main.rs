@@ -142,7 +142,7 @@ enum IndexCommands {
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
 
-        /// Path to output index file (- for stdout)
+        /// Path to output .skcl index file (- for stdout)
         #[arg(short = 'o', long = "output", default_value = "-")]
         output: String,
 
@@ -230,7 +230,7 @@ enum Commands {
 
     /// Classify sequences into groups based on syncmer membership
     Classify {
-        /// Path to .idx index file or directory of fastx files/subdirectories (one group per top-level file or directory)
+        /// Path to .skcl classification index file or directory of fastx files/subdirectories (one group per top-level file or directory)
         index: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin)

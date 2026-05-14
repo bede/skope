@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 // Index header constants and metadata
-const INDEX_MAGIC: &[u8; 4] = b"GRAT";
+const INDEX_MAGIC: &[u8; 4] = b"SKCL";
 const INDEX_FORMAT_VERSION: u8 = 1;
 type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8);
 

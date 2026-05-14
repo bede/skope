@@ -38,6 +38,10 @@ uv run plot/lenhist.py len.tsv
 # Stdin
 zstdcat reads3.fq.zst | skope query refs.fa -
 
+# Build a classification index (.skcl) and classify reads against it
+skope index build groups/ -o groups.skcl
+skope classify groups.skcl reads.fq.gz
+
 # View help for any command
 skope query -h
 skope lenhist -h
