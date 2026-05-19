@@ -5,6 +5,7 @@
 //! Skope analyses the containment of open syncmers from reference sequences in sequence datasets,
 //! providing detailed statistics on containment and abundance per target sequence
 pub mod classify;
+pub mod fastx;
 pub mod length;
 pub mod query;
 pub mod syncmers;

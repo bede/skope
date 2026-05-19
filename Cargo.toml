@@ -40,6 +40,8 @@ simd-minimizers = "2.3.0"
 
 paraseq = { version = "0.4.2", default-features = false, features = ["anyhow", "niffler"] }
 niffler = "3"
+helicase = { version = "0.1.1", default-features = false, features = ["gz", "zstd"] }
+crossbeam-channel = "0.5"
 
 liblzma = { version = "0.4", optional = true }
 flate2 = { version = "1.1", features = ["zlib-rs"], optional = true }

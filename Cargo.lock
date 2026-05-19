@@ -259,6 +259,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "deko"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83c5c3f0ad826f7b26482496465352171d43af06a0d4b7b8ad3680169a6ec7cb"
+dependencies = [
+ "flate2",
+ "zstd",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -413,6 +423,18 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "helicase"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b168a0cb9e3647aecec0a5aadb8945755a6389237c2a5caf4b26c7b4477c819"
+dependencies = [
+ "deko",
+ "flate2",
+ "memchr",
+ "memmap2",
+]
 
 [[package]]
 name = "hermit-abi"
@@ -603,6 +625,15 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "memmap2"
+version = "0.9.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -1026,8 +1057,10 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
+ "crossbeam-channel",
  "csv",
  "flate2",
+ "helicase",
  "indicatif",
  "liblzma",
  "niffler",

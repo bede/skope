@@ -1,15 +1,13 @@
+use crate::fastx::{self, RecordProcessor};
 use crate::syncmers::{
     Buffers, KmerHasher, SyncmerVec, fill_syncmers, fill_syncmers_with_positions,
 };
 use crate::{
     ProcessingStats, RapidHashSet, create_spinner, discover_sequence_groups, format_bp,
-    format_bp_per_sec, handle_process_result, reader_with_inferred_batch_size,
-    sample_limit_reached_io_error,
+    format_bp_per_sec,
 };
 use anyhow::Result;
 use indicatif::ProgressBar;
-use paraseq::Record;
-use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::File;
@@ -233,16 +231,15 @@ impl TargetsProcessor {
     }
 }
 
-impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
-        let sequence = record.seq();
-        let target_name = String::from_utf8_lossy(record.id()).to_string();
+impl RecordProcessor for TargetsProcessor {
+    fn process_record(&mut self, header: &[u8], seq: &[u8]) -> Result<()> {
+        let target_name = String::from_utf8_lossy(header).to_string();
 
         self.local_stats.total_seqs += 1;
-        self.local_stats.total_bp += sequence.len() as u64;
+        self.local_stats.total_bp += seq.len() as u64;
 
         fill_syncmers_with_positions(
-            &sequence,
+            seq,
             &self.hasher,
             self.kmer_length,
             self.smer_length,
@@ -267,7 +264,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
 
         self.targets.lock().push(TargetInfo {
             name: target_name,
-            length: sequence.len(),
+            length: seq.len(),
             syncmers,
             syncmer_positions,
         });
@@ -275,7 +272,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+    fn on_batch_complete(&mut self) -> Result<()> {
         // Update global stats
         {
             let mut stats = self.global_stats.lock();
@@ -310,8 +307,6 @@ pub fn process_targets_file(
         Some(targets_path)
     };
 
-    let reader = reader_with_inferred_batch_size(in_path)?;
-
     let spinner = create_spinner(quiet)?;
 
     let start_time = std::time::Instant::now();
@@ -329,7 +324,7 @@ pub fn process_targets_file(
     );
 
     // Single thread to preserve order
-    reader.process_parallel(&mut processor, 1)?;
+    fastx::process_parallel(in_path, &mut processor, 1)?;
 
     // Finish spinner and clear
     if let Some(ref pb) = spinner {
@@ -475,23 +470,20 @@ impl SeqsProcessor {
     }
 }
 
-impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+impl RecordProcessor for SeqsProcessor {
+    fn process_record(&mut self, _header: &[u8], seq: &[u8]) -> Result<()> {
         if let Some(limit) = self.limit_bp {
             let global_bp = self.global_stats.lock().total_bp;
             if global_bp >= limit {
-                return Err(paraseq::parallel::ProcessError::IoError(
-                    sample_limit_reached_io_error(),
-                ));
+                return Err(fastx::sample_limit_reached_error());
             }
         }
 
-        let seq = record.seq();
         self.local_stats.total_seqs += 1;
         self.local_stats.total_bp += seq.len() as u64;
 
         fill_syncmers(
-            &seq,
+            seq,
             &self.hasher,
             self.kmer_length,
             self.smer_length,
@@ -529,7 +521,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+    fn on_batch_complete(&mut self) -> Result<()> {
         // Merge local into global counts
         if let Some(local) = &mut self.local_counts_u64 {
             let mut global = self.global_counts_u64.lock();
@@ -596,7 +588,6 @@ fn process_seqs_file(
     } else {
         Some(seq_path)
     };
-    let reader = reader_with_inferred_batch_size(in_path)?;
 
     let spinner = create_spinner(quiet)?;
     if let Some(ref pb) = spinner {
@@ -632,8 +623,12 @@ fn process_seqs_file(
         disjoint,
     );
 
-    let process_result = reader.process_parallel(&mut processor, threads);
-    handle_process_result(process_result)?;
+    let process_result = fastx::process_parallel(in_path, &mut processor, threads);
+    match process_result {
+        Ok(()) => {}
+        Err(e) if fastx::is_sample_limit_error(&e) => {}
+        Err(e) => return Err(e),
+    }
 
     if let Some(ref pb) = spinner {
         pb.lock().finish_with_message("");
