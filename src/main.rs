@@ -21,7 +21,7 @@ fn validate_sample_names(names: &[String]) -> Result<()> {
 
     if !duplicates.is_empty() {
         return Err(anyhow::anyhow!(
-            "Duplicate sample names detected: {}. Please rename files or use --sample-names to specify unique names.",
+            "Duplicate sample names detected: {}. Please rename files or use --names to specify unique names.",
             duplicates.join(", ")
         ));
     }
