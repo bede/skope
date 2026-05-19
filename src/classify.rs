@@ -695,6 +695,7 @@ struct ClassifySummaryProcessor {
 }
 
 impl ClassifySummaryProcessor {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         kmer_length: u8,
         smer_length: u8,
@@ -702,6 +703,7 @@ impl ClassifySummaryProcessor {
         num_groups: usize,
         min_hits: u64,
         min_fraction: f64,
+        global: Arc<Mutex<GlobalClassifyState>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
         limit_bp: Option<u64>,
@@ -729,7 +731,7 @@ impl ClassifySummaryProcessor {
             local_unclassified_seqs: 0,
             local_unclassified_bases: 0,
             local_stats: ProcessingStats::default(),
-            global: Arc::new(Mutex::new(GlobalClassifyState::new(num_groups))),
+            global,
             spinner,
             start_time,
             limit_bp,
@@ -858,6 +860,7 @@ struct ClassifyPerSeqProcessor {
 }
 
 impl ClassifyPerSeqProcessor {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         kmer_length: u8,
         smer_length: u8,
@@ -868,6 +871,7 @@ impl ClassifyPerSeqProcessor {
         min_fraction: f64,
         sample_name: String,
         output_writer: Arc<Mutex<BufWriter<Box<dyn Write + Send>>>>,
+        global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
         limit_bp: Option<u64>,
@@ -893,7 +897,7 @@ impl ClassifyPerSeqProcessor {
             local_output: Vec::with_capacity(64 * 1024),
             output_writer,
             local_stats: ProcessingStats::default(),
-            global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
+            global_stats,
             spinner,
             start_time,
             limit_bp,
@@ -1072,7 +1076,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         let removed = apply_discriminatory_filter(&mut index);
         if !config.quiet {
             eprintln!(
-                "Discriminatory mode: removed {} shared k-mers, {} unique k-mers remain",
+                "Discriminatory mode: removed {} shared syncmers, {} unique syncmers remain",
                 removed,
                 index.len()
             );
@@ -1111,6 +1115,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                 let spinner = create_spinner(config.quiet)?;
 
                 let pr_start = Instant::now();
+                let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
 
                 let mut processor = ClassifyPerSeqProcessor::new(
                     kmer_length,
@@ -1122,6 +1127,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                     config.min_fraction,
                     sample_name.clone(),
                     Arc::clone(&writer),
+                    Arc::clone(&global_stats),
                     spinner.clone(),
                     pr_start,
                     config.limit_bp,
@@ -1135,7 +1141,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                     pb.lock().finish_and_clear();
                 }
 
-                let stats = processor.global_stats.lock().clone();
+                let stats = global_stats.lock().clone();
                 if !config.quiet {
                     let elapsed = pr_start.elapsed();
                     let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
@@ -1328,6 +1334,7 @@ fn process_sample_summary(
         let spinner = create_spinner(quiet)?;
 
         let file_start = Instant::now();
+        let global = Arc::new(Mutex::new(GlobalClassifyState::new(num_groups)));
 
         let mut processor = ClassifySummaryProcessor::new(
             kmer_length,
@@ -1336,6 +1343,7 @@ fn process_sample_summary(
             num_groups,
             min_hits,
             min_fraction,
+            Arc::clone(&global),
             spinner.clone(),
             file_start,
             limit_bp.map(|l| l.saturating_sub(combined.total_bases)),
@@ -1349,7 +1357,7 @@ fn process_sample_summary(
             pb.lock().finish_and_clear();
         }
 
-        let g = processor.global.lock();
+        let g = global.lock();
         for i in 0..num_groups {
             combined.group_counts[i].seqs += g.group_seqs[i];
             combined.group_counts[i].bases += g.group_bases[i];

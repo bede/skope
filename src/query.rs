@@ -188,6 +188,8 @@ impl TargetsProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
+        targets: Arc<Mutex<Vec<TargetInfo>>>,
+        global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: std::time::Instant,
         disjoint: bool,
@@ -204,10 +206,10 @@ impl TargetsProcessor {
             hasher: KmerHasher::new(smer_length as usize),
             buffers,
             positions: Vec::new(),
-            targets: Arc::new(Mutex::new(Vec::new())),
+            targets,
             disjoint,
             local_stats: ProcessingStats::default(),
-            global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
+            global_stats,
             spinner,
             start_time,
         }
@@ -313,9 +315,14 @@ pub fn process_targets_file(
     let spinner = create_spinner(quiet)?;
 
     let start_time = std::time::Instant::now();
+    let targets: Arc<Mutex<Vec<TargetInfo>>> = Arc::new(Mutex::new(Vec::new()));
+    let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
+
     let mut processor = TargetsProcessor::new(
         kmer_length,
         smer_length,
+        Arc::clone(&targets),
+        Arc::clone(&global_stats),
         spinner.clone(),
         start_time,
         disjoint,
@@ -329,7 +336,9 @@ pub fn process_targets_file(
         pb.lock().finish_and_clear();
     }
 
-    let targets = Arc::try_unwrap(processor.targets).unwrap().into_inner();
+    // Drop processor so its Arc clones are released
+    drop(processor);
+    let targets = Arc::try_unwrap(targets).unwrap().into_inner();
 
     Ok(targets)
 }
@@ -404,10 +413,14 @@ struct SeqsProcessor {
 }
 
 impl SeqsProcessor {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         kmer_length: u8,
         smer_length: u8,
         targets_syncmers: Arc<SyncmerSet>,
+        global_counts_u64: Arc<Mutex<Option<HashMap<u64, CountDepth>>>>,
+        global_counts_u128: Arc<Mutex<Option<HashMap<u128, CountDepth>>>>,
+        global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
         limit_bp: Option<u64>,
@@ -425,18 +438,6 @@ impl SeqsProcessor {
             (None, Some(HashMap::new()))
         };
 
-        let (global_counts_u64, global_counts_u128) = if kmer_length <= 32 {
-            (
-                Arc::new(Mutex::new(Some(HashMap::new()))),
-                Arc::new(Mutex::new(None)),
-            )
-        } else {
-            (
-                Arc::new(Mutex::new(None)),
-                Arc::new(Mutex::new(Some(HashMap::new()))),
-            )
-        };
-
         Self {
             kmer_length,
             smer_length,
@@ -447,7 +448,7 @@ impl SeqsProcessor {
             local_stats: ProcessingStats::default(),
             local_counts_u64,
             local_counts_u128,
-            global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
+            global_stats,
             global_counts_u64,
             global_counts_u128,
             spinner,
@@ -605,10 +606,26 @@ fn process_seqs_file(
     let total_target_syncmers = targets_syncmers.len();
 
     let start_time = Instant::now();
+    let (global_counts_u64, global_counts_u128) = if kmer_length <= 32 {
+        (
+            Arc::new(Mutex::new(Some(HashMap::new()))),
+            Arc::new(Mutex::new(None)),
+        )
+    } else {
+        (
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(Some(HashMap::new()))),
+        )
+    };
+    let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
+
     let mut processor = SeqsProcessor::new(
         kmer_length,
         smer_length,
         targets_syncmers,
+        Arc::clone(&global_counts_u64),
+        Arc::clone(&global_counts_u128),
+        Arc::clone(&global_stats),
         spinner.clone(),
         start_time,
         limit_bp,
@@ -622,15 +639,17 @@ fn process_seqs_file(
         pb.lock().finish_with_message("");
     }
 
-    let stats = processor.global_stats.lock().clone();
+    // Drop processor so its Arc clones are released
+    drop(processor);
+    let stats = global_stats.lock().clone();
     let abundance_map = if kmer_length <= 32 {
-        let map = Arc::try_unwrap(processor.global_counts_u64)
+        let map = Arc::try_unwrap(global_counts_u64)
             .unwrap()
             .into_inner()
             .unwrap();
         AbundanceMap::U64(map)
     } else {
-        let map = Arc::try_unwrap(processor.global_counts_u128)
+        let map = Arc::try_unwrap(global_counts_u128)
             .unwrap()
             .into_inner()
             .unwrap();

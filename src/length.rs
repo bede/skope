@@ -119,6 +119,7 @@ struct LengthHistogramProcessor {
 }
 
 impl LengthHistogramProcessor {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         kmer_length: u8,
         smer_length: u8,
@@ -128,6 +129,7 @@ impl LengthHistogramProcessor {
         min_fraction: f64,
         include_all_seqs: bool,
         global_buckets: Arc<Vec<Mutex<BucketState>>>,
+        global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
         limit_bp: Option<u64>,
@@ -154,7 +156,7 @@ impl LengthHistogramProcessor {
             hits: [0u64; 128],
             local_stats: ProcessingStats::default(),
             local_buckets,
-            global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
+            global_stats,
             global_buckets,
             spinner,
             start_time,
@@ -296,6 +298,7 @@ fn process_seqs_file(
             .map(|_| Mutex::new(BucketState::default()))
             .collect(),
     );
+    let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
 
     let start_time = Instant::now();
     let mut processor = LengthHistogramProcessor::new(
@@ -307,6 +310,7 @@ fn process_seqs_file(
         min_fraction,
         include_all_seqs,
         Arc::clone(&global_buckets),
+        Arc::clone(&global_stats),
         spinner.clone(),
         start_time,
         limit_bp,
@@ -319,7 +323,7 @@ fn process_seqs_file(
         pb.lock().finish_with_message("");
     }
 
-    let stats = processor.global_stats.lock().clone();
+    let stats = global_stats.lock().clone();
     let buckets: Vec<BucketState> = global_buckets
         .iter()
         .map(|m| std::mem::take(&mut *m.lock()))
@@ -531,7 +535,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         let removed = apply_discriminatory_filter(&mut index);
         if !config.quiet {
             eprintln!(
-                "Discriminatory mode: removed {} shared k-mers, {} unique k-mers remain",
+                "Discriminatory mode: removed {} shared syncmers, {} unique syncmers remain",
                 removed,
                 index.len()
             );
