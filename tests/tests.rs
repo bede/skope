@@ -27,6 +27,7 @@ fn test_multisample_processing() {
         dump_positions_path: None,
         no_total: false,
         disjoint: false,
+        individual: true,
     };
 
     assert!(skope::run_containment_analysis(&config).is_ok());
@@ -57,6 +58,7 @@ fn test_multisample_report_structure() {
         dump_positions_path: None,
         no_total: false,
         disjoint: false,
+        individual: true,
     };
 
     skope::run_containment_analysis(&config).unwrap();
@@ -138,6 +140,7 @@ fn test_sort_target() {
         dump_positions_path: None,
         no_total: false,
         disjoint: false,
+        individual: true,
     };
 
     skope::run_containment_analysis(&config).unwrap();
@@ -183,6 +186,7 @@ fn test_sort_containment() {
         dump_positions_path: None,
         no_total: false,
         disjoint: false,
+        individual: true,
     };
 
     skope::run_containment_analysis(&config).unwrap();
@@ -418,6 +422,7 @@ fn test_query_directory_mixed_layout() {
         dump_positions_path: None,
         no_total: true,
         disjoint: false,
+        individual: false,
     };
     skope::run_containment_analysis(&config).unwrap();
 

@@ -154,6 +154,7 @@ pub struct ContainmentConfig {
     pub abundance_thresholds: Vec<usize>,
     pub discriminatory: bool,
     pub disjoint: bool,
+    pub individual: bool,
     pub limit_bp: Option<u64>,
     pub sort_order: SortOrder,
     pub dump_positions_path: Option<PathBuf>,
@@ -1009,13 +1010,19 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.disjoint,
         )?
     } else {
-        process_targets_file(
+        let per_record = process_targets_file(
             &config.targets_path,
             config.kmer_length,
             config.smer_length,
             config.quiet,
             config.disjoint,
-        )?
+        )?;
+        if config.individual || per_record.len() <= 1 {
+            per_record
+        } else {
+            let name = crate::derive_sample_name(&config.targets_path, false);
+            vec![merge_targets(per_record, name)?]
+        }
     };
     let targets_time = targets_start.elapsed();
 

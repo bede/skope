@@ -156,7 +156,7 @@ enum IndexCommands {
 enum Commands {
     /// Estimate syncmer containment & abundance in fastx file(s) or directories thereof
     Query {
-        /// Path to fastx file or directory of fastx files/subdirectories containing targets
+        /// Path to fastx file (treated as single target unless -i set) or directory of fastx files/subdirs (one target per child file/subdir)
         targets: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
@@ -188,6 +188,10 @@ enum Commands {
         /// Use only non-overlapping (disjoint) syncmers
         #[arg(long = "disjoint", default_value_t = false)]
         disjoint: bool,
+
+        /// Treat each fastx record as separate target (default: merge records into one target named after file)
+        #[arg(short = 'i', long = "individual", default_value_t = false)]
+        individual: bool,
 
         // Processing options
         /// Number of execution threads (0 = auto)
@@ -485,6 +489,7 @@ fn main() -> Result<()> {
             abundance_thresholds,
             discriminatory,
             disjoint,
+            individual,
             limit,
             sort,
             dump_positions,
@@ -565,6 +570,7 @@ fn main() -> Result<()> {
                 abundance_thresholds: abundance_thresholds.clone(),
                 discriminatory: *discriminatory,
                 disjoint: *disjoint,
+                individual: *individual,
                 limit_bp,
                 sort_order,
                 dump_positions_path: dump_positions.as_ref().map(PathBuf::from),

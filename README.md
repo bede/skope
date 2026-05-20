@@ -20,6 +20,9 @@ RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/bede/sko
 # Calculate containment of target sequences in reads
 skope query refs.fa reads.fastq.gz
 
+# Treat each record in a multi-record fastx as a separate target
+skope query -i viruses.fa reads.fastq.gz
+
 # Calculate target containment in multiple samples
 skope query refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
 
@@ -78,7 +81,7 @@ Estimate syncmer containment & abundance in fastx file(s) or directories thereof
 Usage: skope query [OPTIONS] <TARGETS> <SAMPLES>...
 
 Arguments:
-  <TARGETS>     Path to fastx file or directory of fastx files/subdirectories containing targets
+  <TARGETS>     Path to fastx file (treated as single target unless -i set) or directory of fastx files/subdirs (one target per child file/subdir)
   <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
 
 Options:
@@ -92,6 +95,8 @@ Options:
           Consider only syncmers unique to each target
       --disjoint
           Use only non-overlapping (disjoint) syncmers
+  -i, --individual
+          Treat each fastx record as separate target (default: merge records into one target named after file)
   -t, --threads <THREADS>
           Number of execution threads (0 = auto) [default: 8]
   -l, --limit <LIMIT>
