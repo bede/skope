@@ -1019,67 +1019,73 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     };
     let targets_time = targets_start.elapsed();
 
-    // Count syncmers shared between targets
-    if !config.quiet {
-        eprint!("Counting shared syncmers…\r");
-    }
-    let mut syncmer_target_counts: HashMap<u64, usize> = HashMap::new();
-    let mut syncmer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
-
-    for target in &targets {
-        match &target.syncmers {
-            SyncmerSet::U64(set) => {
-                for &syncmer in set {
-                    *syncmer_target_counts.entry(syncmer).or_insert(0) += 1;
-                }
-            }
-            SyncmerSet::U128(set) => {
-                for &syncmer in set {
-                    *syncmer_target_counts_u128.entry(syncmer).or_insert(0) += 1;
-                }
-            }
+    // Count syncmers shared between targets (only meaningful with >1 target)
+    let (shared_syncmers, unique_across_all) = if targets.len() > 1 {
+        if !config.quiet {
+            eprint!("Counting shared syncmers…\r");
         }
-    }
+        let mut syncmer_target_counts: HashMap<u64, usize> = HashMap::new();
+        let mut syncmer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
 
-    let shared_syncmers = if config.kmer_length <= 32 {
-        syncmer_target_counts
-            .values()
-            .filter(|&&count| count > 1)
-            .count()
-    } else {
-        syncmer_target_counts_u128
-            .values()
-            .filter(|&&count| count > 1)
-            .count()
-    };
-
-    let unique_across_all = if config.kmer_length <= 32 {
-        syncmer_target_counts.len()
-    } else {
-        syncmer_target_counts_u128.len()
-    };
-
-    // Apply discriminatory filtering if enabled
-    if config.discriminatory {
-        for target in &mut targets {
-            match &mut target.syncmers {
+        for target in &targets {
+            match &target.syncmers {
                 SyncmerSet::U64(set) => {
-                    set.retain(|syncmer| {
-                        syncmer_target_counts
-                            .get(syncmer)
-                            .is_none_or(|&count| count == 1)
-                    });
+                    for &syncmer in set {
+                        *syncmer_target_counts.entry(syncmer).or_insert(0) += 1;
+                    }
                 }
                 SyncmerSet::U128(set) => {
-                    set.retain(|syncmer| {
-                        syncmer_target_counts_u128
-                            .get(syncmer)
-                            .is_none_or(|&count| count == 1)
-                    });
+                    for &syncmer in set {
+                        *syncmer_target_counts_u128.entry(syncmer).or_insert(0) += 1;
+                    }
                 }
             }
         }
-    }
+
+        let shared = if config.kmer_length <= 32 {
+            syncmer_target_counts
+                .values()
+                .filter(|&&count| count > 1)
+                .count()
+        } else {
+            syncmer_target_counts_u128
+                .values()
+                .filter(|&&count| count > 1)
+                .count()
+        };
+
+        let unique = if config.kmer_length <= 32 {
+            syncmer_target_counts.len()
+        } else {
+            syncmer_target_counts_u128.len()
+        };
+
+        // Apply discriminatory filtering if enabled
+        if config.discriminatory {
+            for target in &mut targets {
+                match &mut target.syncmers {
+                    SyncmerSet::U64(set) => {
+                        set.retain(|syncmer| {
+                            syncmer_target_counts
+                                .get(syncmer)
+                                .is_none_or(|&count| count == 1)
+                        });
+                    }
+                    SyncmerSet::U128(set) => {
+                        set.retain(|syncmer| {
+                            syncmer_target_counts_u128
+                                .get(syncmer)
+                                .is_none_or(|&count| count == 1)
+                        });
+                    }
+                }
+            }
+        }
+
+        (shared, unique)
+    } else {
+        (0, targets.first().map(|t| t.syncmers.len()).unwrap_or(0))
+    };
 
     if !config.quiet {
         eprint!("\r"); // Clear space
