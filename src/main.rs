@@ -185,7 +185,7 @@ enum Commands {
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
-        /// Use only non-overlapping (disjoint) syncmers
+        /// Index only non-overlapping (disjoint) target syncmers
         #[arg(long = "disjoint", default_value_t = false)]
         disjoint: bool,
 

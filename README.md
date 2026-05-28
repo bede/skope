@@ -27,10 +27,10 @@ skope query -i viruses.fa reads.fastq.gz
 skope query refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
 
 # Calculate containment at depth>=100 using only discriminatory syncmers
-skope query -a 100 --discriminatory refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
+skope query -i -a 100 --discriminatory refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
 
 # Plot query results (containment bar chart or scatter)
-skope query refs.fa s1.fq.gz s2.fq.gz > query.tsv
+skope query -i refs.fa s1.fq.gz s2.fq.gz > query.tsv
 uv run plot/query.py query.tsv --mode bar -o query_bar.png
 uv run plot/query.py query.tsv --mode scatter -o query_scatter.png
 
@@ -94,7 +94,7 @@ Options:
   -d, --discriminatory
           Consider only syncmers unique to each target
       --disjoint
-          Use only non-overlapping (disjoint) syncmers
+          Consider only non-overlapping (disjoint) syncmers
   -i, --individual
           Treat each fastx record as separate target (default: merge records into one target named after file)
   -t, --threads <THREADS>
