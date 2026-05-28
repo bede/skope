@@ -177,6 +177,7 @@ struct TargetsProcessor {
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
     disjoint: bool,
+    collect_positions: bool,
 
     // Progress tracking
     local_stats: ProcessingStats,
@@ -194,6 +195,7 @@ impl TargetsProcessor {
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: std::time::Instant,
         disjoint: bool,
+        collect_positions: bool,
     ) -> Self {
         let buffers = if kmer_length <= 32 {
             Buffers::new_u64()
@@ -209,6 +211,7 @@ impl TargetsProcessor {
             positions: Vec::new(),
             targets,
             disjoint,
+            collect_positions,
             local_stats: ProcessingStats::default(),
             global_stats,
             spinner,
@@ -242,15 +245,26 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         self.local_stats.total_seqs += 1;
         self.local_stats.total_bp += sequence.len() as u64;
 
-        fill_syncmers_with_positions(
-            &sequence,
-            &self.hasher,
-            self.kmer_length,
-            self.smer_length,
-            &mut self.buffers,
-            &mut self.positions,
-            self.disjoint,
-        );
+        if self.collect_positions {
+            fill_syncmers_with_positions(
+                &sequence,
+                &self.hasher,
+                self.kmer_length,
+                self.smer_length,
+                &mut self.buffers,
+                &mut self.positions,
+                self.disjoint,
+            );
+        } else {
+            fill_syncmers(
+                &sequence,
+                &self.hasher,
+                self.kmer_length,
+                self.smer_length,
+                &mut self.buffers,
+                self.disjoint,
+            );
+        }
 
         // Build unique syncmer set for this target
         let syncmers = match &self.buffers.syncmers {
@@ -264,7 +278,11 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
             }
         };
 
-        let syncmer_positions = self.positions.clone();
+        let syncmer_positions = if self.collect_positions {
+            self.positions.clone()
+        } else {
+            Vec::new()
+        };
 
         self.targets.lock().push(TargetInfo {
             name: target_name,
@@ -304,6 +322,7 @@ pub fn process_targets_file(
     smer_length: u8,
     quiet: bool,
     disjoint: bool,
+    collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
     let in_path = if targets_path.to_string_lossy() == "-" {
         None
@@ -327,6 +346,7 @@ pub fn process_targets_file(
         spinner.clone(),
         start_time,
         disjoint,
+        collect_positions,
     );
 
     // Single thread to preserve order
@@ -372,6 +392,7 @@ pub fn process_targets_dir(
     smer_length: u8,
     quiet: bool,
     disjoint: bool,
+    collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
     let groups = discover_sequence_groups(dir_path)?;
 
@@ -379,8 +400,14 @@ pub fn process_targets_dir(
     for group in groups {
         let mut all_targets: Vec<TargetInfo> = Vec::new();
         for file_path in &group.files {
-            let targets =
-                process_targets_file(file_path, kmer_length, smer_length, quiet, disjoint)?;
+            let targets = process_targets_file(
+                file_path,
+                kmer_length,
+                smer_length,
+                quiet,
+                disjoint,
+                collect_positions,
+            )?;
             all_targets.extend(targets);
         }
         results.push(merge_targets(all_targets, group.name)?);
@@ -995,6 +1022,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
 
     // Process targets file or directory
     let targets_start = Instant::now();
+    let collect_positions = config.dump_positions_path.is_some();
     let mut targets = if is_targets_dir {
         process_targets_dir(
             &config.targets_path,
@@ -1002,6 +1030,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.smer_length,
             config.quiet,
             config.disjoint,
+            collect_positions,
         )?
     } else {
         let per_record = process_targets_file(
@@ -1010,6 +1039,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.smer_length,
             config.quiet,
             config.disjoint,
+            collect_positions,
         )?;
         if config.individual || per_record.len() <= 1 {
             per_record
