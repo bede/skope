@@ -232,7 +232,7 @@ enum Commands {
         dump_positions: Option<String>,
     },
 
-    /// Classify sequences into groups based on syncmer membership
+    /// Classify sequences into groups by syncmer content
     Classify {
         /// Path to .skcl classification index file or directory of fastx files/subdirectories (one group per top-level file or directory)
         index: PathBuf,

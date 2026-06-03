@@ -2,7 +2,7 @@
 
 # Skope
 
-Accelerated syncmer containment and abundance estimation.
+Accelerated streaming containment and abundance estimation using syncmers. Like Mash Screen or Sylph, only much faster for small queries (up to 10 gigabases/second), despite more dense and even *k*-mer sampling. Rapidly estimates coverage at chosen depth thresholds, providing a viable alternative to mapping-based coverage estimation in many contexts. Optimised for screening large datasets for small query sequences (<1 gigabase) such as genes and genomes of viruses and bacteria, scaling to larger query genomes given sufficient memory. No prior sketching is required, and memory use is bounded by the size of query (needle) sequences rather than by the size of subject (haystack) sequences.
 
 ## Install & update
 
@@ -21,7 +21,7 @@ RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/bede/sko
 skope query refs.fa reads.fastq.gz
 
 # Treat each record in a multi-record fastx as a separate target
-skope query -i viruses.fa reads.fastq.gz
+skope query -i refs.fa reads.fastq.gz
 
 # Calculate target containment in multiple samples
 skope query refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
@@ -31,8 +31,10 @@ skope query -i -a 100 --discriminatory refs.fa reads1.fastq.gz reads2/ reads3.fa
 
 # Plot query results (containment bar chart or scatter)
 skope query -i refs.fa s1.fq.gz s2.fq.gz > query.tsv
-uv run plot/query.py query.tsv --mode bar -o query_bar.png
-uv run plot/query.py query.tsv --mode scatter -o query_scatter.png
+uv run plot/query.py query.tsv --mode bar -o query-bar.png
+uv run plot/query.py query.tsv --mode decay -o query-decay.png
+uv run plot/query.py query.tsv --mode scatter -o query-scatter.png
+uv run plot/query.py query.tsv --mode scatter -o query-scatter.html  # Interactive
 
 # Plot per-group sequence length histograms (e.g. host vs viral)
 skope lenhist groups.skcl s1.fq.gz s2.fq.gz > len.tsv
@@ -67,12 +69,12 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
 **Main commands**
 ```
   query     Estimate syncmer containment & abundance in fastx file(s) or directories thereof
-  classify  Classify sequences into groups based on syncmer membership
+  classify  Classify sequences into groups by their syncmer content
   lenhist   Generate per-group length histograms based on syncmer classification
   index     Build and manage classification indexes
 ```
 
-**Query containment**
+**Query**
 
 ```bash
 $ skope query -h
@@ -94,7 +96,7 @@ Options:
   -d, --discriminatory
           Consider only syncmers unique to each target
       --disjoint
-          Consider only non-overlapping (disjoint) syncmers
+          Index only non-overlapping (disjoint) target syncmers
   -i, --individual
           Treat each fastx record as separate target (default: merge records into one target named after file)
   -t, --threads <THREADS>
@@ -119,36 +121,32 @@ Options:
           Print help
 ```
 
-**Length histogram**
-
-`lenhist` shares its group-input model with `classify`: pass a `.skcl` index (or a
-directory of fastx files/subdirectories, one group per top-level entry) and each
-read is binned into exactly one bucket — its single matching group, `ambiguous`
-(multiple groups), or `unclassified` (no group). Pass `-` instead of an index to
-disable filtering; all reads then go to a single `all` bucket. Output is a TSV
-with one row per `(sample, group, length)` triple.
+**Classify** <sup>alpha</sup>
 
 ```bash
-$ skope lenhist -h
-Generate per-group length histograms based on syncmer classification
+$ skope classify -h
+Classify sequences into groups by their syncmer content
 
-Usage: skope lenhist [OPTIONS] <INDEX> <SAMPLES>...
+Usage: skope classify [OPTIONS] <INDEX> <SAMPLES>...
 
 Arguments:
-  <INDEX>       Path to .skcl classification index file, directory of fastx files/subdirectories (one group per top-level entry), or - to disable group filtering (single "all" bucket)
-  <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
+  <INDEX>       Path to .skcl classification index file or directory of fastx files/subdirectories (one group per top-level file or directory)
+  <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin)
 
 Options:
-  -k, --kmer-length <KMER_LENGTH>    K-mer length (only used when index is a directory or -) (1-61, must be odd) [default: 31]
-  -s, --smer-length <SMER_LENGTH>    S-mer length used for open syncmer selection (only used when index is a directory or -) [default: 9]
+  -k, --kmer-length <KMER_LENGTH>    K-mer length (only used when index is a directory) (1-61, must be odd) [default: 31]
+  -s, --smer-length <SMER_LENGTH>    S-mer length (only used when index is a directory) [default: 9]
   -m, --min-hits <MIN_HITS>          Minimum syncmer hits to classify a sequence to a group [default: 1]
   -r, --min-fraction <MIN_FRACTION>  Minimum fraction of sequence syncmers hitting a group [default: 0]
   -d, --discriminatory               Consider only syncmers unique to each group
   -t, --threads <THREADS>            Number of execution threads (0 = auto) [default: 8]
   -l, --limit <LIMIT>                Terminate processing after approximately this many bases (e.g. 50M, 10G)
   -o, --output <OUTPUT>              Path to output file (- for stdout) [default: -]
+      --per-seq                      Output per-sequence classifications instead of summary
   -n, --names <SAMPLE_NAMES>         Comma-separated sample names (default is file/dir name without extension)
   -q, --quiet                        Suppress progress reporting
   -h, --help                         Print help
+(base) bede@zizzle skope % 
+
 ```
 
