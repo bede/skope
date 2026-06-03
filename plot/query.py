@@ -9,6 +9,7 @@
 
 import argparse
 import os
+import re
 import sys
 
 import altair as alt
@@ -34,12 +35,13 @@ def main():
     parser.add_argument("-a", "--abundance-threshold", type=int, default=1,
                         help="Abundance threshold for containment column to plot (default: %(default)s for containment1)")
     # Plot mode
-    parser.add_argument("-m", "--mode", choices=["bar", "scatter"], default="bar",
-                        help="Plot mode: 'bar' for bar chart, 'scatter' for containment vs abundance (default: %(default)s)")
+    parser.add_argument("-m", "--mode", choices=["bar", "scatter", "decay"], default="bar",
+                        help="Plot mode: 'bar' for bar chart, 'scatter' for containment vs. abundance, "
+                             "'decay' for containment vs. abundance threshold per target (default: %(default)s)")
     parser.add_argument("--log-y", action="store_true",
                         help="Use logarithmic scale for y-axis (scatter mode only)")
     # Appearance
-    parser.add_argument("-t", "--title", default="Containment analysis",
+    parser.add_argument("-t", "--title", default="Containment vs. abundance",
                         help="Plot title (default: %(default)s)")
     parser.add_argument("--short-names", action="store_true",
                         help="Remove accession prefix (before first space) from target names")
@@ -112,7 +114,7 @@ def main():
             sys.exit(1)
 
         # Coerce numeric columns in case they're strings
-        for c in (containment_col, hits_col, "median_nz_abundance", "length_bp", "contained_syncmers"):
+        for c in (containment_col, hits_col, "median_nz_abundance", "target_length", "target_kmers"):
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -171,7 +173,10 @@ def main():
         alt.data_transformers.enable("json")
 
         if args.mode == "scatter":
-            # Scatter plot: containment vs abundance
+            # Scatter plot: containment vs. abundance
+            title = args.title
+            if title == parser.get_default("title"):
+                title = "k-mer containment vs. abundance"
             y_scale = alt.Scale(type="log") if args.log_y else alt.Scale()
             selection = alt.selection_point(fields=[sample_col], bind="legend")
             chart = (
@@ -190,23 +195,86 @@ def main():
                     tooltip=[
                         alt.Tooltip("target:N", title="Target"),
                         alt.Tooltip(f"{sample_col}:N", title="Sample"),
-                        alt.Tooltip("length_bp:Q", title="Length", format=",.0f"),
+                        alt.Tooltip("target_length:Q", title="Length", format=",.0f"),
                         alt.Tooltip(f"{containment_col}:Q", title="Containment"),
                         alt.Tooltip("median_nz_abundance:Q", title="Median abundance"),
                     ],
                 )
                 .add_params(selection)
-                .properties(title=args.title, width=450, height=400)
+                .properties(title=title, width=450, height=400)
+                .configure_legend(titleFontSize=14, labelFontSize=12, symbolSize=150)
+                .configure_axis(labelFontSize=12, titleFontSize=14)
+                .configure_title(fontSize=14)
+            )
+        elif args.mode == "decay":
+            # Decay plot: containment vs. abundance threshold, one line per target
+            # Detect every containmentN column present (excludes containmentN_hits)
+            threshold_cols = sorted(
+                ((int(m.group(1)), c) for c in plot_df.columns
+                 if (m := re.fullmatch(r"containment(\d+)", c))),
+            )
+            if len(threshold_cols) < 2:
+                print("ERROR: decay mode needs at least 2 containment<N> columns")
+                sys.exit(1)
+            thresholds = [n for n, _ in threshold_cols]
+            value_cols = [c for _, c in threshold_cols]
+
+            long_df = plot_df.melt(
+                id_vars=["target", "display_name", sample_col],
+                value_vars=value_cols,
+                var_name="threshold_col",
+                value_name="containment",
+            )
+            long_df["threshold"] = long_df["threshold_col"].str.removeprefix("containment").astype(int)
+            long_df["containment"] = pd.to_numeric(long_df["containment"], errors="coerce")
+            long_df = long_df.dropna(subset=["containment"])
+
+            # Default title doesn't fit this mode; use a fitting one unless overridden
+            title = args.title
+            if title == parser.get_default("title"):
+                title = "k-mer containment vs. abundance"
+
+            selection = alt.selection_point(fields=["display_name"], bind="legend")
+            chart = (
+                alt.Chart(long_df)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("threshold:O", title="Abundance threshold", sort=thresholds),
+                    y=alt.Y("containment:Q", title="Containment", scale=alt.Scale(domain=[0, 1])),
+                    color=alt.Color(
+                        "display_name:N",
+                        sort=target_order,
+                        title="Target",
+                        scale=alt.Scale(scheme=args.colours),
+                    ),
+                    detail=f"{sample_col}:N",
+                    opacity=alt.condition(selection, alt.value(1), alt.value(0.15)),
+                    tooltip=[
+                        alt.Tooltip("target:N", title="Target"),
+                        alt.Tooltip(f"{sample_col}:N", title="Sample"),
+                        alt.Tooltip("threshold:O", title="Abundance threshold"),
+                        alt.Tooltip("containment:Q", title="Containment", format=".4f"),
+                    ],
+                )
+                .add_params(selection)
+                .properties(title=title, width=500, height=450)
                 .configure_legend(titleFontSize=14, labelFontSize=12, symbolSize=150)
                 .configure_axis(labelFontSize=12, titleFontSize=14)
                 .configure_title(fontSize=14)
             )
         else:
             # Bar chart (default)
+            title = args.title
+            if title == parser.get_default("title"):
+                title = "k-mer containment"
+            # Step is per-sample (grouped bars), so scale it down to keep target labels legible
+            n_samples = max(1, plot_df[sample_col].nunique())
+            bar_step = max(8, 14 / n_samples)
+            bar_size = bar_step * 0.6  # leave a comfortable gap between bars
             selection = alt.selection_point(fields=[sample_col], bind="legend")
             bars = (
                 alt.Chart(plot_df)
-                .mark_bar(size=6)
+                .mark_bar(size=bar_size)
                 .encode(
                     y=alt.Y("display_name:N", title="", sort=target_order),
                     x=alt.X(f"{containment_col}:Q", title=f"Containment at depth ≥ {args.abundance_threshold}", scale=alt.Scale(domain=[0, 1])),
@@ -221,7 +289,7 @@ def main():
                     tooltip=[
                         alt.Tooltip("target:N", title="Target"),
                         alt.Tooltip(f"{sample_col}:N", title="Sample"),
-                        alt.Tooltip("length_bp:Q", title="Length", format=",.0f"),
+                        alt.Tooltip("target_length:Q", title="Length", format=",.0f"),
                         alt.Tooltip(f"{containment_col}:Q", title="Containment"),
                         alt.Tooltip("median_nz_abundance:Q", title="Median abundance"),
                     ],
@@ -247,14 +315,17 @@ def main():
 
             chart = (
                 chart
-                .properties(title=args.title, width=450, height=alt.Step(7))
+                .properties(title=title, width=450, height=alt.Step(bar_step))
                 .configure_legend(titleFontSize=14, labelFontSize=12, symbolSize=150)
                 .configure_axis(labelFontSize=12, titleFontSize=14)
                 .configure_title(fontSize=14)
                 .resolve_scale(y="shared")
             )
 
-        chart.save(args.output, scale_factor=2.0)
+        if args.format == "png":
+            chart.save(args.output, scale_factor=2.0)
+        else:
+            chart.save(args.output)
         print(f"Plot saved to: {args.output}")
 
     except Exception as e:
