@@ -25,20 +25,20 @@ name = "skope"
 path = "src/lib.rs"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0"
 thiserror = "2.0"
 rayon = "1"
 csv = "1.4"
-rapidhash = "4.1.0"
+rapidhash = "4.4.1"
 parking_lot = "0.12"
 indicatif = "0.18"
-wincode = "0.5.3"
+wincode = "0.5.5"
 
-packed-seq = "4.2.0"
-simd-minimizers = "2.3.0"
+packed-seq = "4.4.2"
+simd-minimizers = "2.3.1"
 
-paraseq = { version = "0.4.2", default-features = false, features = ["anyhow", "niffler"] }
+paraseq = { version = "0.4.13", default-features = false, features = ["anyhow", "niffler"] }
 niffler = "3"
 
 liblzma = { version = "0.4", optional = true }
@@ -46,7 +46,7 @@ flate2 = { version = "1.1", features = ["zlib-rs"], optional = true }
 zstd = { version = "0.13", optional = true }
 
 [dev-dependencies]
-tempfile = "3.24"
+tempfile = "3.27"
 nix = { version = "0.31", features = ["fs"] }
 
 [profile.release]
