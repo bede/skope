@@ -1,3 +1,4 @@
+use crate::stats::{WILSON_Z_95, wilson_interval};
 use crate::syncmers::{
     Buffers, KmerHasher, SyncmerVec, fill_syncmers, fill_syncmers_with_positions,
 };
@@ -90,6 +91,7 @@ pub struct ContainmentParameters {
     pub smer_length: u8,
     pub threads: usize,
     pub abundance_thresholds: Vec<usize>,
+    pub confidence: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +161,7 @@ pub struct ContainmentConfig {
     pub sort_order: SortOrder,
     pub dump_positions_path: Option<PathBuf>,
     pub no_total: bool,
+    pub confidence: bool,
 }
 
 impl ContainmentConfig {
@@ -1268,6 +1271,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             smer_length: config.smer_length,
             threads: config.threads,
             abundance_thresholds: config.abundance_thresholds.clone(),
+            confidence: config.confidence,
         },
         samples: sample_results,
         total_timing: TimingStats {
@@ -1372,14 +1376,24 @@ fn output_table_sorted(
 ) -> Result<()> {
     let mut thresholds = report.parameters.abundance_thresholds.clone();
     thresholds.sort_unstable();
+    let confidence = report.parameters.confidence;
 
     // Build header with target column first
     let mut header = format!(
         "{:<50} | {:<20} | {:>13}",
         "target", "sample", "containment1"
     );
+    if confidence {
+        header.push_str(&format!(" | {:>15}", "containment1_ci"));
+    }
     for threshold in &thresholds {
         header.push_str(&format!(" | {:>15}", format!("containment{}", threshold)));
+        if confidence {
+            header.push_str(&format!(
+                " | {:>15}",
+                format!("containment{}_ci", threshold)
+            ));
+        }
     }
     header.push_str(&format!(" | {:>18}", "median_nz_abundance"));
     header.push_str(&format!(" | {:>12}", "sample_seqs"));
@@ -1457,6 +1471,12 @@ fn output_table_sorted(
             truncate_string(&row.sample_display, 20),
             row.result.containment1 * 100.0
         );
+        if confidence {
+            output_row.push_str(&format!(
+                " | {:>15}",
+                format_containment_ci_pct(row.result.contained_syncmers, row.result.target_kmers)
+            ));
+        }
         for threshold in &thresholds {
             let containment = row
                 .result
@@ -1464,6 +1484,13 @@ fn output_table_sorted(
                 .get(threshold)
                 .unwrap_or(&0.0);
             output_row.push_str(&format!(" | {:>14.2}%", containment * 100.0));
+            if confidence {
+                let hits = row.result.hits_at_threshold.get(threshold).unwrap_or(&0);
+                output_row.push_str(&format!(
+                    " | {:>15}",
+                    format_containment_ci_pct(*hits, row.result.target_kmers)
+                ));
+            }
         }
         output_row.push_str(&format!(" | {:>18.0}", row.result.median_nz_abundance));
         output_row.push_str(&format!(" | {:>12}", row.sample_seqs));
@@ -1486,6 +1513,15 @@ fn output_table_sorted(
                 truncate_string(&sample_display, 20),
                 sample.total_stats.total_containment1 * 100.0
             );
+            if confidence {
+                total_row.push_str(&format!(
+                    " | {:>15}",
+                    format_containment_ci_pct(
+                        sample.total_stats.total_contained_syncmers,
+                        sample.total_stats.target_kmers
+                    )
+                ));
+            }
             for threshold in &thresholds {
                 let containment = sample
                     .total_stats
@@ -1493,6 +1529,14 @@ fn output_table_sorted(
                     .get(threshold)
                     .unwrap_or(&0.0);
                 total_row.push_str(&format!(" | {:>14.2}%", containment * 100.0));
+                if confidence {
+                    let hits =
+                        (containment * sample.total_stats.target_kmers as f64).round() as usize;
+                    total_row.push_str(&format!(
+                        " | {:>15}",
+                        format_containment_ci_pct(hits, sample.total_stats.target_kmers)
+                    ));
+                }
             }
             total_row.push_str(&format!(
                 " | {:>18.0}",
@@ -1510,17 +1554,38 @@ fn output_table_sorted(
     Ok(())
 }
 
+/// Format a Wilson 95% confidence interval for a containment proportion as
+/// `low-high` bounds (e.g. `0.49010-0.94330`).
+fn format_containment_ci(hits: usize, target_kmers: usize) -> String {
+    let (lo, hi) = wilson_interval(hits, target_kmers, WILSON_Z_95);
+    format!("{:.5}-{:.5}", lo, hi)
+}
+
+/// Format a Wilson 95% confidence interval as a percentage range for the human
+/// table (e.g. `49.01-94.33`).
+fn format_containment_ci_pct(hits: usize, target_kmers: usize) -> String {
+    let (lo, hi) = wilson_interval(hits, target_kmers, WILSON_Z_95);
+    format!("{:.2}-{:.2}", lo * 100.0, hi * 100.0)
+}
+
 fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result<()> {
     let mut thresholds = report.parameters.abundance_thresholds.clone();
     thresholds.sort_unstable();
+    let confidence = report.parameters.confidence;
 
     // Build header with target column first
     let mut header = "target\tsample\tcontainment1\tcontainment1_hits".to_string();
+    if confidence {
+        header.push_str("\tcontainment1_ci");
+    }
     for threshold in &thresholds {
         header.push_str(&format!(
             "\tcontainment{}\tcontainment{}_hits",
             threshold, threshold
         ));
+        if confidence {
+            header.push_str(&format!("\tcontainment{}_ci", threshold));
+        }
     }
     header
         .push_str("\ttarget_length\ttarget_kmers\tmedian_nz_abundance\tsample_seqs\tsample_bases");
@@ -1536,6 +1601,12 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                 result.containment1,
                 result.contained_syncmers // Use contained_syncmers for threshold 1 hits
             );
+            if confidence {
+                row.push_str(&format!(
+                    "\t{}",
+                    format_containment_ci(result.contained_syncmers, result.target_kmers)
+                ));
+            }
             for threshold in &thresholds {
                 let containment = result
                     .containment_at_threshold
@@ -1543,6 +1614,12 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                     .unwrap_or(&0.0);
                 let hits = result.hits_at_threshold.get(threshold).unwrap_or(&0);
                 row.push_str(&format!("\t{:.5}\t{}", containment, hits));
+                if confidence {
+                    row.push_str(&format!(
+                        "\t{}",
+                        format_containment_ci(*hits, result.target_kmers)
+                    ));
+                }
             }
             row.push_str(&format!(
                 "\t{}\t{}\t{:.0}\t{}\t{}",
@@ -1564,6 +1641,15 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                 sample.total_stats.total_containment1,
                 sample.total_stats.total_contained_syncmers
             );
+            if confidence {
+                total_row.push_str(&format!(
+                    "\t{}",
+                    format_containment_ci(
+                        sample.total_stats.total_contained_syncmers,
+                        sample.total_stats.target_kmers
+                    )
+                ));
+            }
             for threshold in &thresholds {
                 let containment = sample
                     .total_stats
@@ -1572,6 +1658,12 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                     .unwrap_or(&0.0);
                 let hits = (containment * sample.total_stats.target_kmers as f64).round() as usize;
                 total_row.push_str(&format!("\t{:.5}\t{}", containment, hits));
+                if confidence {
+                    total_row.push_str(&format!(
+                        "\t{}",
+                        format_containment_ci(hits, sample.total_stats.target_kmers)
+                    ));
+                }
             }
             total_row.push_str(&format!(
                 "\t0\t{}\t{:.0}\t{}\t{}",

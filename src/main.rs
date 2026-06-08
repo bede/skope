@@ -227,6 +227,10 @@ enum Commands {
         #[arg(long = "no-total", default_value_t = false)]
         no_total: bool,
 
+        /// Report Wilson 95% confidence intervals for containment columns
+        #[arg(long = "confidence", default_value_t = false)]
+        confidence: bool,
+
         /// Dump open syncmer positions to TSV file (target\tposition)
         #[arg(long = "dump-positions")]
         dump_positions: Option<String>,
@@ -494,6 +498,7 @@ fn main() -> Result<()> {
             sort,
             dump_positions,
             no_total,
+            confidence,
         } => {
             // Expand directories to lists of files
             let (expanded_samples, is_directory) = expand_sample_inputs(samples)?;
@@ -575,6 +580,7 @@ fn main() -> Result<()> {
                 sort_order,
                 dump_positions_path: dump_positions.as_ref().map(PathBuf::from),
                 no_total: *no_total,
+                confidence: *confidence,
             };
 
             config

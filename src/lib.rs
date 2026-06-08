@@ -7,6 +7,7 @@
 pub mod classify;
 pub mod length;
 pub mod query;
+pub mod stats;
 pub mod syncmers;
 
 use anyhow::Result;
