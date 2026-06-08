@@ -97,7 +97,7 @@ pub fn fill_syncmers_with_positions(
     smer_length: u8,
     buffers: &mut Buffers,
     positions_out: &mut Vec<usize>,
-    disjoint: bool,
+    spacing: u16,
 ) {
     let Buffers {
         packed_nseq,
@@ -124,25 +124,25 @@ pub fn fill_syncmers_with_positions(
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
-    let k = kmer_length as u32;
+    let step = spacing as u32;
     match syncmers {
         SyncmerVec::U64(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u64() {
-                if !disjoint || pos >= next_allowed {
+                if pos >= next_allowed {
                     vec.push(val);
                     positions_out.push(pos as usize);
-                    next_allowed = pos.saturating_add(k);
+                    next_allowed = pos.saturating_add(step);
                 }
             }
         }
         SyncmerVec::U128(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u128() {
-                if !disjoint || pos >= next_allowed {
+                if pos >= next_allowed {
                     vec.push(val);
                     positions_out.push(pos as usize);
-                    next_allowed = pos.saturating_add(k);
+                    next_allowed = pos.saturating_add(step);
                 }
             }
         }
@@ -156,7 +156,7 @@ pub fn fill_syncmers(
     kmer_length: u8,
     smer_length: u8,
     buffers: &mut Buffers,
-    disjoint: bool,
+    spacing: u16,
 ) {
     let Buffers {
         packed_nseq,
@@ -182,23 +182,23 @@ pub fn fill_syncmers(
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
-    let k = kmer_length as u32;
+    let step = spacing as u32;
     match syncmers {
         SyncmerVec::U64(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u64() {
-                if !disjoint || pos >= next_allowed {
+                if pos >= next_allowed {
                     vec.push(val);
-                    next_allowed = pos.saturating_add(k);
+                    next_allowed = pos.saturating_add(step);
                 }
             }
         }
         SyncmerVec::U128(vec) => {
             let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u128() {
-                if !disjoint || pos >= next_allowed {
+                if pos >= next_allowed {
                     vec.push(val);
-                    next_allowed = pos.saturating_add(k);
+                    next_allowed = pos.saturating_add(step);
                 }
             }
         }
@@ -217,14 +217,14 @@ mod tests {
         let hasher = KmerHasher::new(s as usize);
         let mut buffers = Buffers::new_u64();
 
-        fill_syncmers(seq, &hasher, k, s, &mut buffers, false);
+        fill_syncmers(seq, &hasher, k, s, &mut buffers, 1);
 
         // We should have at least one syncmer
         assert!(!buffers.syncmers.is_empty());
 
         // Test with a sequence shorter than k
         let short_seq = b"ACGT";
-        fill_syncmers(short_seq, &hasher, k, s, &mut buffers, false);
+        fill_syncmers(short_seq, &hasher, k, s, &mut buffers, 1);
         assert!(buffers.syncmers.is_empty());
     }
 
@@ -237,7 +237,7 @@ mod tests {
         let mut buffers = Buffers::new_u64();
         let mut positions = Vec::new();
 
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, false);
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, 1);
 
         // Should have same number of syncmers and positions
         assert_eq!(buffers.syncmers.len(), positions.len());
@@ -247,12 +247,21 @@ mod tests {
             assert!(pos + k as usize <= seq.len());
         }
 
-        // Syncmers should be non-overlapping when disjoint=true
+        // Syncmers should be non-overlapping when spacing == k
         positions.clear();
         buffers = Buffers::new_u64();
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, true);
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, k as u16);
         for window in positions.windows(2) {
             assert!(window[1] >= window[0] + k as usize);
+        }
+
+        // Larger spacing yields starts at least `spacing` apart
+        positions.clear();
+        buffers = Buffers::new_u64();
+        let spacing: u16 = 2 * k as u16;
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, spacing);
+        for window in positions.windows(2) {
+            assert!(window[1] >= window[0] + spacing as usize);
         }
     }
 
@@ -264,7 +273,7 @@ mod tests {
         let hasher = KmerHasher::new(s as usize);
 
         let mut values_only_buffers = Buffers::new_u64();
-        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers, true);
+        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers, k as u16);
         let values_only = match &values_only_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),
             SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
@@ -279,7 +288,7 @@ mod tests {
             s,
             &mut with_pos_buffers,
             &mut positions,
-            true,
+            k as u16,
         );
         let with_pos_values = match &with_pos_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),

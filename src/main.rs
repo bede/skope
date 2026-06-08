@@ -154,7 +154,7 @@ enum IndexCommands {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Estimate syncmer containment & abundance in fastx file(s) or directories thereof
+    /// Estimate target containment & abundance in fastx file(s) or directories thereof using open syncmers
     Query {
         /// Path to fastx file (treated as single target unless -i set) or directory of fastx files/subdirs (one target per child file/subdir)
         targets: PathBuf,
@@ -168,8 +168,12 @@ enum Commands {
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// S-mer length used for open syncmer selection (s < k, s must be odd)
-        #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        /// Minimum bp between target syncmers [default: k] (1: all selected syncmers; >= k: non-overlapping syncmers)
+        #[arg(short = 's', long = "spacing", value_parser = clap::value_parser!(u16).range(1..))]
+        spacing: Option<u16>,
+
+        /// S-mer length used for syncmer selection (s < k, s must be odd)
+        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
         /// Comma-separated additional abundance thresholds for containment estimation
@@ -184,10 +188,6 @@ enum Commands {
         /// Consider only syncmers unique to each target
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
-
-        /// Index only non-overlapping (disjoint) target syncmers
-        #[arg(long = "disjoint", default_value_t = false)]
-        disjoint: bool,
 
         /// Treat each fastx record as separate target (default: merge records into one target named after file)
         #[arg(short = 'i', long = "individual", default_value_t = false)]
@@ -215,7 +215,7 @@ enum Commands {
         #[arg(short = 'n', long = "names", value_delimiter = ',')]
         sample_names: Option<Vec<String>>,
 
-        /// Sort displayed results: c=containment (descending), t=target, s=sample, o=original
+        /// Sort displayed results: c=containment, t=target, s=sample, o=original
         #[arg(short = 'S', long = "sort", default_value = "c", value_parser = ["c", "t", "o", "s"])]
         sort: String,
 
@@ -488,7 +488,7 @@ fn main() -> Result<()> {
             format,
             abundance_thresholds,
             discriminatory,
-            disjoint,
+            spacing,
             individual,
             limit,
             sort,
@@ -569,7 +569,7 @@ fn main() -> Result<()> {
                 output_format,
                 abundance_thresholds: abundance_thresholds.clone(),
                 discriminatory: *discriminatory,
-                disjoint: *disjoint,
+                spacing: spacing.unwrap_or(*kmer_length as u16),
                 individual: *individual,
                 limit_bp,
                 sort_order,

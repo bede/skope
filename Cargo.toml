@@ -1,6 +1,6 @@
 [package]
 name = "skope"
-version = "0.4.0"
+version = "0.5.0"
 description = "Accelerated genome containment and abundance estimation"
 authors = ["Bede Constantinides <b@bede.im>"]
 edition = "2024"

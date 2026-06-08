@@ -26,7 +26,7 @@ fn test_multisample_processing() {
         sort_order: SortOrder::Original,
         dump_positions_path: None,
         no_total: false,
-        disjoint: false,
+        spacing: 1,
         individual: true,
     };
 
@@ -57,7 +57,7 @@ fn test_multisample_report_structure() {
         sort_order: SortOrder::Original,
         dump_positions_path: None,
         no_total: false,
-        disjoint: false,
+        spacing: 1,
         individual: true,
     };
 
@@ -139,7 +139,7 @@ fn test_sort_target() {
         sort_order: SortOrder::Target,
         dump_positions_path: None,
         no_total: false,
-        disjoint: false,
+        spacing: 1,
         individual: true,
     };
 
@@ -185,7 +185,7 @@ fn test_sort_containment() {
         sort_order: SortOrder::Containment,
         dump_positions_path: None,
         no_total: false,
-        disjoint: false,
+        spacing: 1,
         individual: true,
     };
 
@@ -421,7 +421,7 @@ fn test_query_directory_mixed_layout() {
         sort_order: SortOrder::Original,
         dump_positions_path: None,
         no_total: true,
-        disjoint: false,
+        spacing: 1,
         individual: false,
     };
     skope::run_containment_analysis(&config).unwrap();

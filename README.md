@@ -89,14 +89,14 @@ Arguments:
 Options:
   -k, --kmer-length <KMER_LENGTH>
           K-mer length (1-61) [default: 31]
-  -s, --smer-length <SMER_LENGTH>
+  -s, --spacing <SPACING>
+          Minimum bp between retained target syncmer starts [default: k] (1 = keep all; >= k = non-overlapping)
+      --smer-length <SMER_LENGTH>
           S-mer length used for open syncmer selection (s < k, s must be odd) [default: 9]
   -a, --abundance-thresholds <ABUNDANCE_THRESHOLDS>
           Comma-separated additional abundance thresholds for containment estimation [default: 10]
   -d, --discriminatory
           Consider only syncmers unique to each target
-      --disjoint
-          Index only non-overlapping (disjoint) target syncmers
   -i, --individual
           Treat each fastx record as separate target (default: merge records into one target named after file)
   -t, --threads <THREADS>

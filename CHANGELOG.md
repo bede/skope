@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-08
+
 ### Changed
 
+- `skope query`: replaced `--disjoint` with `--spacing <N>` (minimum bp between retained target syncmers). Defaults to `k` (non-overlapping, as old `--disjoint`); use `1` to keep all syncmers or a larger value for sparser target indexes. Samples stay dense, so containment estimates remain unbiased.
 - `skope query`: a multi-record fastx file passed as `<TARGETS>` is now merged into a single target named after the file. Pass `-i/--individual` to restore the previous per-record behaviour. Directory inputs are unaffected (still one target per top-level file or subdirectory).
 - `skope query`: skip the shared-syncmer counting pass when there is only one target.
 

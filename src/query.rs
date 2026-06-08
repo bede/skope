@@ -153,7 +153,7 @@ pub struct ContainmentConfig {
     pub output_format: OutputFormat,
     pub abundance_thresholds: Vec<usize>,
     pub discriminatory: bool,
-    pub disjoint: bool,
+    pub spacing: u16,
     pub individual: bool,
     pub limit_bp: Option<u64>,
     pub sort_order: SortOrder,
@@ -176,7 +176,7 @@ struct TargetsProcessor {
     buffers: Buffers,
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
-    disjoint: bool,
+    spacing: u16,
     collect_positions: bool,
 
     // Progress tracking
@@ -194,7 +194,7 @@ impl TargetsProcessor {
         global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: std::time::Instant,
-        disjoint: bool,
+        spacing: u16,
         collect_positions: bool,
     ) -> Self {
         let buffers = if kmer_length <= 32 {
@@ -210,7 +210,7 @@ impl TargetsProcessor {
             buffers,
             positions: Vec::new(),
             targets,
-            disjoint,
+            spacing,
             collect_positions,
             local_stats: ProcessingStats::default(),
             global_stats,
@@ -253,7 +253,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 self.smer_length,
                 &mut self.buffers,
                 &mut self.positions,
-                self.disjoint,
+                self.spacing,
             );
         } else {
             fill_syncmers(
@@ -262,7 +262,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 self.kmer_length,
                 self.smer_length,
                 &mut self.buffers,
-                self.disjoint,
+                self.spacing,
             );
         }
 
@@ -321,7 +321,7 @@ pub fn process_targets_file(
     kmer_length: u8,
     smer_length: u8,
     quiet: bool,
-    disjoint: bool,
+    spacing: u16,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
     let in_path = if targets_path.to_string_lossy() == "-" {
@@ -345,7 +345,7 @@ pub fn process_targets_file(
         Arc::clone(&global_stats),
         spinner.clone(),
         start_time,
-        disjoint,
+        spacing,
         collect_positions,
     );
 
@@ -391,7 +391,7 @@ pub fn process_targets_dir(
     kmer_length: u8,
     smer_length: u8,
     quiet: bool,
-    disjoint: bool,
+    spacing: u16,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
     let groups = discover_sequence_groups(dir_path)?;
@@ -405,7 +405,7 @@ pub fn process_targets_dir(
                 kmer_length,
                 smer_length,
                 quiet,
-                disjoint,
+                spacing,
                 collect_positions,
             )?;
             all_targets.extend(targets);
@@ -521,7 +521,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
             self.kmer_length,
             self.smer_length,
             &mut self.buffers,
-            false,
+            1, // samples are always dense; thinning the sample side biases containment
         );
 
         // Count syncmers present in targets
@@ -1029,7 +1029,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.kmer_length,
             config.smer_length,
             config.quiet,
-            config.disjoint,
+            config.spacing,
             collect_positions,
         )?
     } else {
@@ -1038,7 +1038,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.kmer_length,
             config.smer_length,
             config.quiet,
-            config.disjoint,
+            config.spacing,
             collect_positions,
         )?;
         if config.individual || per_record.len() <= 1 {
