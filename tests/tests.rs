@@ -1,5 +1,5 @@
 use skope::{
-    BuildConfig, ClassifyConfig, ContainmentConfig, LengthHistogramConfig, OutputFormat, SortOrder,
+    BuildConfig, ClassifyConfig, ContainmentConfig, LengthHistogramConfig, SortOrder,
     discover_sequence_groups,
 };
 use std::path::PathBuf;
@@ -19,7 +19,6 @@ fn test_multisample_processing() {
         threads: 2,
         output_path: None,
         quiet: true,
-        output_format: OutputFormat::Tsv,
         abundance_thresholds: vec![10],
         discriminatory: false,
         limit_bp: None,
@@ -51,7 +50,6 @@ fn test_multisample_report_structure() {
         threads: 2,
         output_path: Some(output_path.clone()),
         quiet: true,
-        output_format: OutputFormat::Tsv,
         abundance_thresholds: vec![10],
         discriminatory: false,
         limit_bp: None,
@@ -94,6 +92,15 @@ fn test_multisample_report_structure() {
         .count();
     assert_eq!(total_rows, 2, "Expected 2 TOTAL rows (one per sample)");
 
+    let header_cols: Vec<&str> = lines[0].split('\t').collect();
+    let median_idx = header_cols
+        .iter()
+        .position(|&col| col == "median_nz_abundance")
+        .expect("median_nz_abundance column not found");
+    for total_row in lines.iter().filter(|line| line.starts_with("TOTAL\t")) {
+        assert_eq!(total_row.split('\t').nth(median_idx), Some("-"));
+    }
+
     // Check sample_seqs and sample_bases are non-zero and equal across both samples
     // (both samples use the same input file)
     let get_last_two_cols = |line: &str| -> (u64, u64) {
@@ -123,6 +130,59 @@ fn test_multisample_report_structure() {
 }
 
 #[test]
+fn test_confidence_outputs_ani_and_patchiness_columns() {
+    let temp_output = NamedTempFile::new().unwrap();
+
+    let config = ContainmentConfig {
+        targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
+        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_names: vec!["sample".to_string()],
+        kmer_length: 31,
+        smer_length: 15,
+        threads: 2,
+        output_path: Some(temp_output.path().to_path_buf()),
+        quiet: true,
+        abundance_thresholds: vec![10],
+        discriminatory: false,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_positions_path: None,
+        confidence: true,
+        no_total: false,
+        spacing: 31,
+        individual: true,
+    };
+
+    skope::run_containment_analysis(&config).unwrap();
+    let tsv_str = std::fs::read_to_string(temp_output.path()).unwrap();
+    let lines: Vec<&str> = tsv_str.lines().collect();
+    let header_cols: Vec<&str> = lines[0].split('\t').collect();
+    let ani_est_idx = header_cols
+        .iter()
+        .position(|&col| col == "ani_est")
+        .expect("ani_est column not found");
+    let patchiness_idx = header_cols
+        .iter()
+        .position(|&col| col == "patchiness")
+        .expect("patchiness column not found");
+
+    let first_target = lines
+        .iter()
+        .skip(1)
+        .find(|line| !line.starts_with("TOTAL\t"))
+        .unwrap();
+    let ani_est = first_target.split('\t').nth(ani_est_idx).unwrap();
+    // ani_est is "-" when suppressed, otherwise a containment ANI in [0, 1].
+    assert!(
+        ani_est == "-" || (0.0..=1.0).contains(&ani_est.parse::<f64>().unwrap()),
+        "unexpected ani_est value: {ani_est}"
+    );
+
+    let patchiness = first_target.split('\t').nth(patchiness_idx).unwrap();
+    assert!(patchiness == "-" || patchiness.contains('|'));
+}
+
+#[test]
 fn test_sort_target() {
     let temp_output = NamedTempFile::new().unwrap();
     let config = ContainmentConfig {
@@ -134,7 +194,6 @@ fn test_sort_target() {
         threads: 2,
         output_path: Some(temp_output.path().to_path_buf()),
         quiet: true,
-        output_format: OutputFormat::Tsv,
         abundance_thresholds: vec![10],
         discriminatory: false,
         limit_bp: None,
@@ -181,7 +240,6 @@ fn test_sort_containment() {
         threads: 2,
         output_path: Some(temp_output.path().to_path_buf()),
         quiet: true,
-        output_format: OutputFormat::Tsv,
         abundance_thresholds: vec![10],
         discriminatory: false,
         limit_bp: None,
@@ -418,7 +476,6 @@ fn test_query_directory_mixed_layout() {
         threads: 1,
         output_path: Some(output.path().to_path_buf()),
         quiet: true,
-        output_format: OutputFormat::Tsv,
         abundance_thresholds: vec![1],
         discriminatory: false,
         limit_bp: None,

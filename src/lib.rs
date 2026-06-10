@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 // Re-export the main functionality
 pub use query::{
-    ContainmentConfig, ContainmentParameters, ContainmentResult, OutputFormat, Report,
-    SampleResults, SortOrder, TargetInfo, TimingStats, TotalStats, run_containment_analysis,
+    ContainmentConfig, ContainmentParameters, ContainmentResult, PatchinessResult, Report,
+    SampleResults, SortOrder, TimingStats, TotalStats, run_containment_analysis,
 };
 
 pub use length::{

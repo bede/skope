@@ -95,6 +95,8 @@ Options:
           S-mer length used for open syncmer selection (s < k, s must be odd) [default: 9]
   -a, --abundance-thresholds <ABUNDANCE_THRESHOLDS>
           Comma-separated additional abundance thresholds for containment estimation [default: 10]
+  -c, --confidence
+          Report confidence intervals, ANI estimates, and patchiness columns
   -d, --discriminatory
           Consider only syncmers unique to each target
   -i, --individual
@@ -105,8 +107,6 @@ Options:
           Terminate processing after approximately this many bases (e.g. 50M, 10G)
   -o, --output <OUTPUT>
           Path to output file (- for stdout) [default: -]
-  -f, --format <FORMAT>
-          Output format [default: tsv] [possible values: tsv, table]
   -n, --names <SAMPLE_NAMES>
           Comma-separated sample names (default is file/dir name without extension)
   -S, --sort <SORT>
@@ -150,3 +150,28 @@ Options:
 
 ```
 
+## Confidence and diagnostics
+
+Passing `--confidence` (`-c`) to `skope query` adds output columns for confidence, ANI, and coverage 'patchiness'.
+
+```bash
+skope query --confidence refs.fa reads.fq
+```
+
+- `containmentX_ci`: a 95% Wilson score confidence interval for each containment estimate reflecting uncertainty in the proportion `hits/target_kmers` at each abundance threshold. This is written as `{lower}-{upper}`. Since Skope retains only non-overlapping syncmers by default (`--spacing {k}`), syncmers can be considered independent. Intervals are narrower for long target sequences and wider for short targets and/or low containment.
+
+- `patchiness`: a Wald–Wolfowitz runs test for clustering of `containment1` hits along the target sequence. Written as `{z}|{p}`, positive `z` means that selected *k*-mer distribution is more more patchy than expected for the same hit count, and `p` is the one-sided normal-approximation p-value. Displayed only for `z > 0` and `p <= 0.05` (otherwise `-`), which can also mean the test was skipped for too few eligible syncmers, hits, or misses.
+
+- `ani_est`: a containment ANI estimate based on `containment1`. Skope transforms containment with `containment^(1/k)`, and when the low-coverage depth histogram is sufficient it first applies the Sylph-like Poisson sampling adjustment `containment1 / Pr(Pois(λ) >= 1)`. If the adjustment cannot be estimated, the unadjusted containment ANI is reported instead.
+
+  `ani_est` is shown as `-` (suppressed) for any target with fewer than 50 syncmers, with no contained syncmers, or whose estimate falls below 0.90, since these yield too little signal for a meaningful estimate.
+
+  The Poisson adjustment is skipped under the following conditions:
+
+  - _Median nonzero depth > 2_: the adjustment is designed for *low-coverage* targets
+
+  - _Fewer than 50 target syncmers_: too small a target to estimate `λ` reliably.
+
+  - _Fewer than 25 hitting syncmers_: too little signal.
+
+  - _A too-sparse abundance histogram_: `λ` is recovered from the Poisson relation `λ = (m+1)·count(m+1)/count(m)`, where `m` is the modal nonzero depth. This ratio is stable only when both bins are populated, so if the mode or adjacent bin has fewer than 3 syncmers, we reject the estimate.

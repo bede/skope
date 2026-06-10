@@ -1288,7 +1288,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             for (group_name, seqs, pct_seqs, bases, pct_bases) in &rows {
                 writeln!(
                     writer,
-                    "{}\t{}\t{:.2}\t{}\t{:.2}\t{}",
+                    "{}\t{}\t{:.3}\t{}\t{:.3}\t{}",
                     sample_name, group_name, pct_seqs, seqs, pct_bases, bases,
                 )?;
             }

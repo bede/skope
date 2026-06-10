@@ -1,4 +1,4 @@
-use crate::stats::{WILSON_Z_95, wilson_interval};
+use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::syncmers::{
     Buffers, KmerHasher, SyncmerVec, fill_syncmers, fill_syncmers_with_positions,
 };
@@ -33,28 +33,20 @@ pub enum SortOrder {
 
 /// Zero-cost (hopefully?) abstraction over u64 and u128 syncmer sets
 #[derive(Debug, Clone)]
-pub enum SyncmerSet {
+enum SyncmerSet {
     U64(RapidHashSet<u64>),
     U128(RapidHashSet<u128>),
 }
 
 impl SyncmerSet {
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         match self {
             SyncmerSet::U64(set) => set.len(),
             SyncmerSet::U128(set) => set.len(),
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn is_u64(&self) -> bool {
-        matches!(self, SyncmerSet::U64(_))
-    }
-
-    pub fn extend(&mut self, other: &SyncmerSet) {
+    fn extend(&mut self, other: &SyncmerSet) {
         match (self, other) {
             (SyncmerSet::U64(a), SyncmerSet::U64(b)) => a.extend(b.iter().copied()),
             (SyncmerSet::U128(a), SyncmerSet::U128(b)) => a.extend(b.iter().copied()),
@@ -64,11 +56,84 @@ impl SyncmerSet {
 }
 
 #[derive(Debug, Clone)]
-pub struct TargetInfo {
-    pub name: String,
-    pub length: usize,
-    pub syncmers: SyncmerSet,
-    pub syncmer_positions: Vec<usize>,
+enum PositionedSyncmers {
+    U64(Vec<(u64, usize)>),
+    U128(Vec<(u128, usize)>),
+    Empty,
+}
+
+impl PositionedSyncmers {
+    fn offset_positions(&mut self, offset: usize) {
+        match self {
+            PositionedSyncmers::U64(entries) => {
+                for (_, position) in entries {
+                    *position += offset;
+                }
+            }
+            PositionedSyncmers::U128(entries) => {
+                for (_, position) in entries {
+                    *position += offset;
+                }
+            }
+            PositionedSyncmers::Empty => {}
+        }
+    }
+
+    fn extend(&mut self, other: PositionedSyncmers) {
+        match self {
+            PositionedSyncmers::U64(a) => match other {
+                PositionedSyncmers::U64(b) => a.extend(b),
+                PositionedSyncmers::Empty => {}
+                _ => panic!("Cannot extend PositionedSyncmers: mismatched variants"),
+            },
+            PositionedSyncmers::U128(a) => match other {
+                PositionedSyncmers::U128(b) => a.extend(b),
+                PositionedSyncmers::Empty => {}
+                _ => panic!("Cannot extend PositionedSyncmers: mismatched variants"),
+            },
+            PositionedSyncmers::Empty => *self = other,
+        }
+    }
+
+    fn retain_in_set(&mut self, syncmers: &SyncmerSet) {
+        match (self, syncmers) {
+            (PositionedSyncmers::U64(entries), SyncmerSet::U64(set)) => {
+                entries.retain(|(syncmer, _)| set.contains(syncmer));
+            }
+            (PositionedSyncmers::U128(entries), SyncmerSet::U128(set)) => {
+                entries.retain(|(syncmer, _)| set.contains(syncmer));
+            }
+            (PositionedSyncmers::Empty, _) => {}
+            _ => panic!("Cannot filter PositionedSyncmers: mismatched variants"),
+        }
+    }
+
+    fn positions(&self) -> Vec<usize> {
+        match self {
+            PositionedSyncmers::U64(entries) => {
+                entries.iter().map(|(_, position)| *position).collect()
+            }
+            PositionedSyncmers::U128(entries) => {
+                entries.iter().map(|(_, position)| *position).collect()
+            }
+            PositionedSyncmers::Empty => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TargetInfo {
+    name: String,
+    length: usize,
+    syncmers: SyncmerSet,
+    syncmer_positions: Vec<usize>,
+    positioned_syncmers: PositionedSyncmers,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PatchinessResult {
+    pub z: f64,
+    pub p: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -76,13 +141,13 @@ pub struct ContainmentResult {
     pub target: String,
     pub length: usize,
     pub target_kmers: usize,
-    pub contained_syncmers: usize,
+    pub containment1_hits: usize,
     pub containment1: f64,
+    pub ani_est: Option<f64>,
     pub median_nz_abundance: f64,
-    pub abundance_histogram: Vec<(CountDepth, usize)>, // (abundance, count)
     pub containment_at_threshold: HashMap<usize, f64>, // threshold -> containment
     pub hits_at_threshold: HashMap<usize, usize>,      // threshold -> hit count
-    pub sample_name: Option<String>,                   // Only used in multi-sample mode
+    pub patchiness: Option<PatchinessResult>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,9 +163,8 @@ pub struct ContainmentParameters {
 pub struct TotalStats {
     pub total_targets: usize,
     pub target_kmers: usize,
-    pub total_contained_syncmers: usize,
+    pub total_containment1_hits: usize,
     pub total_containment1: f64,
-    pub total_median_nz_abundance: f64,
     pub total_seqs_processed: u64,
     pub total_bp_processed: u64,
     pub total_containment_at_threshold: HashMap<usize, f64>, // threshold -> overall containment
@@ -136,13 +200,6 @@ pub struct Report {
     pub total_timing: TimingStats,
 }
 
-/// Output format options
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputFormat {
-    Table,
-    Tsv,
-}
-
 pub struct ContainmentConfig {
     pub targets_path: PathBuf,
     pub sample_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
@@ -152,7 +209,6 @@ pub struct ContainmentConfig {
     pub threads: usize,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
-    pub output_format: OutputFormat,
     pub abundance_thresholds: Vec<usize>,
     pub discriminatory: bool,
     pub spacing: u16,
@@ -168,6 +224,17 @@ impl ContainmentConfig {
     pub fn execute(&self) -> Result<()> {
         run_containment_analysis(self)
     }
+}
+
+fn normalize_abundance_thresholds(thresholds: &[usize]) -> Vec<usize> {
+    let mut thresholds: Vec<usize> = thresholds
+        .iter()
+        .copied()
+        .filter(|&threshold| threshold > 1)
+        .collect();
+    thresholds.sort_unstable();
+    thresholds.dedup();
+    thresholds
 }
 
 /// Processor for collecting target sequence records with syncmers
@@ -281,6 +348,25 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
             }
         };
 
+        let positioned_syncmers = if self.collect_positions {
+            match &self.buffers.syncmers {
+                SyncmerVec::U64(vec) => PositionedSyncmers::U64(
+                    vec.iter()
+                        .copied()
+                        .zip(self.positions.iter().copied())
+                        .collect(),
+                ),
+                SyncmerVec::U128(vec) => PositionedSyncmers::U128(
+                    vec.iter()
+                        .copied()
+                        .zip(self.positions.iter().copied())
+                        .collect(),
+                ),
+            }
+        } else {
+            PositionedSyncmers::Empty
+        };
+
         let syncmer_positions = if self.collect_positions {
             self.positions.clone()
         } else {
@@ -292,6 +378,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
             length: sequence.len(),
             syncmers,
             syncmer_positions,
+            positioned_syncmers,
         });
 
         Ok(())
@@ -319,7 +406,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
     }
 }
 
-pub fn process_targets_file(
+fn process_targets_file(
     targets_path: &Path,
     kmer_length: u8,
     smer_length: u8,
@@ -378,8 +465,16 @@ fn merge_targets(targets: Vec<TargetInfo>, name: String) -> Result<TargetInfo> {
     merged.name = name;
 
     for t in iter {
+        let offset = merged.length;
+        let mut positioned_syncmers = t.positioned_syncmers;
+        positioned_syncmers.offset_positions(offset);
         merged.syncmers.extend(&t.syncmers);
-        merged.syncmer_positions.extend(t.syncmer_positions);
+        merged.syncmer_positions.extend(
+            t.syncmer_positions
+                .into_iter()
+                .map(|position| position + offset),
+        );
+        merged.positioned_syncmers.extend(positioned_syncmers);
         merged.length += t.length;
     }
 
@@ -389,7 +484,7 @@ fn merge_targets(targets: Vec<TargetInfo>, name: String) -> Result<TargetInfo> {
 /// Process a directory of fastx files/subdirectories as targets
 /// Each top-level fastx file becomes one target (all records merged).
 /// Each subdirectory becomes one target (all fastx files within merged).
-pub fn process_targets_dir(
+fn process_targets_dir(
     dir_path: &Path,
     kmer_length: u8,
     smer_length: u8,
@@ -609,6 +704,222 @@ enum AbundanceMap {
     U128(HashMap<u128, CountDepth>),
 }
 
+const MIN_TARGET_KMERS_FOR_ANI_ADJUSTMENT: usize = 50;
+const MIN_NONZERO_KMERS_FOR_ANI_ADJUSTMENT: usize = 25;
+const MIN_DEPTH_BIN_FOR_ANI_ADJUSTMENT: usize = 3;
+const MAX_MEDIAN_DEPTH_FOR_ANI_ADJUSTMENT: f64 = 2.0;
+// Gates for displaying an ANI estimate: minimum target syncmers and minimum ANI.
+const MIN_TARGET_KMERS_FOR_ANI_DISPLAY: usize = 50;
+const MIN_ANI_FOR_DISPLAY: f64 = 0.90;
+const MIN_TARGET_KMERS_FOR_PATCHINESS: usize = 50;
+const MIN_HITS_FOR_PATCHINESS: usize = 10;
+const MIN_MISSES_FOR_PATCHINESS: usize = 10;
+
+fn estimate_lambda(
+    abundance_histogram: &[(CountDepth, usize)],
+    target_kmers: usize,
+    median_nz_abundance: f64,
+) -> Option<f64> {
+    if target_kmers < MIN_TARGET_KMERS_FOR_ANI_ADJUSTMENT
+        || median_nz_abundance > MAX_MEDIAN_DEPTH_FOR_ANI_ADJUSTMENT
+    {
+        return None;
+    }
+
+    let nonzero_count: usize = abundance_histogram
+        .iter()
+        .filter(|(abundance, _)| *abundance > 0)
+        .map(|(_, count)| *count)
+        .sum();
+    if nonzero_count < MIN_NONZERO_KMERS_FOR_ANI_ADJUSTMENT {
+        return None;
+    }
+
+    let (mode_abundance, mode_count) = abundance_histogram
+        .iter()
+        .filter(|(abundance, _)| *abundance > 0)
+        .max_by_key(|(abundance, count)| (*count, *abundance))?;
+
+    let next_abundance = mode_abundance.checked_add(1)?;
+    let next_count = abundance_histogram
+        .iter()
+        .find(|(abundance, _)| *abundance == next_abundance)
+        .map(|(_, count)| *count)
+        .unwrap_or(0);
+
+    if *mode_count < MIN_DEPTH_BIN_FOR_ANI_ADJUSTMENT
+        || next_count < MIN_DEPTH_BIN_FOR_ANI_ADJUSTMENT
+    {
+        return None;
+    }
+
+    let lambda = next_count as f64 / *mode_count as f64 * next_abundance as f64;
+    lambda
+        .is_finite()
+        .then_some(lambda)
+        .filter(|lambda| *lambda > 0.0)
+}
+
+fn poisson_tail_at_least(lambda: f64, threshold: usize) -> Option<f64> {
+    if !lambda.is_finite() || lambda <= 0.0 || threshold == 0 {
+        return None;
+    }
+
+    if threshold == 1 {
+        return Some(1.0 - (-lambda).exp());
+    }
+
+    let mut term = (-lambda).exp();
+    let mut cdf = term;
+    for k in 1..threshold {
+        term *= lambda / k as f64;
+        cdf += term;
+    }
+
+    let tail = 1.0 - cdf;
+    tail.is_finite().then_some(tail.clamp(0.0, 1.0))
+}
+
+fn coverage_adjusted_kmer_identity(containment: f64, lambda: f64, threshold: usize) -> Option<f64> {
+    let detection_probability = poisson_tail_at_least(lambda, threshold)?;
+    if detection_probability <= 0.0 {
+        return None;
+    }
+    Some((containment / detection_probability).clamp(0.0, 1.0))
+}
+
+fn ani_estimate(
+    containment: f64,
+    kmer_length: u8,
+    lambda: Option<f64>,
+    target_kmers: usize,
+) -> Option<f64> {
+    // Need enough syncmers and at least one contained syncmer.
+    if kmer_length == 0 || target_kmers < MIN_TARGET_KMERS_FOR_ANI_DISPLAY || containment <= 0.0 {
+        return None;
+    }
+
+    let kmer_identity = lambda
+        .and_then(|lambda| coverage_adjusted_kmer_identity(containment, lambda, 1))
+        .unwrap_or_else(|| containment.clamp(0.0, 1.0));
+
+    let ani = kmer_identity.powf(1.0 / kmer_length as f64);
+
+    // Suppress low-confidence estimates.
+    (ani >= MIN_ANI_FOR_DISPLAY).then_some(ani)
+}
+
+fn calculate_patchiness_from_labels(labels: &[bool]) -> Option<PatchinessResult> {
+    let n = labels.len();
+    if n < MIN_TARGET_KMERS_FOR_PATCHINESS {
+        return None;
+    }
+
+    let hits = labels.iter().filter(|&&hit| hit).count();
+    let misses = n - hits;
+    if hits < MIN_HITS_FOR_PATCHINESS || misses < MIN_MISSES_FOR_PATCHINESS {
+        return None;
+    }
+
+    let runs = labels
+        .windows(2)
+        .filter(|window| window[0] != window[1])
+        .count()
+        + 1;
+
+    let n = n as f64;
+    let hits = hits as f64;
+    let misses = misses as f64;
+    let expected = 1.0 + (2.0 * hits * misses) / n;
+    let variance = (2.0 * hits * misses * (2.0 * hits * misses - n)) / (n * n * (n - 1.0));
+
+    if !variance.is_finite() || variance <= 0.0 {
+        return None;
+    }
+
+    let runs_z = (runs as f64 - expected) / variance.sqrt();
+    let patchiness_z = -runs_z;
+    Some(PatchinessResult {
+        z: patchiness_z,
+        p: normal_survival(patchiness_z),
+    })
+}
+
+fn calculate_patchiness_u64(
+    positioned_syncmers: &[(u64, usize)],
+    abundances: &HashMap<u64, CountDepth>,
+    threshold: usize,
+) -> Option<PatchinessResult> {
+    if threshold == 0 {
+        return None;
+    }
+
+    let mut occurrence_counts: HashMap<u64, usize> = HashMap::new();
+    for &(syncmer, _) in positioned_syncmers {
+        *occurrence_counts.entry(syncmer).or_insert(0) += 1;
+    }
+
+    let labels: Vec<bool> = positioned_syncmers
+        .iter()
+        .filter(|(syncmer, _)| {
+            occurrence_counts
+                .get(syncmer)
+                .is_some_and(|&count| count == 1)
+        })
+        .map(|(syncmer, _)| {
+            abundances.get(syncmer).copied().unwrap_or(0) >= threshold as CountDepth
+        })
+        .collect();
+
+    calculate_patchiness_from_labels(&labels)
+}
+
+fn calculate_patchiness_u128(
+    positioned_syncmers: &[(u128, usize)],
+    abundances: &HashMap<u128, CountDepth>,
+    threshold: usize,
+) -> Option<PatchinessResult> {
+    if threshold == 0 {
+        return None;
+    }
+
+    let mut occurrence_counts: HashMap<u128, usize> = HashMap::new();
+    for &(syncmer, _) in positioned_syncmers {
+        *occurrence_counts.entry(syncmer).or_insert(0) += 1;
+    }
+
+    let labels: Vec<bool> = positioned_syncmers
+        .iter()
+        .filter(|(syncmer, _)| {
+            occurrence_counts
+                .get(syncmer)
+                .is_some_and(|&count| count == 1)
+        })
+        .map(|(syncmer, _)| {
+            abundances.get(syncmer).copied().unwrap_or(0) >= threshold as CountDepth
+        })
+        .collect();
+
+    calculate_patchiness_from_labels(&labels)
+}
+
+fn calculate_patchiness(
+    positioned_syncmers: &PositionedSyncmers,
+    abundance_map: &AbundanceMap,
+    threshold: usize,
+) -> Option<PatchinessResult> {
+    match (positioned_syncmers, abundance_map) {
+        (PositionedSyncmers::U64(positioned), AbundanceMap::U64(map)) => {
+            calculate_patchiness_u64(positioned, map, threshold)
+        }
+        (PositionedSyncmers::U128(positioned), AbundanceMap::U128(map)) => {
+            calculate_patchiness_u128(positioned, map, threshold)
+        }
+        (PositionedSyncmers::Empty, _) => None,
+        _ => panic!("Mismatch between PositionedSyncmers and AbundanceMap types"),
+    }
+}
+
 fn process_seqs_file(
     seq_path: &Path,
     targets_syncmers: Arc<SyncmerSet>,
@@ -706,7 +1017,8 @@ fn calculate_containment_statistics(
     targets: &[TargetInfo],
     abundance_map: &AbundanceMap,
     abundance_thresholds: &[usize],
-    sample_name: Option<String>,
+    kmer_length: u8,
+    calculate_patchiness_metrics: bool,
 ) -> Vec<ContainmentResult> {
     targets
         .iter()
@@ -769,6 +1081,14 @@ fn calculate_containment_statistics(
                 abundance_counts.into_iter().collect();
             abundance_histogram.sort_by_key(|(abundance, _)| *abundance);
 
+            let lambda = estimate_lambda(&abundance_histogram, target_kmers, median_nz_abundance);
+            let ani_est = ani_estimate(containment1, kmer_length, lambda, target_kmers);
+            let patchiness = if calculate_patchiness_metrics {
+                calculate_patchiness(&target.positioned_syncmers, abundance_map, 1)
+            } else {
+                None
+            };
+
             // Calculate containment at threshold
             let mut containment_at_threshold = HashMap::new();
             let mut hits_at_threshold = HashMap::new();
@@ -793,24 +1113,16 @@ fn calculate_containment_statistics(
                 target: target.name.clone(),
                 length: target.length,
                 target_kmers,
-                contained_syncmers: contained_count,
+                containment1_hits: contained_count,
                 containment1,
+                ani_est,
                 median_nz_abundance,
-                abundance_histogram,
                 containment_at_threshold,
                 hits_at_threshold,
-                sample_name: sample_name.clone(),
+                patchiness,
             }
         })
         .collect()
-}
-
-fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 3])
-    }
 }
 
 /// Process a single sample's sequences and calculate statistics
@@ -820,6 +1132,7 @@ fn process_single_sample(
     sample_name: &str,
     targets: &[TargetInfo],
     targets_syncmers: Arc<SyncmerSet>,
+    abundance_thresholds: &[usize],
     config: &ContainmentConfig,
 ) -> Result<SampleResults> {
     // Silence per-sample progress for >1 sample
@@ -888,29 +1201,20 @@ fn process_single_sample(
     let containment_results = calculate_containment_statistics(
         targets,
         &abundance_map,
-        &config.abundance_thresholds,
-        Some(sample_name.to_string()),
+        abundance_thresholds,
+        config.kmer_length,
+        config.confidence,
     );
     let analysis_time = analysis_start.elapsed();
 
     // Overall stats for this sample
     let target_kmers: usize = containment_results.iter().map(|r| r.target_kmers).sum();
-    let total_contained_syncmers: usize = containment_results
+    let total_containment1_hits: usize = containment_results
         .iter()
-        .map(|r| r.contained_syncmers)
+        .map(|r| r.containment1_hits)
         .sum();
     let total_containment1 = if target_kmers > 0 {
-        total_contained_syncmers as f64 / target_kmers as f64
-    } else {
-        0.0
-    };
-
-    let total_median_nz_abundance = if target_kmers > 0 {
-        containment_results
-            .iter()
-            .map(|r| r.median_nz_abundance * r.target_kmers as f64)
-            .sum::<f64>()
-            / target_kmers as f64
+        total_containment1_hits as f64 / target_kmers as f64
     } else {
         0.0
     };
@@ -920,7 +1224,7 @@ fn process_single_sample(
 
     // Calculate overall containment at each threshold
     let mut total_containment_at_threshold = HashMap::new();
-    for &threshold in &config.abundance_thresholds {
+    for &threshold in abundance_thresholds {
         let total_at_threshold: usize = containment_results
             .iter()
             .map(|r| {
@@ -952,9 +1256,8 @@ fn process_single_sample(
         total_stats: TotalStats {
             total_targets: targets.len(),
             target_kmers,
-            total_contained_syncmers,
+            total_containment1_hits,
             total_containment1,
-            total_median_nz_abundance,
             total_seqs_processed: total_seqs,
             total_bp_processed: total_bp,
             total_containment_at_threshold,
@@ -973,6 +1276,7 @@ fn process_single_sample(
 pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION").to_string();
+    let abundance_thresholds = normalize_abundance_thresholds(&config.abundance_thresholds);
 
     let mut options = format!(
         "k={}, s={}, threads={}",
@@ -983,11 +1287,10 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         options.push_str(&format!(", samples={}", config.sample_paths.len()));
     }
 
-    if !config.abundance_thresholds.is_empty() {
+    if !abundance_thresholds.is_empty() {
         options.push_str(&format!(
             ", abundance-thresholds={}",
-            config
-                .abundance_thresholds
+            abundance_thresholds
                 .iter()
                 .map(|t| t.to_string())
                 .collect::<Vec<_>>()
@@ -1003,14 +1306,6 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         options.push_str(&format!(", limit={}", format_bp(limit as usize)));
     }
 
-    options.push_str(&format!(
-        ", format={}",
-        match config.output_format {
-            OutputFormat::Table => "table",
-            OutputFormat::Tsv => "tsv",
-        }
-    ));
-
     let is_targets_dir = config.targets_path.is_dir();
     eprintln!(
         "Skope v{}; mode: query{}; options: {}",
@@ -1025,7 +1320,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
 
     // Process targets file or directory
     let targets_start = Instant::now();
-    let collect_positions = config.dump_positions_path.is_some();
+    let collect_positions = config.dump_positions_path.is_some() || config.confidence;
     let mut targets = if is_targets_dir {
         process_targets_dir(
             &config.targets_path,
@@ -1113,6 +1408,8 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
                         });
                     }
                 }
+                target.positioned_syncmers.retain_in_set(&target.syncmers);
+                target.syncmer_positions = target.positioned_syncmers.positions();
             }
         }
 
@@ -1225,6 +1522,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
                 sample_name,
                 &targets,
                 Arc::clone(&targets_syncmers),
+                &abundance_thresholds,
                 config,
             );
 
@@ -1270,7 +1568,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             kmer_length: config.kmer_length,
             smer_length: config.smer_length,
             threads: config.threads,
-            abundance_thresholds: config.abundance_thresholds.clone(),
+            abundance_thresholds: abundance_thresholds.clone(),
             confidence: config.confidence,
         },
         samples: sample_results,
@@ -1288,7 +1586,6 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     output_results(
         &report,
         config.output_path.as_ref(),
-        config.output_format,
         config.sort_order,
         config.no_total,
     )?;
@@ -1324,7 +1621,6 @@ fn sort_results(results: &mut [ContainmentResult], sort_order: SortOrder) {
 fn output_results(
     report: &Report,
     output_path: Option<&PathBuf>,
-    output_format: OutputFormat,
     sort_order: SortOrder,
     no_total: bool,
 ) -> Result<()> {
@@ -1336,220 +1632,13 @@ fn output_results(
 
     let mut writer = writer;
 
-    match output_format {
-        OutputFormat::Tsv => {
-            // TSV: per-sample sorting (keep existing approach)
-            let mut sorted_report = report.clone();
-            if sort_order != SortOrder::Original {
-                for sample in &mut sorted_report.samples {
-                    sort_results(&mut sample.targets, sort_order);
-                }
-            }
-            output_tsv(&mut writer, &sorted_report, no_total)?;
-        }
-        OutputFormat::Table => {
-            // Table: full cross-sample sorting
-            output_table_sorted(&mut writer, report, sort_order, no_total)?;
+    let mut sorted_report = report.clone();
+    if sort_order != SortOrder::Original {
+        for sample in &mut sorted_report.samples {
+            sort_results(&mut sample.targets, sort_order);
         }
     }
-
-    Ok(())
-}
-
-/// Flattened row for cross-sample sorting in table output
-#[derive(Clone)]
-struct TableRow<'a> {
-    target: &'a str,
-    sample_name: &'a str,
-    sample_display: String,
-    result: &'a ContainmentResult,
-    sample_seqs: u64,
-    sample_bases: u64,
-}
-
-/// Output table with cross-sample sorting
-fn output_table_sorted(
-    writer: &mut dyn Write,
-    report: &Report,
-    sort_order: SortOrder,
-    no_total: bool,
-) -> Result<()> {
-    let mut thresholds = report.parameters.abundance_thresholds.clone();
-    thresholds.sort_unstable();
-    let confidence = report.parameters.confidence;
-
-    // Build header with target column first
-    let mut header = format!(
-        "{:<50} | {:<20} | {:>13}",
-        "target", "sample", "containment1"
-    );
-    if confidence {
-        header.push_str(&format!(" | {:>15}", "containment1_ci"));
-    }
-    for threshold in &thresholds {
-        header.push_str(&format!(" | {:>15}", format!("containment{}", threshold)));
-        if confidence {
-            header.push_str(&format!(
-                " | {:>15}",
-                format!("containment{}_ci", threshold)
-            ));
-        }
-    }
-    header.push_str(&format!(" | {:>18}", "median_nz_abundance"));
-    header.push_str(&format!(" | {:>12}", "sample_seqs"));
-    header.push_str(&format!(" | {:>13}", "sample_bases"));
-
-    let separator = "-".repeat(header.len());
-
-    // Output header
-    writeln!(writer)?;
-    writeln!(writer, "{}", header)?;
-    writeln!(writer, "{}", separator)?;
-
-    // Flatten all rows (including TOTAL rows)
-    let mut rows: Vec<TableRow> = Vec::new();
-
-    for sample in &report.samples {
-        let sample_display = if sample.seq_files.len() > 1 {
-            format!("{} ({} files)", sample.sample_name, sample.seq_files.len())
-        } else {
-            sample.sample_name.clone()
-        };
-
-        // Add regular target rows
-        for result in &sample.targets {
-            rows.push(TableRow {
-                target: &result.target,
-                sample_name: &sample.sample_name,
-                sample_display: sample_display.clone(),
-                result,
-                sample_seqs: sample.total_stats.total_seqs_processed,
-                sample_bases: sample.total_stats.total_bp_processed,
-            });
-        }
-    }
-
-    // Sort the rows based on sort_order
-    match sort_order {
-        SortOrder::Original => {
-            // Keep original order (already in order from nested loops)
-        }
-        SortOrder::Target => {
-            // Sort by target name (alphabetically), then by sample order
-            rows.sort_by(|a, b| {
-                a.target
-                    .cmp(b.target)
-                    .then_with(|| a.sample_name.cmp(b.sample_name))
-            });
-        }
-        SortOrder::Sample => {
-            // Sort by sample name (alphabetically), then by target order
-            rows.sort_by(|a, b| {
-                a.sample_name
-                    .cmp(b.sample_name)
-                    .then_with(|| a.target.cmp(b.target))
-            });
-        }
-        SortOrder::Containment => {
-            // Sort by containment1 (descending)
-            rows.sort_by(|a, b| {
-                b.result
-                    .containment1
-                    .partial_cmp(&a.result.containment1)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        }
-    }
-
-    // Output sorted rows
-    for row in &rows {
-        let target_with_info = format!("{} ({})", row.result.target, format_bp(row.result.length));
-
-        let mut output_row = format!(
-            "{:<50} | {:<20} | {:>12.2}%",
-            truncate_string(&target_with_info, 50),
-            truncate_string(&row.sample_display, 20),
-            row.result.containment1 * 100.0
-        );
-        if confidence {
-            output_row.push_str(&format!(
-                " | {:>15}",
-                format_containment_ci_pct(row.result.contained_syncmers, row.result.target_kmers)
-            ));
-        }
-        for threshold in &thresholds {
-            let containment = row
-                .result
-                .containment_at_threshold
-                .get(threshold)
-                .unwrap_or(&0.0);
-            output_row.push_str(&format!(" | {:>14.2}%", containment * 100.0));
-            if confidence {
-                let hits = row.result.hits_at_threshold.get(threshold).unwrap_or(&0);
-                output_row.push_str(&format!(
-                    " | {:>15}",
-                    format_containment_ci_pct(*hits, row.result.target_kmers)
-                ));
-            }
-        }
-        output_row.push_str(&format!(" | {:>18.0}", row.result.median_nz_abundance));
-        output_row.push_str(&format!(" | {:>12}", row.sample_seqs));
-        output_row.push_str(&format!(" | {:>13}", row.sample_bases));
-        writeln!(writer, "{}", output_row)?;
-    }
-
-    // Output TOTAL rows (grouped by sample, after regular rows)
-    if !no_total {
-        for sample in &report.samples {
-            let sample_display = if sample.seq_files.len() > 1 {
-                format!("{} ({} files)", sample.sample_name, sample.seq_files.len())
-            } else {
-                sample.sample_name.clone()
-            };
-
-            let mut total_row = format!(
-                "{:<50} | {:<20} | {:>12.2}%",
-                "TOTAL",
-                truncate_string(&sample_display, 20),
-                sample.total_stats.total_containment1 * 100.0
-            );
-            if confidence {
-                total_row.push_str(&format!(
-                    " | {:>15}",
-                    format_containment_ci_pct(
-                        sample.total_stats.total_contained_syncmers,
-                        sample.total_stats.target_kmers
-                    )
-                ));
-            }
-            for threshold in &thresholds {
-                let containment = sample
-                    .total_stats
-                    .total_containment_at_threshold
-                    .get(threshold)
-                    .unwrap_or(&0.0);
-                total_row.push_str(&format!(" | {:>14.2}%", containment * 100.0));
-                if confidence {
-                    let hits =
-                        (containment * sample.total_stats.target_kmers as f64).round() as usize;
-                    total_row.push_str(&format!(
-                        " | {:>15}",
-                        format_containment_ci_pct(hits, sample.total_stats.target_kmers)
-                    ));
-                }
-            }
-            total_row.push_str(&format!(
-                " | {:>18.0}",
-                sample.total_stats.total_median_nz_abundance,
-            ));
-            total_row.push_str(&format!(
-                " | {:>12}",
-                sample.total_stats.total_seqs_processed
-            ));
-            total_row.push_str(&format!(" | {:>13}", sample.total_stats.total_bp_processed));
-            writeln!(writer, "{}", total_row)?;
-        }
-    }
+    output_tsv(&mut writer, &sorted_report, no_total)?;
 
     Ok(())
 }
@@ -1558,14 +1647,32 @@ fn output_table_sorted(
 /// `low-high` bounds (e.g. `0.49010-0.94330`).
 fn format_containment_ci(hits: usize, target_kmers: usize) -> String {
     let (lo, hi) = wilson_interval(hits, target_kmers, WILSON_Z_95);
-    format!("{:.5}-{:.5}", lo, hi)
+    format!("{:.3}-{:.3}", lo, hi)
 }
 
-/// Format a Wilson 95% confidence interval as a percentage range for the human
-/// table (e.g. `49.01-94.33`).
-fn format_containment_ci_pct(hits: usize, target_kmers: usize) -> String {
-    let (lo, hi) = wilson_interval(hits, target_kmers, WILSON_Z_95);
-    format!("{:.2}-{:.2}", lo * 100.0, hi * 100.0)
+fn format_ani_est(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{:.3}", value))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn format_patchiness(value: Option<PatchinessResult>) -> String {
+    const PATCHINESS_P_THRESHOLD: f64 = 0.05;
+    const MIN_DISPLAY_P: f64 = 1.0e-16;
+
+    let Some(value) = value else {
+        return "-".to_string();
+    };
+
+    if value.z <= 0.0 || value.p > PATCHINESS_P_THRESHOLD {
+        return "-".to_string();
+    }
+
+    if value.p < MIN_DISPLAY_P {
+        format!("{:.1}|<{:.0e}", value.z, MIN_DISPLAY_P)
+    } else {
+        format!("{:.1}|{:.0e}", value.z, value.p)
+    }
 }
 
 fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result<()> {
@@ -1577,6 +1684,8 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
     let mut header = "target\tsample\tcontainment1\tcontainment1_hits".to_string();
     if confidence {
         header.push_str("\tcontainment1_ci");
+        header.push_str("\tpatchiness");
+        header.push_str("\tani_est");
     }
     for threshold in &thresholds {
         header.push_str(&format!(
@@ -1588,24 +1697,26 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
         }
     }
     header
-        .push_str("\ttarget_length\ttarget_kmers\tmedian_nz_abundance\tsample_seqs\tsample_bases");
+        .push_str("\tmedian_nz_abundance\ttarget_kmers\ttarget_length\tsample_seqs\tsample_bases");
     writeln!(writer, "{}", header)?;
 
     // Output data rows for all samples
     for sample in &report.samples {
         for result in &sample.targets {
             let mut row = format!(
-                "{}\t{}\t{:.5}\t{}",
+                "{}\t{}\t{:.3}\t{}",
                 result.target,
                 sample.sample_name,
                 result.containment1,
-                result.contained_syncmers // Use contained_syncmers for threshold 1 hits
+                result.containment1_hits // Use containment1_hits for threshold 1 hits
             );
             if confidence {
                 row.push_str(&format!(
                     "\t{}",
-                    format_containment_ci(result.contained_syncmers, result.target_kmers)
+                    format_containment_ci(result.containment1_hits, result.target_kmers)
                 ));
+                row.push_str(&format!("\t{}", format_patchiness(result.patchiness)));
+                row.push_str(&format!("\t{}", format_ani_est(result.ani_est)));
             }
             for threshold in &thresholds {
                 let containment = result
@@ -1613,7 +1724,7 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                     .get(threshold)
                     .unwrap_or(&0.0);
                 let hits = result.hits_at_threshold.get(threshold).unwrap_or(&0);
-                row.push_str(&format!("\t{:.5}\t{}", containment, hits));
+                row.push_str(&format!("\t{:.3}\t{}", containment, hits));
                 if confidence {
                     row.push_str(&format!(
                         "\t{}",
@@ -1622,10 +1733,10 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                 }
             }
             row.push_str(&format!(
-                "\t{}\t{}\t{:.0}\t{}\t{}",
-                result.length,
-                result.target_kmers,
+                "\t{:.0}\t{}\t{}\t{}\t{}",
                 result.median_nz_abundance,
+                result.target_kmers,
+                result.length,
                 sample.total_stats.total_seqs_processed,
                 sample.total_stats.total_bp_processed,
             ));
@@ -1635,20 +1746,22 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
         // Add TOTAL row for this sample
         if !no_total {
             let mut total_row = format!(
-                "{}\t{}\t{:.5}\t{}",
+                "{}\t{}\t{:.3}\t{}",
                 "TOTAL",
                 sample.sample_name,
                 sample.total_stats.total_containment1,
-                sample.total_stats.total_contained_syncmers
+                sample.total_stats.total_containment1_hits
             );
             if confidence {
                 total_row.push_str(&format!(
                     "\t{}",
                     format_containment_ci(
-                        sample.total_stats.total_contained_syncmers,
+                        sample.total_stats.total_containment1_hits,
                         sample.total_stats.target_kmers
                     )
                 ));
+                total_row.push_str("\t-");
+                total_row.push_str("\t-");
             }
             for threshold in &thresholds {
                 let containment = sample
@@ -1657,7 +1770,7 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                     .get(threshold)
                     .unwrap_or(&0.0);
                 let hits = (containment * sample.total_stats.target_kmers as f64).round() as usize;
-                total_row.push_str(&format!("\t{:.5}\t{}", containment, hits));
+                total_row.push_str(&format!("\t{:.3}\t{}", containment, hits));
                 if confidence {
                     total_row.push_str(&format!(
                         "\t{}",
@@ -1666,9 +1779,8 @@ fn output_tsv(writer: &mut dyn Write, report: &Report, no_total: bool) -> Result
                 }
             }
             total_row.push_str(&format!(
-                "\t0\t{}\t{:.0}\t{}\t{}",
+                "\t-\t{}\t0\t{}\t{}",
                 sample.total_stats.target_kmers,
-                sample.total_stats.total_median_nz_abundance,
                 sample.total_stats.total_seqs_processed,
                 sample.total_stats.total_bp_processed,
             ));
@@ -1684,8 +1796,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_truncate_string() {
-        assert_eq!(truncate_string("short", 10), "short");
-        assert_eq!(truncate_string("verylongstring", 8), "veryl...");
+    fn test_patchiness_positive_for_clustered_hits() {
+        let labels: Vec<bool> = (0..100).map(|idx| idx < 50).collect();
+        let patchiness = calculate_patchiness_from_labels(&labels).unwrap();
+
+        assert!(patchiness.z > 0.0);
+        assert!(patchiness.p < 0.001);
+    }
+
+    #[test]
+    fn test_patchiness_negative_for_alternating_hits() {
+        let labels: Vec<bool> = (0..100).map(|idx| idx % 2 == 0).collect();
+        let patchiness = calculate_patchiness_from_labels(&labels).unwrap();
+
+        assert!(patchiness.z < 0.0);
+        assert!(patchiness.p > 0.999);
+    }
+
+    #[test]
+    fn test_patchiness_skips_degenerate_counts() {
+        let labels: Vec<bool> = (0..100).map(|idx| idx < 5).collect();
+
+        assert!(calculate_patchiness_from_labels(&labels).is_none());
+    }
+
+    #[test]
+    fn test_format_patchiness_is_warning_only() {
+        assert_eq!(
+            format_patchiness(Some(PatchinessResult { z: -1.0, p: 0.9 })),
+            "-"
+        );
+        assert_eq!(
+            format_patchiness(Some(PatchinessResult { z: 1.0, p: 0.2 })),
+            "-"
+        );
+        assert_eq!(
+            format_patchiness(Some(PatchinessResult { z: 3.0, p: 0.001 })),
+            "3.0|1e-3"
+        );
+    }
+
+    #[test]
+    fn test_format_patchiness_uses_p_floor() {
+        assert_eq!(
+            format_patchiness(Some(PatchinessResult { z: 9.0, p: 0.0 })),
+            "9.0|<1e-16"
+        );
     }
 }

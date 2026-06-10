@@ -185,6 +185,10 @@ enum Commands {
         )]
         abundance_thresholds: Vec<usize>,
 
+        /// Report confidence intervals, ANI estimates, and patchiness columns
+        #[arg(short = 'c', long = "confidence", default_value_t = false)]
+        confidence: bool,
+
         /// Consider only syncmers unique to each target
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
@@ -207,10 +211,6 @@ enum Commands {
         #[arg(short = 'o', long = "output", default_value = "-")]
         output: String,
 
-        /// Output format
-        #[arg(short = 'f', long = "format", default_value = "tsv", value_parser = ["tsv", "table"])]
-        format: String,
-
         /// Comma-separated sample names (default is file/dir name without extension)
         #[arg(short = 'n', long = "names", value_delimiter = ',')]
         sample_names: Option<Vec<String>>,
@@ -226,10 +226,6 @@ enum Commands {
         /// Suppress TOTAL summary rows in output
         #[arg(long = "no-total", default_value_t = false)]
         no_total: bool,
-
-        /// Report Wilson 95% confidence intervals for containment columns
-        #[arg(long = "confidence", default_value_t = false)]
-        confidence: bool,
 
         /// Dump open syncmer positions to TSV file (target\tposition)
         #[arg(long = "dump-positions")]
@@ -489,7 +485,6 @@ fn main() -> Result<()> {
             threads,
             output,
             quiet,
-            format,
             abundance_thresholds,
             discriminatory,
             spacing,
@@ -535,13 +530,6 @@ fn main() -> Result<()> {
                     .context("Failed to initialise thread pool")?;
             }
 
-            // Parse outfmt
-            let output_format = match format.as_str() {
-                "table" => skope::OutputFormat::Table,
-                "tsv" => skope::OutputFormat::Tsv,
-                _ => unreachable!("clap should have validated the format"),
-            };
-
             // Parse limit if provided
             let limit_bp = if let Some(s) = limit {
                 Some(parse_sample(s)?)
@@ -571,7 +559,6 @@ fn main() -> Result<()> {
                     Some(PathBuf::from(output))
                 },
                 quiet: *quiet,
-                output_format,
                 abundance_thresholds: abundance_thresholds.clone(),
                 discriminatory: *discriminatory,
                 spacing: spacing.unwrap_or(*kmer_length as u16),
