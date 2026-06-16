@@ -23,7 +23,7 @@ fn test_multisample_processing() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_positions_path: None,
+        dump_syncmers_path: None,
         confidence: false,
         no_total: false,
         spacing: 1,
@@ -54,7 +54,7 @@ fn test_multisample_report_structure() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_positions_path: None,
+        dump_syncmers_path: None,
         confidence: false,
         no_total: false,
         spacing: 1,
@@ -146,7 +146,7 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_positions_path: None,
+        dump_syncmers_path: None,
         confidence: true,
         no_total: false,
         spacing: 31,
@@ -198,7 +198,7 @@ fn test_sort_target() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Target,
-        dump_positions_path: None,
+        dump_syncmers_path: None,
         confidence: false,
         no_total: false,
         spacing: 1,
@@ -244,7 +244,7 @@ fn test_sort_containment() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Containment,
-        dump_positions_path: None,
+        dump_syncmers_path: None,
         confidence: false,
         no_total: false,
         spacing: 1,
@@ -480,7 +480,7 @@ fn test_query_directory_mixed_layout() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_positions_path: None,
+        dump_syncmers_path: None,
         confidence: false,
         no_total: true,
         spacing: 1,
@@ -505,6 +505,98 @@ fn test_query_directory_mixed_layout() {
         target_names
     );
     assert_eq!(target_names.len(), 2);
+}
+
+// Two targets sharing a common region but with distinct unique tails. The shared
+// region yields cross-target syncmers; the unique tails do not.
+const DISC_COMMON: &str = "GATTACAGGCATCCTAGCTAGGACTTGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCCTA";
+const DISC_UNIQUE_A: &str = "TTGCAACGGTACCATTAGCGGATCCTTAGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCC";
+const DISC_UNIQUE_B: &str = "CCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCCTAGCTAGGACTTGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTA";
+
+// Parse a --dump-syncmers TSV into target -> set of k-mers (col 1 -> col 3).
+fn parse_dump(path: &std::path::Path) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+    let content = std::fs::read_to_string(path).unwrap();
+    let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for line in content.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols.len(), 3, "expected 3 columns, got: {:?}", cols);
+        map.entry(cols[0].to_string())
+            .or_default()
+            .insert(cols[2].to_string());
+    }
+    map
+}
+
+#[test]
+fn test_dump_syncmers_respects_discriminatory() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let seq_a = format!("{}{}", DISC_COMMON, DISC_UNIQUE_A);
+    let seq_b = format!("{}{}", DISC_COMMON, DISC_UNIQUE_B);
+    write_fasta(&root.join("tA.fa"), "tA", &seq_a);
+    write_fasta(&root.join("tB.fa"), "tB", &seq_b);
+
+    let sample = NamedTempFile::new().unwrap();
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(sample.path()).unwrap();
+        writeln!(f, ">r1\n{}\n>r2\n{}", seq_a, seq_b).unwrap();
+    }
+
+    let make_config = |discriminatory: bool, dump: PathBuf| ContainmentConfig {
+        targets_path: root.to_path_buf(),
+        sample_paths: vec![vec![sample.path().to_path_buf()]],
+        sample_names: vec!["s".to_string()],
+        kmer_length: 15,
+        smer_length: 7,
+        threads: 1,
+        output_path: None,
+        quiet: true,
+        abundance_thresholds: vec![1],
+        discriminatory,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_syncmers_path: Some(dump),
+        confidence: false,
+        no_total: true,
+        spacing: 1,
+        individual: false,
+    };
+
+    let plain_dump = NamedTempFile::new().unwrap();
+    skope::run_containment_analysis(&make_config(false, plain_dump.path().to_path_buf())).unwrap();
+    let plain = parse_dump(plain_dump.path());
+
+    let disc_dump = NamedTempFile::new().unwrap();
+    skope::run_containment_analysis(&make_config(true, disc_dump.path().to_path_buf())).unwrap();
+    let disc = parse_dump(disc_dump.path());
+
+    let plain_a = &plain["tA"];
+    let plain_b = &plain["tB"];
+    let shared: Vec<_> = plain_a.intersection(plain_b).collect();
+    assert!(
+        !shared.is_empty(),
+        "expected cross-target shared syncmers in plain dump"
+    );
+
+    let disc_a = &disc["tA"];
+    let disc_b = &disc["tB"];
+    let disc_shared: Vec<_> = disc_a.intersection(disc_b).collect();
+    assert!(
+        disc_shared.is_empty(),
+        "discriminatory dump must contain no cross-target shared syncmers, found: {:?}",
+        disc_shared
+    );
+
+    let plain_total = plain_a.len() + plain_b.len();
+    let disc_total = disc_a.len() + disc_b.len();
+    assert!(
+        disc_total < plain_total,
+        "discriminatory dump ({}) should have fewer syncmers than plain ({})",
+        disc_total,
+        plain_total
+    );
 }
 
 #[test]

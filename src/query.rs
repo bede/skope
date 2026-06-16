@@ -1,6 +1,7 @@
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::syncmers::{
-    Buffers, KmerHasher, SyncmerVec, fill_syncmers, fill_syncmers_with_positions,
+    Buffers, KmerHasher, SyncmerVec, decode_u64, decode_u128, fill_syncmers,
+    fill_syncmers_with_positions,
 };
 use crate::{
     ProcessingStats, RapidHashSet, create_spinner, discover_sequence_groups, format_bp,
@@ -215,7 +216,7 @@ pub struct ContainmentConfig {
     pub individual: bool,
     pub limit_bp: Option<u64>,
     pub sort_order: SortOrder,
-    pub dump_positions_path: Option<PathBuf>,
+    pub dump_syncmers_path: Option<PathBuf>,
     pub no_total: bool,
     pub confidence: bool,
 }
@@ -1320,7 +1321,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
 
     // Process targets file or directory
     let targets_start = Instant::now();
-    let collect_positions = config.dump_positions_path.is_some() || config.confidence;
+    let collect_positions = config.dump_syncmers_path.is_some() || config.confidence;
     let mut targets = if is_targets_dir {
         process_targets_dir(
             &config.targets_path,
@@ -1472,22 +1473,45 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
 
     let targets_syncmers = Arc::new(targets_syncmers);
 
-    // Dump syncmer positions if requested
-    if let Some(ref path) = config.dump_positions_path {
+    // Dump syncmers (position + k-mer sequence) if requested
+    if let Some(ref path) = config.dump_syncmers_path {
         let mut file = BufWriter::new(File::create(path)?);
+        let k = config.kmer_length;
+        let mut total = 0usize;
         for target in &targets {
-            for &pos in &target.syncmer_positions {
-                writeln!(file, "{}\t{}", target.name, pos)?;
+            match &target.positioned_syncmers {
+                PositionedSyncmers::U64(entries) => {
+                    for &(value, pos) in entries {
+                        let kmer = decode_u64(value, k);
+                        writeln!(
+                            file,
+                            "{}\t{}\t{}",
+                            target.name,
+                            pos,
+                            String::from_utf8_lossy(&kmer)
+                        )?;
+                        total += 1;
+                    }
+                }
+                PositionedSyncmers::U128(entries) => {
+                    for &(value, pos) in entries {
+                        let kmer = decode_u128(value, k);
+                        writeln!(
+                            file,
+                            "{}\t{}\t{}",
+                            target.name,
+                            pos,
+                            String::from_utf8_lossy(&kmer)
+                        )?;
+                        total += 1;
+                    }
+                }
+                PositionedSyncmers::Empty => {}
             }
         }
         file.flush()?;
         if !config.quiet {
-            let total_positions: usize = targets.iter().map(|t| t.syncmer_positions.len()).sum();
-            eprintln!(
-                "Dumped {} syncmer positions to {}",
-                total_positions,
-                path.display()
-            );
+            eprintln!("Dumped {} syncmers to {}", total, path.display());
         }
     }
 

@@ -115,8 +115,8 @@ Options:
           Suppress progress reporting
       --no-total
           Suppress TOTAL summary rows in output
-      --dump-positions <DUMP_POSITIONS>
-          Dump open syncmer positions to TSV file (target\tposition)
+      --dump-syncmers <DUMP_SYNCMERS>
+          Dump selected target syncmers to TSV file (target, position, kmer)
   -h, --help
           Print help
 ```
@@ -175,3 +175,9 @@ skope query --confidence refs.fa reads.fq
   - _Fewer than 25 hitting syncmers_: too little signal.
 
   - _A too-sparse abundance histogram_: `λ` is recovered from the Poisson relation `λ = (m+1)·count(m+1)/count(m)`, where `m` is the modal nonzero depth. This ratio is stable only when both bins are populated, so if the mode or adjacent bin has fewer than 3 syncmers, we reject the estimate.
+
+## Dumping syncmers
+
+Passing `--dump-syncmers <path>` to `skope query` writes the selected target syncmers to a TSV file with columns `target`, `position`, and `kmer`. The dump reflects whatever selection is in effect, so `--spacing` and `--discriminatory` are respected.
+
+One row is emitted per syncmer occurrence, so the row count can exceed `target_kmers` (which counts distinct syncmers) when a k-mer recurs within a target. The `kmer` column is the canonical *k*-mer, not necessarily the forward-strand sequence at that position.

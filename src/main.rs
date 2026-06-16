@@ -227,9 +227,9 @@ enum Commands {
         #[arg(long = "no-total", default_value_t = false)]
         no_total: bool,
 
-        /// Dump open syncmer positions to TSV file (target\tposition)
-        #[arg(long = "dump-positions")]
-        dump_positions: Option<String>,
+        /// Dump selected target syncmers to TSV file (target, position, kmer)
+        #[arg(long = "dump-syncmers")]
+        dump_syncmers: Option<String>,
     },
 
     /// Classify sequences into groups by syncmer content
@@ -491,7 +491,7 @@ fn main() -> Result<()> {
             individual,
             limit,
             sort,
-            dump_positions,
+            dump_syncmers,
             no_total,
             confidence,
         } => {
@@ -565,7 +565,7 @@ fn main() -> Result<()> {
                 individual: *individual,
                 limit_bp,
                 sort_order,
-                dump_positions_path: dump_positions.as_ref().map(PathBuf::from),
+                dump_syncmers_path: dump_syncmers.as_ref().map(PathBuf::from),
                 no_total: *no_total,
                 confidence: *confidence,
             };
