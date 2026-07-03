@@ -159,7 +159,7 @@ enum IndexCommands {
         kmer_length: u8,
 
         /// S-mer length used for open syncmer selection (s < k, s must be odd)
-        #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
         /// Number of execution threads (0 = auto)
@@ -320,7 +320,7 @@ enum Commands {
         kmer_length: u8,
 
         /// S-mer length (only used when index is a directory)
-        #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
         /// Minimum syncmer hits to classify a sequence to a group
@@ -375,7 +375,7 @@ enum Commands {
         kmer_length: u8,
 
         /// S-mer length used for open syncmer selection (only used when index is a directory or -)
-        #[arg(short = 's', long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
         /// Minimum syncmer hits to classify a sequence to a group

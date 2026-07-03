@@ -1814,6 +1814,23 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     };
     let targets_time = targets_start.elapsed();
 
+    // Runtime masking
+    if !config.background_paths.is_empty() {
+        let union = build_union(&targets, config.kmer_length);
+        let removed = mask_background(
+            &mut targets,
+            &union,
+            &config.background_paths,
+            config.kmer_length,
+            config.smer_length,
+            config.threads,
+            config.quiet,
+        )?;
+        if !config.quiet {
+            eprintln!("Masked {removed} background syncmers");
+        }
+    }
+
     // Count syncmers shared between targets (only meaningful with >1 target)
     let (shared_syncmers, unique_across_all) = if targets.len() > 1 {
         if !config.quiet {
@@ -1883,23 +1900,6 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     } else {
         (0, targets.first().map(|t| t.syncmers.len()).unwrap_or(0))
     };
-
-    // Runtime masking
-    if !config.background_paths.is_empty() {
-        let union = build_union(&targets, config.kmer_length);
-        let removed = mask_background(
-            &mut targets,
-            &union,
-            &config.background_paths,
-            config.kmer_length,
-            config.smer_length,
-            config.threads,
-            config.quiet,
-        )?;
-        if !config.quiet {
-            eprintln!("Masked {removed} background syncmers");
-        }
-    }
 
     if !config.quiet {
         eprint!("\r"); // Clear space

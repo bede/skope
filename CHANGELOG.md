@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- On-disk indexes now share the `.sk` extension for both classification and query indexes. Passing the wrong index type to throws an clear error.
+- On-disk indexes now share the `.sk` extension for both classification and query indexes. Passing the wrong index type throws a clear error.
 - `skope index build` is now `skope index build-classify` (the old `build` name remains as an alias).
+- `--smer-length` is now long-only in `skope classify`
 - `skope query`: replaced `--disjoint` with `--spacing <N>` (minimum bp between retained target syncmers). Defaults to `k` (non-overlapping, as old `--disjoint`); use `1` to keep all syncmers or a larger value for sparser target indexes. Samples stay dense, so containment estimates remain unbiased.
 - `skope query`: a multi-fastx file passed as `<TARGETS>` is now merged into a single target named after the file unless `--individual` (`-i`) is passed. Directory inputs are unaffected (still one target per top-level file or subdirectory).
 - `skope query`: skip the shared-syncmer counting pass when there is only one target.
