@@ -1,6 +1,6 @@
 use crate::syncmers::{Buffers, KmerHasher, SyncmerVec, fill_syncmers};
 use crate::{
-    FixedRapidHasher, ProcessingStats, create_spinner, format_bp, format_bp_per_sec,
+    FixedRapidHasher, IndexKind, ProcessingStats, create_spinner, format_bp, format_bp_per_sec,
     handle_process_result, reader_with_inferred_batch_size, sample_limit_reached_io_error,
 };
 use anyhow::{Context, Result};
@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 // Index header constants and metadata
-const INDEX_MAGIC: &[u8; 4] = b"SKCL";
-const INDEX_FORMAT_VERSION: u8 = 2;
-type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8);
+use crate::INDEX_MAGIC;
+const CLASSIFICATION_INDEX_VERSION: u8 = 3;
+type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8, u8); // magic, kind, version, k, s, num_groups
 
 /// Classification index mapping syncmers to group bitmasks (up to 128 groups)
 #[derive(Clone)]
@@ -83,7 +83,7 @@ struct SampleClassificationResult {
 }
 
 // Configuration structs
-pub struct BuildConfig {
+pub struct BuildClassifyConfig {
     pub groups_dir: PathBuf,
     pub kmer_length: u8,
     pub smer_length: u8,
@@ -349,7 +349,7 @@ pub(crate) fn build_index_in_memory(
     Ok((index, group_names))
 }
 
-pub fn build_classification_index(config: &BuildConfig) -> Result<()> {
+pub fn build_classification_index(config: &BuildClassifyConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
 
@@ -399,7 +399,8 @@ fn save_index(
 
     let header: ClassificationIndexHeader = (
         *INDEX_MAGIC,
-        INDEX_FORMAT_VERSION,
+        IndexKind::Classify as u8,
+        CLASSIFICATION_INDEX_VERSION,
         kmer_length,
         smer_length,
         group_names.len() as u8,
@@ -444,19 +445,20 @@ pub fn load_index(path: &Path) -> Result<(ClassificationIndex, Vec<String>, u8, 
 
     let header: ClassificationIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to decode index header")?;
-    let (magic, format_version, kmer_length, smer_length, num_groups) = header;
+    let (magic, kind, format_version, kmer_length, smer_length, num_groups) = header;
 
-    if &magic != INDEX_MAGIC {
+    if &magic != INDEX_MAGIC || IndexKind::from_byte(kind) != Some(IndexKind::Classify) {
         return Err(anyhow::anyhow!(
-            "Not a skope classification index (invalid magic bytes)"
+            "{} is not a skope classification index",
+            path.display()
         ));
     }
 
-    if format_version != INDEX_FORMAT_VERSION {
+    if format_version != CLASSIFICATION_INDEX_VERSION {
         return Err(anyhow::anyhow!(
             "Unsupported index format version: {} (expected {})",
             format_version,
-            INDEX_FORMAT_VERSION
+            CLASSIFICATION_INDEX_VERSION
         ));
     }
 

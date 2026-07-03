@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use skope::{derive_sample_name, find_fastx_files, validate_k_s};
+use skope::{derive_sample_name, find_fastx_files, find_fastx_files_recursive, validate_k_s};
 
 const DEFAULT_KMER_LENGTH: u8 = 31;
 const DEFAULT_SMER_LENGTH: u8 = 9;
@@ -94,6 +94,29 @@ fn expand_sample_inputs(inputs: &[PathBuf]) -> Result<(Vec<Vec<PathBuf>>, Vec<bo
     Ok((expanded_samples, is_directory))
 }
 
+/// Expand background inputs into a flat list of fastx files (directories searched recursively).
+fn expand_background_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for input in inputs {
+        if input.to_string_lossy() == "-" || is_special_input_path(input) {
+            files.push(input.clone());
+            continue;
+        }
+        if !input.exists() {
+            return Err(anyhow::anyhow!(
+                "Background path does not exist: {}",
+                input.display()
+            ));
+        }
+        if std::fs::metadata(input)?.is_dir() {
+            files.extend(find_fastx_files_recursive(input)?);
+        } else {
+            files.push(input.clone());
+        }
+    }
+    Ok(files)
+}
+
 /// Parse sample string with K/M/G/T suffix into bp count
 fn parse_sample(s: &str) -> Result<u64> {
     let s = s.trim().to_uppercase();
@@ -125,8 +148,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum IndexCommands {
-    /// Build a classification index from a directory of fastx files/subdirectories (one group per top-level file or directory)
-    Build {
+    /// Build a classification index (.sk) from a directory of fastx files/subdirectories (one group per top-level file or directory)
+    #[command(alias = "build")]
+    BuildClassify {
         /// Directory of fastx files/subdirectories, one group per top-level file or directory
         groups: PathBuf,
 
@@ -142,7 +166,49 @@ enum IndexCommands {
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
 
-        /// Path to output .skcl index file (- for stdout)
+        /// Path to output index file (.sk) (- for stdout)
+        #[arg(short = 'o', long = "output", default_value = "-")]
+        output: String,
+
+        /// Suppress progress reporting
+        #[arg(short = 'q', long = "quiet", default_value_t = false)]
+        quiet: bool,
+    },
+
+    /// Build a query index (.sk) from target fastx file(s), optionally masking background syncmers
+    BuildQuery {
+        /// Path to fastx file (single target unless -i) or directory (one target per child file/subdir)
+        targets: PathBuf,
+
+        /// Path to fastx file(s) whose syncmers we wish to drop from our targets
+        #[arg(short = 'b', long = "background")]
+        background: Vec<PathBuf>,
+
+        /// K-mer length (1-61)
+        #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
+        kmer_length: u8,
+
+        /// Minimum bp between retained target syncmer starts [default: k]
+        #[arg(short = 's', long = "spacing", value_parser = clap::value_parser!(u16).range(1..))]
+        spacing: Option<u16>,
+
+        /// S-mer length used for open syncmer selection (s < k, s must be odd)
+        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        smer_length: u8,
+
+        /// Treat each fastx record as a separate target (default: merge records into one target)
+        #[arg(short = 'i', long = "individual", default_value_t = false)]
+        individual: bool,
+
+        /// Store syncmer positions (needed for --confidence/--dump-syncmers at query time)
+        #[arg(short = 'p', long = "positions", default_value_t = false)]
+        positions: bool,
+
+        /// Number of execution threads (0 = auto)
+        #[arg(short = 't', long = "threads", default_value_t = 8)]
+        threads: usize,
+
+        /// Path to output index file (.sk) (- for stdout)
         #[arg(short = 'o', long = "output", default_value = "-")]
         output: String,
 
@@ -156,7 +222,7 @@ enum IndexCommands {
 enum Commands {
     /// Estimate target containment & abundance in fastx file(s) or directories thereof using open syncmers
     Query {
-        /// Path to fastx file (treated as single target unless -i set) or directory of fastx files/subdirs (one target per child file/subdir)
+        /// Path to fastx file (treated as single target unless -i set), directory of fastx files/subdirs (one target per child file/subdir), or query index (.sk)
         targets: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
@@ -230,11 +296,19 @@ enum Commands {
         /// Dump selected target syncmers to TSV file (target, position, kmer)
         #[arg(long = "dump-syncmers")]
         dump_syncmers: Option<String>,
+
+        /// Path to fastx file(s) whose syncmers we wish to drop from our targets
+        #[arg(short = 'b', long = "background")]
+        background: Vec<PathBuf>,
+
+        /// Collect syncmer positions (implied by --confidence and --dump-syncmers)
+        #[arg(short = 'p', long = "positions", default_value_t = false)]
+        positions: bool,
     },
 
     /// Classify sequences into groups by syncmer content
     Classify {
-        /// Path to .skcl classification index file or directory of fastx files/subdirectories (one group per top-level file or directory)
+        /// Path to .sk classification index file or directory of fastx files/subdirectories (one group per top-level file or directory)
         index: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin)
@@ -288,7 +362,7 @@ enum Commands {
 
     /// Generate per-group length histograms based on syncmer classification
     Lenhist {
-        /// Path to .skcl classification index file, directory of fastx files/subdirectories (one group per top-level entry), or - to disable group filtering (single "all" bucket)
+        /// Path to .sk classification index file, directory of fastx files/subdirectories (one group per top-level entry), or - to disable group filtering (single "all" bucket)
         index: PathBuf,
 
         /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
@@ -339,7 +413,7 @@ enum Commands {
         quiet: bool,
     },
 
-    /// Build and manage classification indexes
+    /// Build and manage query and classification indexes
     #[command(subcommand)]
     Index(IndexCommands),
 }
@@ -357,7 +431,7 @@ fn main() -> Result<()> {
 
     match &cli.command {
         Commands::Index(index_cmd) => match index_cmd {
-            IndexCommands::Build {
+            IndexCommands::BuildClassify {
                 groups,
                 kmer_length,
                 smer_length,
@@ -381,7 +455,7 @@ fn main() -> Result<()> {
                         .context("Failed to initialise thread pool")?;
                 }
 
-                let config = skope::BuildConfig {
+                let config = skope::BuildClassifyConfig {
                     groups_dir: groups.clone(),
                     kmer_length: *kmer_length,
                     smer_length: *smer_length,
@@ -396,6 +470,47 @@ fn main() -> Result<()> {
 
                 skope::build_classification_index(&config)
                     .context("Failed to build classification index")?;
+            }
+
+            IndexCommands::BuildQuery {
+                targets,
+                background,
+                kmer_length,
+                spacing,
+                smer_length,
+                individual,
+                positions,
+                threads,
+                output,
+                quiet,
+            } => {
+                validate_k_s(*kmer_length, *smer_length)?;
+
+                if *threads > 0 {
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(*threads)
+                        .build_global()
+                        .context("Failed to initialise thread pool")?;
+                }
+
+                let config = skope::BuildQueryConfig {
+                    targets_path: targets.clone(),
+                    background_paths: expand_background_inputs(background)?,
+                    kmer_length: *kmer_length,
+                    smer_length: *smer_length,
+                    spacing: spacing.unwrap_or(*kmer_length as u16),
+                    individual: *individual,
+                    positions: *positions,
+                    threads: *threads,
+                    output_path: if output == "-" {
+                        None
+                    } else {
+                        Some(PathBuf::from(output))
+                    },
+                    quiet: *quiet,
+                };
+
+                skope::build_query_index(&config).context("Failed to build query index")?;
             }
         },
 
@@ -494,9 +609,12 @@ fn main() -> Result<()> {
             dump_syncmers,
             no_total,
             confidence,
+            background,
+            positions,
         } => {
             // Expand directories to lists of files
             let (expanded_samples, is_directory) = expand_sample_inputs(samples)?;
+            let background_paths = expand_background_inputs(background)?;
 
             // Derive or validate sample names
             let derived_sample_names: Vec<String> = if let Some(names) = sample_names {
@@ -520,7 +638,19 @@ fn main() -> Result<()> {
 
             // Validate uniqueness
             validate_sample_names(&derived_sample_names)?;
-            validate_k_s(*kmer_length, *smer_length)?;
+
+            // A prebuilt query index carries its own k/s/spacing; else validate CLI values.
+            let is_index = !targets.is_dir() && skope::is_query_index(targets);
+            let (eff_k, eff_s, eff_spacing) = if is_index {
+                skope::read_query_index_meta(targets)?
+            } else {
+                validate_k_s(*kmer_length, *smer_length)?;
+                (
+                    *kmer_length,
+                    *smer_length,
+                    spacing.unwrap_or(*kmer_length as u16),
+                )
+            };
 
             // Configure thread pool if specified (non-zero)
             if *threads > 0 {
@@ -548,10 +678,11 @@ fn main() -> Result<()> {
 
             let config = skope::ContainmentConfig {
                 targets_path: targets.clone(),
+                background_paths,
                 sample_paths: expanded_samples,
                 sample_names: derived_sample_names,
-                kmer_length: *kmer_length,
-                smer_length: *smer_length,
+                kmer_length: eff_k,
+                smer_length: eff_s,
                 threads: *threads,
                 output_path: if output == "-" {
                     None
@@ -561,7 +692,8 @@ fn main() -> Result<()> {
                 quiet: *quiet,
                 abundance_thresholds: abundance_thresholds.clone(),
                 discriminatory: *discriminatory,
-                spacing: spacing.unwrap_or(*kmer_length as u16),
+                positions: *positions,
+                spacing: eff_spacing,
                 individual: *individual,
                 limit_bp,
                 sort_order,

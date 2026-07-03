@@ -1,5 +1,5 @@
 use skope::{
-    BuildConfig, ClassifyConfig, ContainmentConfig, LengthHistogramConfig, SortOrder,
+    BuildClassifyConfig, ClassifyConfig, ContainmentConfig, LengthHistogramConfig, SortOrder,
     discover_sequence_groups,
 };
 use std::path::PathBuf;
@@ -8,6 +8,8 @@ use tempfile::{NamedTempFile, TempDir};
 #[test]
 fn test_multisample_processing() {
     let config = ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
         sample_paths: vec![
             vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")],
@@ -39,6 +41,8 @@ fn test_multisample_report_structure() {
     let output_path = temp_output.path().to_path_buf();
 
     let config = ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
         sample_paths: vec![
             vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")],
@@ -134,6 +138,8 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
     let temp_output = NamedTempFile::new().unwrap();
 
     let config = ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["sample".to_string()],
@@ -186,6 +192,8 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
 fn test_sort_target() {
     let temp_output = NamedTempFile::new().unwrap();
     let config = ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
@@ -232,6 +240,8 @@ fn test_sort_target() {
 fn test_sort_containment() {
     let temp_output = NamedTempFile::new().unwrap();
     let config = ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
@@ -468,6 +478,8 @@ fn test_query_directory_mixed_layout() {
 
     let output = NamedTempFile::new().unwrap();
     let config = ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
         targets_path: root.to_path_buf(),
         sample_paths: vec![vec![sample.path().to_path_buf()]],
         sample_names: vec!["s".to_string()],
@@ -514,7 +526,9 @@ const DISC_UNIQUE_A: &str = "TTGCAACGGTACCATTAGCGGATCCTTAGCAACATGCTTAGCCATGGAACT
 const DISC_UNIQUE_B: &str = "CCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCCTAGCTAGGACTTGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTA";
 
 // Parse a --dump-syncmers TSV into target -> set of k-mers (col 1 -> col 3).
-fn parse_dump(path: &std::path::Path) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+fn parse_dump(
+    path: &std::path::Path,
+) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
     let content = std::fs::read_to_string(path).unwrap();
     let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new();
@@ -545,6 +559,8 @@ fn test_dump_syncmers_respects_discriminatory() {
     }
 
     let make_config = |discriminatory: bool, dump: PathBuf| ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
         targets_path: root.to_path_buf(),
         sample_paths: vec![vec![sample.path().to_path_buf()]],
         sample_names: vec!["s".to_string()],
@@ -609,7 +625,7 @@ fn test_classify_build_mixed_layout() {
     write_fasta(&root.join("class_b/part2.fa"), "b2", SEQ_B);
 
     let idx_out = NamedTempFile::new().unwrap();
-    let config = BuildConfig {
+    let config = BuildClassifyConfig {
         groups_dir: root.to_path_buf(),
         kmer_length: 15,
         smer_length: 7,
@@ -659,7 +675,7 @@ fn test_classify_too_many_groups_errors() {
     }
 
     let idx_out = NamedTempFile::new().unwrap();
-    let config = BuildConfig {
+    let config = BuildClassifyConfig {
         groups_dir: root.to_path_buf(),
         kmer_length: 15,
         smer_length: 7,
@@ -722,4 +738,93 @@ fn test_fifo_sample_input() {
         lines[0].starts_with("target\tsample\t"),
         "Expected TSV header"
     );
+}
+
+fn build_index(targets: PathBuf, background: Vec<PathBuf>, out: PathBuf) {
+    skope::build_query_index(&skope::BuildQueryConfig {
+        targets_path: targets,
+        background_paths: background,
+        kmer_length: 15,
+        smer_length: 7,
+        spacing: 15,
+        individual: false,
+        positions: false,
+        threads: 1,
+        output_path: Some(out),
+        quiet: true,
+    })
+    .unwrap();
+}
+
+fn query_to_tsv(targets_path: PathBuf, sample: &std::path::Path, out: &std::path::Path) {
+    skope::run_containment_analysis(&ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
+        targets_path,
+        sample_paths: vec![vec![sample.to_path_buf()]],
+        sample_names: vec!["s".to_string()],
+        kmer_length: 15,
+        smer_length: 7,
+        threads: 1,
+        output_path: Some(out.to_path_buf()),
+        quiet: true,
+        abundance_thresholds: vec![1],
+        discriminatory: false,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_syncmers_path: None,
+        confidence: false,
+        no_total: true,
+        spacing: 15,
+        individual: false,
+    })
+    .unwrap();
+}
+
+#[test]
+fn test_query_index_matches_fastx() {
+    let dir = TempDir::new().unwrap();
+    let (target, sample, index) = (
+        dir.path().join("t.fa"),
+        dir.path().join("s.fa"),
+        dir.path().join("t.sk"),
+    );
+    write_fasta(&target, "t1", SEQ_A);
+    write_fasta(&sample, "s1", SEQ_A);
+    build_index(target.clone(), vec![], index.clone());
+
+    let bytes = std::fs::read(&index).unwrap();
+    assert_eq!(&bytes[..4], skope::INDEX_MAGIC);
+    assert_eq!(bytes[4], skope::IndexKind::Query as u8);
+
+    let (i, f) = (dir.path().join("i.tsv"), dir.path().join("f.tsv"));
+    query_to_tsv(index, &sample, &i);
+    query_to_tsv(target, &sample, &f);
+    assert_eq!(
+        std::fs::read_to_string(i).unwrap(),
+        std::fs::read_to_string(f).unwrap()
+    );
+}
+
+#[test]
+fn test_query_index_background_masks_everything() {
+    let dir = TempDir::new().unwrap();
+    let (target, sample, index) = (
+        dir.path().join("t.fa"),
+        dir.path().join("s.fa"),
+        dir.path().join("m.sk"),
+    );
+    write_fasta(&target, "t1", SEQ_A);
+    write_fasta(&sample, "s1", SEQ_A);
+    build_index(target.clone(), vec![target.clone()], index.clone());
+
+    let out = dir.path().join("o.tsv");
+    query_to_tsv(index, &sample, &out);
+    let content = std::fs::read_to_string(out).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    let tk = lines[0]
+        .split('\t')
+        .position(|h| h == "target_kmers")
+        .unwrap();
+    assert_eq!(lines[1].split('\t').nth(tk).unwrap(), "0");
 }

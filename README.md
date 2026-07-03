@@ -37,7 +37,7 @@ uv run plot/query.py query.tsv --mode scatter -o query-scatter.png
 uv run plot/query.py query.tsv --mode scatter -o query-scatter.html  # Interactive
 
 # Plot per-group sequence length histograms (e.g. host vs viral)
-skope lenhist groups.skcl s1.fq.gz s2.fq.gz > len.tsv
+skope lenhist groups.sk s1.fq.gz s2.fq.gz > len.tsv
 uv run plot/lenhist.py len.tsv
 
 # Or without group filtering — all reads go to a single "all" bucket
@@ -46,14 +46,20 @@ skope lenhist - s1.fq.gz s2.fq.gz > len.tsv
 # Stdin
 zstdcat reads3.fq.zst | skope query refs.fa -
 
-# Build a classification index (.skcl) and classify reads against it
-skope index build groups/ -o groups.skcl
-skope classify groups.skcl reads.fq.gz
+# Mask off-target background syncmers to cut false positives, at runtime…
+skope query refs.fa -b background.fa reads.fq.gz
+# …or baked once into a reusable query index (.sk)
+skope index build-query refs.fa -b background.fa -o refs.sk
+skope query refs.sk reads.fq.gz
+
+# Build a classification index (.sk) and classify reads against it
+skope index build-classify groups/ -o groups.sk
+skope classify groups.sk reads.fq.gz
 
 # View help for any command
 skope query -h
 skope lenhist -h
-skope index build -h
+skope index build-query -h
 ```
 
 Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically handle dependencies.
@@ -71,7 +77,7 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
   query     Estimate syncmer containment & abundance in fastx file(s) or directories thereof
   classify  Classify sequences into groups by their syncmer content
   lenhist   Generate per-group length histograms based on syncmer classification
-  index     Build and manage classification indexes
+  index     Build and manage query and classification indexes
 ```
 
 **Query**
@@ -83,16 +89,16 @@ Estimate syncmer containment & abundance in fastx file(s) or directories thereof
 Usage: skope query [OPTIONS] <TARGETS> <SAMPLES>...
 
 Arguments:
-  <TARGETS>     Path to fastx file (treated as single target unless -i set) or directory of fastx files/subdirs (one target per child file/subdir)
+  <TARGETS>     Path to fastx file (treated as single target unless -i set), directory of fastx files/subdirs (one target per child file/subdir), or query index (.sk)
   <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
 
 Options:
   -k, --kmer-length <KMER_LENGTH>
           K-mer length (1-61) [default: 31]
   -s, --spacing <SPACING>
-          Minimum bp between retained target syncmer starts [default: k] (1 = keep all; >= k = non-overlapping)
+          Minimum bp between target syncmers [default: k] (1: all selected syncmers; >= k: non-overlapping syncmers)
       --smer-length <SMER_LENGTH>
-          S-mer length used for open syncmer selection (s < k, s must be odd) [default: 9]
+          S-mer length used for syncmer selection (s < k, s must be odd) [default: 9]
   -a, --abundance-thresholds <ABUNDANCE_THRESHOLDS>
           Comma-separated additional abundance thresholds for containment estimation [default: 10]
   -c, --confidence
@@ -117,6 +123,10 @@ Options:
           Suppress TOTAL summary rows in output
       --dump-syncmers <DUMP_SYNCMERS>
           Dump selected target syncmers to TSV file (target, position, kmer)
+  -b, --background <BACKGROUND>
+          Path to fastx file(s) whose syncmers we wish to drop from our targets
+  -p, --positions
+          Collect syncmer positions (implied by --confidence and --dump-syncmers)
   -h, --help
           Print help
 ```
@@ -130,7 +140,7 @@ Classify sequences into groups by their syncmer content
 Usage: skope classify [OPTIONS] <INDEX> <SAMPLES>...
 
 Arguments:
-  <INDEX>       Path to .skcl classification index file or directory of fastx files/subdirectories (one group per top-level file or directory)
+  <INDEX>       Path to .sk classification index file or directory of fastx files/subdirectories (one group per top-level file or directory)
   <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin)
 
 Options:

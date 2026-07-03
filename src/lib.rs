@@ -19,8 +19,9 @@ use std::sync::Arc;
 
 // Re-export the main functionality
 pub use query::{
-    ContainmentConfig, ContainmentParameters, ContainmentResult, PatchinessResult, Report,
-    SampleResults, SortOrder, TimingStats, TotalStats, run_containment_analysis,
+    BuildQueryConfig, ContainmentConfig, ContainmentParameters, ContainmentResult,
+    PatchinessResult, Report, SampleResults, SortOrder, TimingStats, TotalStats, build_query_index,
+    is_query_index, read_query_index_meta, run_containment_analysis,
 };
 
 pub use length::{
@@ -28,7 +29,9 @@ pub use length::{
     run_length_histogram_analysis,
 };
 
-pub use classify::{BuildConfig, ClassifyConfig, build_classification_index, run_classification};
+pub use classify::{
+    BuildClassifyConfig, ClassifyConfig, build_classification_index, run_classification,
+};
 
 pub use syncmers::{
     Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, KmerHasher, SyncmerVec, decode_u64,
@@ -51,6 +54,44 @@ impl BuildHasher for FixedRapidHasher {
 
 /// RapidHashSet using rapidhash with fixed seed for fast init
 pub type RapidHashSet<T> = HashSet<T, FixedRapidHasher>;
+
+// ── On-disk index header ────────────────────────────────────────────────────
+// Every skope index begins with a shared prefix: 4-byte magic, 1-byte kind, 1-byte
+// version. Detection reads the magic and kind; each kind interprets the rest by version.
+
+/// Magic identifying any on-disk skope index
+pub const INDEX_MAGIC: &[u8; 4] = b"SKPE";
+
+/// Index kind, stored on disk as the single byte after the magic. Encode with `kind as u8`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IndexKind {
+    Classify = 0,
+    Query = 1,
+}
+
+impl IndexKind {
+    /// Parse the on-disk kind byte
+    pub fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Classify),
+            1 => Some(Self::Query),
+            _ => None,
+        }
+    }
+}
+
+/// Index kind if `path` is a skope index, else `None`
+pub fn read_index_kind(path: &Path) -> Option<IndexKind> {
+    use std::io::Read;
+    let mut buf = [0u8; 5];
+    std::fs::File::open(path).ok()?.read_exact(&mut buf).ok()?;
+    if &buf[..4] == INDEX_MAGIC {
+        IndexKind::from_byte(buf[4])
+    } else {
+        None
+    }
+}
 
 // ── Shared utilities ──────────────────────────────────────────────────────────
 
@@ -342,6 +383,41 @@ pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
     }
 
     files.sort();
+    Ok(files)
+}
+
+/// Recursive fastq hunting under a directory. Descends real subdirectories
+/// only (symlinked dirs skipped, so cycles can't loop); hidden entries skipped.
+pub fn find_fastx_files_recursive(dir_path: &Path) -> Result<Vec<PathBuf>> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'))
+            {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                walk(&path, out)?;
+            } else if is_fastx_file(&path) {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(dir_path, &mut files)?;
+    files.sort();
+    if files.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Directory contains no fastx files (recursively): {}",
+            dir_path.display()
+        ));
+    }
     Ok(files)
 }
 

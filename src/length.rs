@@ -61,7 +61,7 @@ pub struct LengthHistogramParameters {
 
 /// `lenhist` run settings
 pub struct LengthHistogramConfig {
-    /// Path to .skcl index file, directory of groups, or "-" to disable group filtering
+    /// Path to .sk index file, directory of groups, or "-" to disable group filtering
     pub index_path: PathBuf,
     pub sample_paths: Vec<Vec<PathBuf>>,
     pub sample_names: Vec<String>,

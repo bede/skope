@@ -8,14 +8,14 @@ use crate::{
     format_bp_per_sec, handle_process_result, reader_with_inferred_batch_size,
     sample_limit_reached_io_error,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use indicatif::ProgressBar;
 use paraseq::Record;
 use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -52,6 +52,23 @@ impl SyncmerSet {
             (SyncmerSet::U64(a), SyncmerSet::U64(b)) => a.extend(b.iter().copied()),
             (SyncmerSet::U128(a), SyncmerSet::U128(b)) => a.extend(b.iter().copied()),
             _ => panic!("Cannot extend SyncmerSet: mismatched variants"),
+        }
+    }
+
+    /// Remove all syncmers from --background stream, returning count
+    fn retain_not_in(&mut self, other: &SyncmerSet) -> usize {
+        match (self, other) {
+            (SyncmerSet::U64(a), SyncmerSet::U64(b)) => {
+                let before = a.len();
+                a.retain(|s| !b.contains(s));
+                before - a.len()
+            }
+            (SyncmerSet::U128(a), SyncmerSet::U128(b)) => {
+                let before = a.len();
+                a.retain(|s| !b.contains(s));
+                before - a.len()
+            }
+            _ => panic!("Cannot mask SyncmerSet: mismatched variants"),
         }
     }
 }
@@ -118,6 +135,14 @@ impl PositionedSyncmers {
                 entries.iter().map(|(_, position)| *position).collect()
             }
             PositionedSyncmers::Empty => Vec::new(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            PositionedSyncmers::U64(entries) => entries.len(),
+            PositionedSyncmers::U128(entries) => entries.len(),
+            PositionedSyncmers::Empty => 0,
         }
     }
 }
@@ -203,6 +228,7 @@ pub struct Report {
 
 pub struct ContainmentConfig {
     pub targets_path: PathBuf,
+    pub background_paths: Vec<PathBuf>, // Off-target sequences to mask (empty = none)
     pub sample_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
@@ -212,6 +238,7 @@ pub struct ContainmentConfig {
     pub quiet: bool,
     pub abundance_thresholds: Vec<usize>,
     pub discriminatory: bool,
+    pub positions: bool,
     pub spacing: u16,
     pub individual: bool,
     pub limit_bp: Option<u64>,
@@ -534,6 +561,7 @@ struct SeqsProcessor {
     global_counts_u64: Arc<Mutex<Option<HashMap<u64, CountDepth>>>>,
     global_counts_u128: Arc<Mutex<Option<HashMap<u128, CountDepth>>>>,
     spinner: Option<Arc<Mutex<ProgressBar>>>,
+    spinner_label: &'static str,
     start_time: Instant,
     limit_bp: Option<u64>,
 }
@@ -548,6 +576,7 @@ impl SeqsProcessor {
         global_counts_u128: Arc<Mutex<Option<HashMap<u128, CountDepth>>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
+        spinner_label: &'static str,
         start_time: Instant,
         limit_bp: Option<u64>,
     ) -> Self {
@@ -576,6 +605,7 @@ impl SeqsProcessor {
             global_counts_u64,
             global_counts_u128,
             spinner,
+            spinner_label,
             start_time,
             limit_bp,
         }
@@ -589,7 +619,8 @@ impl SeqsProcessor {
             let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
 
             spinner.lock().set_message(format!(
-                "Processing sample: {} seqs ({}). {:.0} seqs/s ({})",
+                "{}: {} seqs ({}). {:.0} seqs/s ({})",
+                self.spinner_label,
                 stats.total_seqs,
                 format_bp(stats.total_bp as usize),
                 seqs_per_sec,
@@ -929,6 +960,7 @@ fn process_seqs_file(
     threads: usize,
     quiet: bool,
     limit_bp: Option<u64>,
+    label: &'static str,
 ) -> Result<(AbundanceMap, u64, u64)> {
     let in_path = if seq_path.to_string_lossy() == "-" {
         None
@@ -939,7 +971,7 @@ fn process_seqs_file(
 
     let spinner = create_spinner(quiet)?;
     if let Some(ref pb) = spinner {
-        pb.lock().set_message("Processing sample: 0 seqs (0bp)");
+        pb.lock().set_message(format!("{label}: 0 seqs (0bp)"));
     }
 
     let total_target_syncmers = targets_syncmers.len();
@@ -966,6 +998,7 @@ fn process_seqs_file(
         Arc::clone(&global_counts_u128),
         Arc::clone(&global_stats),
         spinner.clone(),
+        label,
         start_time,
         limit_bp,
     );
@@ -1160,6 +1193,7 @@ fn process_single_sample(
             config.threads,
             quiet_sample,
             config.limit_bp.map(|limit| limit.saturating_sub(total_bp)),
+            "Processing sample",
         )?;
 
         // Merge abundance maps
@@ -1274,6 +1308,412 @@ fn process_single_sample(
     })
 }
 
+/// Combined set of every target's syncmers
+fn build_union(targets: &[TargetInfo], kmer_length: u8) -> SyncmerSet {
+    if kmer_length <= 32 {
+        let mut set = RapidHashSet::default();
+        for t in targets {
+            if let SyncmerSet::U64(s) = &t.syncmers {
+                set.extend(s.iter());
+            }
+        }
+        SyncmerSet::U64(set)
+    } else {
+        let mut set = RapidHashSet::default();
+        for t in targets {
+            if let SyncmerSet::U128(s) = &t.syncmers {
+                set.extend(s.iter());
+            }
+        }
+        SyncmerSet::U128(set)
+    }
+}
+
+/// Drop target syncmers shared with background sequences. Streaming via `process_seqs_file`
+/// keeps peak memory bounded by the targets, not the background. Returns count removed.
+fn mask_background(
+    targets: &mut [TargetInfo],
+    union: &SyncmerSet,
+    background_paths: &[PathBuf],
+    kmer_length: u8,
+    smer_length: u8,
+    threads: usize,
+    quiet: bool,
+) -> Result<usize> {
+    let union = Arc::new(union.clone());
+    let mut rm_u64: RapidHashSet<u64> = RapidHashSet::default();
+    let mut rm_u128: RapidHashSet<u128> = RapidHashSet::default();
+    for path in background_paths {
+        let (map, _, _) = process_seqs_file(
+            path,
+            Arc::clone(&union),
+            kmer_length,
+            smer_length,
+            threads,
+            quiet,
+            None,
+            "Masking background",
+        )?;
+        match map {
+            AbundanceMap::U64(m) => rm_u64.extend(m.into_keys()),
+            AbundanceMap::U128(m) => rm_u128.extend(m.into_keys()),
+        }
+    }
+
+    let to_remove = if kmer_length <= 32 {
+        SyncmerSet::U64(rm_u64)
+    } else {
+        SyncmerSet::U128(rm_u128)
+    };
+    let removed = to_remove.len();
+
+    // Apply removal to each target; re-sync positions like the discriminatory filter
+    for target in targets.iter_mut() {
+        target.syncmers.retain_not_in(&to_remove);
+        target.positioned_syncmers.retain_in_set(&target.syncmers);
+        target.syncmer_positions = target.positioned_syncmers.positions();
+    }
+    Ok(removed)
+}
+
+// ── Query index (.sk, kind = query) ─────────────────────────────────────────
+// Header + wincode metadata, then per target `count` raw entries of `ceil(k/4)` value
+// bytes, each with a trailing u32 position when positions are stored.
+use crate::{INDEX_MAGIC, IndexKind, read_index_kind};
+
+const QUERY_INDEX_VERSION: u8 = 1;
+const QUERY_INDEX_FLAG_POSITIONS: u8 = 0b001;
+const QUERY_INDEX_FLAG_BACKGROUND: u8 = 0b010;
+
+// magic, kind, version, k, s, spacing, flags, n_targets
+type QueryIndexHeader = ([u8; 4], u8, u8, u8, u8, u16, u8, u32);
+type QueryIndexMeta = Vec<(String, u64, u64)>; // (name, length, entry_count)
+
+/// Config for `skope index build-query`
+pub struct BuildQueryConfig {
+    pub targets_path: PathBuf,
+    pub background_paths: Vec<PathBuf>,
+    pub kmer_length: u8,
+    pub smer_length: u8,
+    pub spacing: u16,
+    pub individual: bool,
+    pub positions: bool,
+    pub threads: usize,
+    pub output_path: Option<PathBuf>,
+    pub quiet: bool,
+}
+
+struct QueryIndex {
+    targets: Vec<TargetInfo>,
+    has_positions: bool,
+}
+
+/// True if `path` is a skope query index
+pub fn is_query_index(path: &Path) -> bool {
+    read_index_kind(path) == Some(IndexKind::Query)
+}
+
+/// Read k, s, spacing from a query index header without loading entries
+pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8, u16)> {
+    let mut buf = [0u8; 64];
+    let n = File::open(path)?.read(&mut buf)?;
+    let mut cursor = wincode::io::Cursor::new(&buf[..n]);
+    let (magic, kind, version, k, s, spacing, _f, _n): QueryIndexHeader =
+        wincode::deserialize_from(&mut cursor).context("Failed to read query index header")?;
+    validate_query_index_header(&magic, kind, version)?;
+    Ok((k, s, spacing))
+}
+
+fn validate_query_index_header(magic: &[u8; 4], kind: u8, version: u8) -> Result<()> {
+    if magic != INDEX_MAGIC || IndexKind::from_byte(kind) != Some(IndexKind::Query) {
+        return Err(anyhow::anyhow!("Not a skope query index"));
+    }
+    if version != QUERY_INDEX_VERSION {
+        return Err(anyhow::anyhow!(
+            "Unsupported query index version: {version} (expected {QUERY_INDEX_VERSION})"
+        ));
+    }
+    Ok(())
+}
+
+fn save_query_index(
+    targets: &[TargetInfo],
+    kmer_length: u8,
+    smer_length: u8,
+    spacing: u16,
+    flags: u8,
+    output_path: Option<&Path>,
+) -> Result<()> {
+    let has_positions = flags & QUERY_INDEX_FLAG_POSITIONS != 0;
+    let kmer_bytes = (kmer_length as usize).div_ceil(4);
+
+    if has_positions && targets.iter().any(|t| t.length > u32::MAX as usize) {
+        return Err(anyhow::anyhow!(
+            "Target exceeds {} bp; positions cannot be stored (build without --positions)",
+            u32::MAX
+        ));
+    }
+
+    let mut writer: Box<dyn Write> = match output_path {
+        Some(p) => Box::new(BufWriter::new(File::create(p)?)),
+        None => Box::new(BufWriter::new(io::stdout())),
+    };
+
+    let meta: QueryIndexMeta = targets
+        .iter()
+        .map(|t| {
+            let count = if has_positions {
+                t.positioned_syncmers.len()
+            } else {
+                t.syncmers.len()
+            } as u64;
+            (t.name.clone(), t.length as u64, count)
+        })
+        .collect();
+
+    let header: QueryIndexHeader = (
+        *INDEX_MAGIC,
+        IndexKind::Query as u8,
+        QUERY_INDEX_VERSION,
+        kmer_length,
+        smer_length,
+        spacing,
+        flags,
+        targets.len() as u32,
+    );
+    writer
+        .write_all(&wincode::serialize(&header).context("Failed to encode query index header")?)?;
+    writer
+        .write_all(&wincode::serialize(&meta).context("Failed to encode query index metadata")?)?;
+
+    for t in targets {
+        if has_positions {
+            match &t.positioned_syncmers {
+                PositionedSyncmers::U64(entries) => {
+                    for &(v, pos) in entries {
+                        writer.write_all(&v.to_le_bytes()[..kmer_bytes])?;
+                        writer.write_all(&(pos as u32).to_le_bytes())?;
+                    }
+                }
+                PositionedSyncmers::U128(entries) => {
+                    for &(v, pos) in entries {
+                        writer.write_all(&v.to_le_bytes()[..kmer_bytes])?;
+                        writer.write_all(&(pos as u32).to_le_bytes())?;
+                    }
+                }
+                PositionedSyncmers::Empty => {}
+            }
+        } else {
+            match &t.syncmers {
+                SyncmerSet::U64(set) => {
+                    for &v in set {
+                        writer.write_all(&v.to_le_bytes()[..kmer_bytes])?;
+                    }
+                }
+                SyncmerSet::U128(set) => {
+                    for &v in set {
+                        writer.write_all(&v.to_le_bytes()[..kmer_bytes])?;
+                    }
+                }
+            }
+        }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn load_query_index(path: &Path) -> Result<QueryIndex> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("Failed to open query index: {}", path.display()))?;
+    let mut cursor = wincode::io::Cursor::new(bytes.as_slice());
+
+    let (magic, kind, version, kmer_length, _smer_length, _spacing, flags, n_targets): QueryIndexHeader =
+        wincode::deserialize_from(&mut cursor).context("Failed to decode query index header")?;
+    validate_query_index_header(&magic, kind, version)?;
+
+    let meta: QueryIndexMeta =
+        wincode::deserialize_from(&mut cursor).context("Failed to decode query index metadata")?;
+    if meta.len() != n_targets as usize {
+        return Err(anyhow::anyhow!("Query index target count mismatch"));
+    }
+
+    let has_positions = flags & QUERY_INDEX_FLAG_POSITIONS != 0;
+    let kmer_bytes = (kmer_length as usize).div_ceil(4);
+    let entry = if has_positions {
+        kmer_bytes + 4
+    } else {
+        kmer_bytes
+    };
+    let raw = &bytes[cursor.position()..];
+
+    let read_u64 = |b: &[u8]| {
+        let mut v = [0u8; 8];
+        v[..kmer_bytes].copy_from_slice(&b[..kmer_bytes]);
+        u64::from_le_bytes(v)
+    };
+    let read_u128 = |b: &[u8]| {
+        let mut v = [0u8; 16];
+        v[..kmer_bytes].copy_from_slice(&b[..kmer_bytes]);
+        u128::from_le_bytes(v)
+    };
+
+    let mut off = 0usize;
+    let mut targets = Vec::with_capacity(n_targets as usize);
+    for (name, length, count) in meta {
+        let count = count as usize;
+        let end = off + count * entry;
+        if end > raw.len() {
+            return Err(anyhow::anyhow!("Query index truncated"));
+        }
+        let block = &raw[off..end];
+        off = end;
+
+        let mut target = TargetInfo {
+            name,
+            length: length as usize,
+            syncmers: if kmer_length <= 32 {
+                SyncmerSet::U64(RapidHashSet::default())
+            } else {
+                SyncmerSet::U128(RapidHashSet::default())
+            },
+            syncmer_positions: Vec::new(),
+            positioned_syncmers: PositionedSyncmers::Empty,
+        };
+
+        if has_positions {
+            let mut positions = Vec::with_capacity(count);
+            if kmer_length <= 32 {
+                let mut entries = Vec::with_capacity(count);
+                let mut set = RapidHashSet::default();
+                for i in 0..count {
+                    let e = &block[i * entry..];
+                    let v = read_u64(e);
+                    let pos = u32::from_le_bytes(e[kmer_bytes..kmer_bytes + 4].try_into().unwrap())
+                        as usize;
+                    entries.push((v, pos));
+                    positions.push(pos);
+                    set.insert(v);
+                }
+                target.syncmers = SyncmerSet::U64(set);
+                target.positioned_syncmers = PositionedSyncmers::U64(entries);
+            } else {
+                let mut entries = Vec::with_capacity(count);
+                let mut set = RapidHashSet::default();
+                for i in 0..count {
+                    let e = &block[i * entry..];
+                    let v = read_u128(e);
+                    let pos = u32::from_le_bytes(e[kmer_bytes..kmer_bytes + 4].try_into().unwrap())
+                        as usize;
+                    entries.push((v, pos));
+                    positions.push(pos);
+                    set.insert(v);
+                }
+                target.syncmers = SyncmerSet::U128(set);
+                target.positioned_syncmers = PositionedSyncmers::U128(entries);
+            }
+            target.syncmer_positions = positions;
+        } else if kmer_length <= 32 {
+            let mut set = RapidHashSet::default();
+            for i in 0..count {
+                set.insert(read_u64(&block[i * entry..]));
+            }
+            target.syncmers = SyncmerSet::U64(set);
+        } else {
+            let mut set = RapidHashSet::default();
+            for i in 0..count {
+                set.insert(read_u128(&block[i * entry..]));
+            }
+            target.syncmers = SyncmerSet::U128(set);
+        }
+
+        targets.push(target);
+    }
+
+    Ok(QueryIndex {
+        targets,
+        has_positions,
+    })
+}
+
+/// Build and serialize a query index (with optional background masking)
+pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
+    let start = Instant::now();
+    let version = env!("CARGO_PKG_VERSION");
+    eprintln!(
+        "Skope v{version}; mode: index build-query; options: k={}, s={}, spacing={}, threads={}",
+        config.kmer_length, config.smer_length, config.spacing, config.threads
+    );
+
+    let collect_positions = config.positions;
+    let mut targets = if config.targets_path.is_dir() {
+        process_targets_dir(
+            &config.targets_path,
+            config.kmer_length,
+            config.smer_length,
+            config.quiet,
+            config.spacing,
+            collect_positions,
+        )?
+    } else {
+        let per_record = process_targets_file(
+            &config.targets_path,
+            config.kmer_length,
+            config.smer_length,
+            config.quiet,
+            config.spacing,
+            collect_positions,
+        )?;
+        if config.individual || per_record.len() <= 1 {
+            per_record
+        } else {
+            let name = crate::derive_sample_name(&config.targets_path, false);
+            vec![merge_targets(per_record, name)?]
+        }
+    };
+
+    let mut flags = 0u8;
+    if config.positions {
+        flags |= QUERY_INDEX_FLAG_POSITIONS;
+    }
+
+    if !config.background_paths.is_empty() {
+        let union = build_union(&targets, config.kmer_length);
+        let removed = mask_background(
+            &mut targets,
+            &union,
+            &config.background_paths,
+            config.kmer_length,
+            config.smer_length,
+            config.threads,
+            config.quiet,
+        )?;
+        flags |= QUERY_INDEX_FLAG_BACKGROUND;
+        if !config.quiet {
+            eprintln!("Masked {removed} background syncmers");
+        }
+    }
+
+    save_query_index(
+        &targets,
+        config.kmer_length,
+        config.smer_length,
+        config.spacing,
+        flags,
+        config.output_path.as_deref(),
+    )?;
+
+    if !config.quiet {
+        let total: usize = targets.iter().map(|t| t.syncmers.len()).sum();
+        eprintln!(
+            "Wrote query index: {} targets, {total} syncmers, positions={} in {:.1}s",
+            targets.len(),
+            config.positions,
+            start.elapsed().as_secs_f64()
+        );
+    }
+    Ok(())
+}
+
 pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION").to_string();
@@ -1308,10 +1748,26 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     }
 
     let is_targets_dir = config.targets_path.is_dir();
+    let index_kind = if is_targets_dir {
+        None
+    } else {
+        read_index_kind(&config.targets_path)
+    };
+    if let Some(kind) = index_kind
+        && kind != IndexKind::Query
+    {
+        return Err(anyhow::anyhow!(
+            "{} is a skope {kind:?} index, not a query index",
+            config.targets_path.display()
+        ));
+    }
+    let from_index = index_kind == Some(IndexKind::Query);
     eprintln!(
         "Skope v{}; mode: query{}; options: {}",
         version,
-        if is_targets_dir {
+        if from_index {
+            " (from index)"
+        } else if is_targets_dir {
             " (from directory)"
         } else {
             ""
@@ -1319,10 +1775,19 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         options
     );
 
-    // Process targets file or directory
+    // Load a prebuilt query index else extract targets from fastx
     let targets_start = Instant::now();
-    let collect_positions = config.dump_syncmers_path.is_some() || config.confidence;
-    let mut targets = if is_targets_dir {
+    let need_positions = config.dump_syncmers_path.is_some() || config.confidence;
+    let collect_positions = config.positions || need_positions;
+    let mut targets = if from_index {
+        let index = load_query_index(&config.targets_path)?;
+        if need_positions && !index.has_positions {
+            return Err(anyhow::anyhow!(
+                "Query index built without --positions; cannot use --confidence or --dump-syncmers"
+            ));
+        }
+        index.targets
+    } else if is_targets_dir {
         process_targets_dir(
             &config.targets_path,
             config.kmer_length,
@@ -1419,6 +1884,23 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         (0, targets.first().map(|t| t.syncmers.len()).unwrap_or(0))
     };
 
+    // Runtime masking
+    if !config.background_paths.is_empty() {
+        let union = build_union(&targets, config.kmer_length);
+        let removed = mask_background(
+            &mut targets,
+            &union,
+            &config.background_paths,
+            config.kmer_length,
+            config.smer_length,
+            config.threads,
+            config.quiet,
+        )?;
+        if !config.quiet {
+            eprintln!("Masked {removed} background syncmers");
+        }
+    }
+
     if !config.quiet {
         eprint!("\r"); // Clear space
         let total_unique_syncmers: usize = targets.iter().map(|t| t.syncmers.len()).sum();
@@ -1453,25 +1935,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
     if !config.quiet {
         eprint!("Building syncmer set…\r");
     }
-    let targets_syncmers = if config.kmer_length <= 32 {
-        let mut set = RapidHashSet::default();
-        for target in &targets {
-            if let SyncmerSet::U64(target_set) = &target.syncmers {
-                set.extend(target_set.iter());
-            }
-        }
-        SyncmerSet::U64(set)
-    } else {
-        let mut set = RapidHashSet::default();
-        for target in &targets {
-            if let SyncmerSet::U128(target_set) = &target.syncmers {
-                set.extend(target_set.iter());
-            }
-        }
-        SyncmerSet::U128(set)
-    };
-
-    let targets_syncmers = Arc::new(targets_syncmers);
+    let targets_syncmers = Arc::new(build_union(&targets, config.kmer_length));
 
     // Dump syncmers (position + k-mer sequence) if requested
     if let Some(ref path) = config.dump_syncmers_path {
