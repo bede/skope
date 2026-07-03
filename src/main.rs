@@ -216,6 +216,12 @@ enum IndexCommands {
         #[arg(short = 'q', long = "quiet", default_value_t = false)]
         quiet: bool,
     },
+
+    /// Show metadata for an index (.sk)
+    Info {
+        /// Path to index file (.sk)
+        index: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -511,6 +517,10 @@ fn main() -> Result<()> {
                 };
 
                 skope::build_query_index(&config).context("Failed to build query index")?;
+            }
+
+            IndexCommands::Info { index } => {
+                skope::run_index_info(index).context("Failed to run index info command")?;
             }
         },
 

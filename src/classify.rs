@@ -10,7 +10,7 @@ use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -435,6 +435,46 @@ fn save_index(
     }
 
     writer.flush()?;
+    Ok(())
+}
+
+/// Print human-readable metadata for a classification index (`skope index info`)
+pub fn print_classification_index_info(path: &Path) -> Result<()> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let (magic, kind, version, kmer_length, smer_length, num_groups): ClassificationIndexHeader =
+        wincode::deserialize_from(&mut reader).context("Failed to decode index header")?;
+    if &magic != INDEX_MAGIC || IndexKind::from_byte(kind) != Some(IndexKind::Classify) {
+        return Err(anyhow::anyhow!(
+            "{} is not a skope classification index",
+            path.display()
+        ));
+    }
+    if version != CLASSIFICATION_INDEX_VERSION {
+        return Err(anyhow::anyhow!(
+            "Unsupported index format version: {version} (expected {CLASSIFICATION_INDEX_VERSION})"
+        ));
+    }
+    let group_names: Vec<String> =
+        wincode::deserialize_from(&mut reader).context("Failed to decode group names")?;
+    if group_names.len() != num_groups as usize {
+        return Err(anyhow::anyhow!(
+            "Group count mismatch: header says {num_groups} but found {} names",
+            group_names.len()
+        ));
+    }
+    let count: u64 =
+        wincode::deserialize_from(&mut reader).context("Failed to decode entry count")?;
+
+    eprintln!("Index information:");
+    eprintln!("  Format: classify (open syncmer set)");
+    eprintln!("  Format version: {version}");
+    eprintln!("  K-mer length (k): {kmer_length}");
+    eprintln!("  S-mer length (s): {smer_length}");
+    eprintln!("  Groups: {num_groups}");
+    eprintln!("  Distinct syncmers: {count}");
+    for name in &group_names {
+        eprintln!("    - {name}");
+    }
     Ok(())
 }
 

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `skope index build-query`: build a reusable query index (`.sk`) from target fastx file(s), so target syncmer extraction (and any background masking) is done once up front. `skope query` accepts such an index in place of a fastx `<TARGETS>` argument (auto-detected). `-p/--positions` bakes in syncmer positions so the index also supports `--confidence`/`--dump-syncmers`.
 - `skope query` and `skope index build-query`: `-b/--background` masks syncmers shared with off-target/background sequences out of the targets, reducing false positives from sequences common across the tree of life. Background is streamed in a memory-bounded manner (peak memory stays bounded by the targets, not the background); directories are searched recursively.
+- `skope index info <index.sk>`: print metadata for a query or classification index (k, s, spacing, target/group counts, syncmer totals, and — for query indexes — whether positions are stored and whether background masking was applied). Reads only the header and metadata, not the syncmer entries.
 
 ### Changed
 

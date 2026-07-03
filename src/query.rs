@@ -15,7 +15,7 @@ use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -961,6 +961,7 @@ fn process_seqs_file(
     quiet: bool,
     limit_bp: Option<u64>,
     label: &'static str,
+    summary_label: &'static str,
 ) -> Result<(AbundanceMap, u64, u64)> {
     let in_path = if seq_path.to_string_lossy() == "-" {
         None
@@ -1035,7 +1036,7 @@ fn process_seqs_file(
         };
         let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
         eprintln!(
-            "Sample: {} records ({}), found {} of {} distinct target syncmers ({})",
+            "{summary_label}: {} records ({}), found {} of {} distinct target syncmers ({})",
             stats.total_seqs,
             format_bp(stats.total_bp as usize),
             unique_syncmers,
@@ -1194,6 +1195,7 @@ fn process_single_sample(
             quiet_sample,
             config.limit_bp.map(|limit| limit.saturating_sub(total_bp)),
             "Processing sample",
+            "Sample",
         )?;
 
         // Merge abundance maps
@@ -1353,6 +1355,7 @@ fn mask_background(
             quiet,
             None,
             "Masking background",
+            "Background",
         )?;
         match map {
             AbundanceMap::U64(m) => rm_u64.extend(m.into_keys()),
@@ -1422,6 +1425,49 @@ pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8, u16)> {
         wincode::deserialize_from(&mut cursor).context("Failed to read query index header")?;
     validate_query_index_header(&magic, kind, version)?;
     Ok((k, s, spacing))
+}
+
+/// Print human-readable metadata for a query index (`skope index info`)
+pub fn print_query_index_info(path: &Path) -> Result<()> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let (magic, kind, version, kmer_length, smer_length, spacing, flags, n_targets): QueryIndexHeader =
+        wincode::deserialize_from(&mut reader).context("Failed to read query index header")?;
+    validate_query_index_header(&magic, kind, version)?;
+    let meta: QueryIndexMeta =
+        wincode::deserialize_from(&mut reader).context("Failed to decode query index metadata")?;
+    if meta.len() != n_targets as usize {
+        return Err(anyhow::anyhow!("Query index target count mismatch"));
+    }
+
+    let total_syncmers: u64 = meta.iter().map(|(_, _, count)| count).sum();
+    let total_bp: u64 = meta.iter().map(|(_, length, _)| length).sum();
+
+    eprintln!("Index information:");
+    eprintln!("  Format: query (open syncmer set)");
+    eprintln!("  Format version: {version}");
+    eprintln!("  K-mer length (k): {kmer_length}");
+    eprintln!("  S-mer length (s): {smer_length}");
+    eprintln!("  Spacing: {spacing}");
+    eprintln!("  Targets: {n_targets}");
+    eprintln!("  Total syncmers: {total_syncmers}");
+    eprintln!("  Total length: {}", format_bp(total_bp as usize));
+    eprintln!(
+        "  Syncmer positions: {}",
+        if flags & QUERY_INDEX_FLAG_POSITIONS != 0 {
+            "stored"
+        } else {
+            "not stored"
+        }
+    );
+    eprintln!(
+        "  Background masking: {}",
+        if flags & QUERY_INDEX_FLAG_BACKGROUND != 0 {
+            "applied"
+        } else {
+            "none"
+        }
+    );
+    Ok(())
 }
 
 fn validate_query_index_header(magic: &[u8; 4], kind: u8, version: u8) -> Result<()> {

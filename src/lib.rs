@@ -93,6 +93,20 @@ pub fn read_index_kind(path: &Path) -> Option<IndexKind> {
     }
 }
 
+/// Print metadata for a skope index of either kind (`skope index info`)
+pub fn run_index_info(path: &Path) -> Result<()> {
+    let start = std::time::Instant::now();
+    match read_index_kind(path) {
+        Some(IndexKind::Query) => query::print_query_index_info(path)?,
+        Some(IndexKind::Classify) => classify::print_classification_index_info(path)?,
+        None => {
+            return Err(anyhow::anyhow!("{} is not a skope index", path.display()));
+        }
+    }
+    eprintln!("Loaded index info in {:.2?}", start.elapsed());
+    Ok(())
+}
+
 // ── Shared utilities ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Default, Debug)]
