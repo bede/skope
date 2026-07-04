@@ -1734,8 +1734,13 @@ pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
             config.quiet,
         )?;
         flags |= QUERY_INDEX_FLAG_BACKGROUND;
-        if !config.quiet {
-            eprintln!("Masked {removed} background syncmers");
+        // Per-file "found N of M" lines already report single-file totals;
+        // only the multi-file aggregate adds information.
+        if !config.quiet && config.background_paths.len() > 1 {
+            eprintln!(
+                "Masked {removed} background syncmers across {} files",
+                config.background_paths.len()
+            );
         }
     }
 
@@ -1751,7 +1756,7 @@ pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
     if !config.quiet {
         let total: usize = targets.iter().map(|t| t.syncmers.len()).sum();
         eprintln!(
-            "Wrote query index: {} targets, {total} syncmers, positions={} in {:.1}s",
+            "Wrote query index ({} targets, {total} syncmers, positions={}) in {:.1}s",
             targets.len(),
             config.positions,
             start.elapsed().as_secs_f64()
@@ -1872,8 +1877,13 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.threads,
             config.quiet,
         )?;
-        if !config.quiet {
-            eprintln!("Masked {removed} background syncmers");
+        // Per-file "found N of M" lines already report single-file totals;
+        // only the multi-file aggregate adds information.
+        if !config.quiet && config.background_paths.len() > 1 {
+            eprintln!(
+                "Masked {removed} background syncmers across {} files",
+                config.background_paths.len()
+            );
         }
     }
 
