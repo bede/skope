@@ -95,8 +95,6 @@ Arguments:
 Options:
   -k, --kmer-length <KMER_LENGTH>
           K-mer length (1-61) [default: 31]
-  -s, --spacing <SPACING>
-          Minimum bp between target syncmers [default: k] (1: all selected syncmers; >= k: non-overlapping syncmers)
       --smer-length <SMER_LENGTH>
           S-mer length used for syncmer selection (s < k, s must be odd) [default: 9]
   -a, --abundance-thresholds <ABUNDANCE_THRESHOLDS>
@@ -168,7 +166,7 @@ Passing `--confidence` (`-c`) to `skope query` adds output columns for confidenc
 skope query --confidence refs.fa reads.fq
 ```
 
-- `containmentX_ci`: a 95% Wilson score confidence interval for each containment estimate reflecting uncertainty in the proportion `hits/target_kmers` at each abundance threshold. This is written as `{lower}-{upper}`. Since Skope retains only non-overlapping syncmers by default (`--spacing {k}`), syncmers can be considered independent. Intervals are narrower for long target sequences and wider for short targets and/or low containment.
+- `containmentX_ci`: a 95% Wilson score confidence interval for each containment estimate reflecting uncertainty in the proportion `hits/target_kmers` at each abundance threshold. This is written as `{lower}-{upper}`. Intervals are narrower for long target sequences and wider for short targets and/or low containment.
 
 - `patchiness`: a Wald–Wolfowitz runs test for clustering of `containment1` hits along the target sequence. Written as `{z}|{p}`, positive `z` means that selected *k*-mer distribution is more more patchy than expected for the same hit count, and `p` is the one-sided normal-approximation p-value. Displayed only for `z > 0` and `p <= 0.05` (otherwise `-`), which can also mean the test was skipped for too few eligible syncmers, hits, or misses.
 
@@ -188,6 +186,6 @@ skope query --confidence refs.fa reads.fq
 
 ## Dumping syncmers
 
-Passing `--dump-syncmers <path>` to `skope query` writes the selected target syncmers to a TSV file with columns `target`, `position`, and `kmer`. The dump reflects whatever selection is in effect, so `--spacing` and `--discriminatory` are respected.
+Passing `--dump-syncmers <path>` to `skope query` writes the selected target syncmers to a TSV file with columns `target`, `position`, and `kmer`. The dump reflects whatever selection is in effect, so `--discriminatory` is respected.
 
 One row is emitted per syncmer occurrence, so the row count can exceed `target_kmers` (which counts distinct syncmers) when a k-mer recurs within a target. The `kmer` column is the canonical *k*-mer, not necessarily the forward-strand sequence at that position.

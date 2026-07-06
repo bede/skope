@@ -11,14 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `skope index build-query`: build a reusable query index (`.sk`) from target fastx file(s), so target syncmer extraction (and any background masking) is done once up front. `skope query` accepts such an index in place of a fastx `<TARGETS>` argument (auto-detected). `-p/--positions` bakes in syncmer positions so the index also supports `--confidence`/`--dump-syncmers`.
 - `skope query` and `skope index build-query`: `-b/--background` masks syncmers shared with off-target/background sequences out of the targets, reducing false positives from sequences common across the tree of life. Background is streamed in a memory-bounded manner (peak memory stays bounded by the targets, not the background); directories are searched recursively.
-- `skope index info <index.sk>`: print metadata for a query or classification index (k, s, spacing, target/group counts, syncmer totals, and — for query indexes — whether positions are stored and whether background masking was applied). Reads only the header and metadata, not the syncmer entries.
+- `skope index info <index.sk>`: print metadata for a query or classification index (k, s, target/group counts, syncmer totals, and — for query indexes — whether positions are stored and whether background masking was applied). Reads only the header and metadata, not the syncmer entries.
 
 ### Changed
 
 - On-disk indexes now share the `.sk` extension for both classification and query indexes. Passing the wrong index type throws a clear error.
 - `skope index build` is now `skope index build-classify` (the old `build` name remains as an alias).
 - `--smer-length` is now long-only in `skope classify`
-- `skope query`: replaced `--disjoint` with `--spacing <N>` (minimum bp between retained target syncmers). Defaults to `k` (non-overlapping, as old `--disjoint`); use `1` to keep all syncmers or a larger value for sparser target indexes. Samples stay dense, so containment estimates remain unbiased.
+- `skope query`: removed the `--disjoint`/`--spacing` target syncmer thinning option; all selected open syncmers are now retained. Positional (bp-distance) thinning is greedy and context-dependent, so it did not commute with background masking, `--discriminatory`, or cross-target set operations.
 - `skope query`: a multi-fastx file passed as `<TARGETS>` is now merged into a single target named after the file unless `--individual` (`-i`) is passed. Directory inputs are unaffected (still one target per top-level file or subdirectory).
 - `skope query`: skip the shared-syncmer counting pass when there is only one target.
 - `skope query`: renamed `--dump-positions` to `--dump-syncmers` and added a third TSV column with the (canonical) k-mer sequence. Output is now `target\tposition\tkmer`. `--dump-syncmers` respects `--discriminatory`.

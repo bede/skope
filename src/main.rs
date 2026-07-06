@@ -188,10 +188,6 @@ enum IndexCommands {
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
-        /// Minimum bp between retained target syncmer starts [default: k]
-        #[arg(short = 's', long = "spacing", value_parser = clap::value_parser!(u16).range(1..))]
-        spacing: Option<u16>,
-
         /// S-mer length used for open syncmer selection (s < k, s must be odd)
         #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
@@ -239,10 +235,6 @@ enum Commands {
         /// K-mer length (1-61)
         #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
-
-        /// Minimum bp between target syncmers [default: k] (1: all selected syncmers; >= k: non-overlapping syncmers)
-        #[arg(short = 's', long = "spacing", value_parser = clap::value_parser!(u16).range(1..))]
-        spacing: Option<u16>,
 
         /// S-mer length used for syncmer selection (s < k, s must be odd)
         #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
@@ -482,7 +474,6 @@ fn main() -> Result<()> {
                 targets,
                 background,
                 kmer_length,
-                spacing,
                 smer_length,
                 individual,
                 positions,
@@ -504,7 +495,6 @@ fn main() -> Result<()> {
                     background_paths: expand_background_inputs(background)?,
                     kmer_length: *kmer_length,
                     smer_length: *smer_length,
-                    spacing: spacing.unwrap_or(*kmer_length as u16),
                     individual: *individual,
                     positions: *positions,
                     threads: *threads,
@@ -612,7 +602,6 @@ fn main() -> Result<()> {
             quiet,
             abundance_thresholds,
             discriminatory,
-            spacing,
             individual,
             limit,
             sort,
@@ -649,17 +638,13 @@ fn main() -> Result<()> {
             // Validate uniqueness
             validate_sample_names(&derived_sample_names)?;
 
-            // A prebuilt query index carries its own k/s/spacing; else validate CLI values.
+            // A prebuilt query index carries its own k/s; else validate CLI values.
             let is_index = !targets.is_dir() && skope::is_query_index(targets);
-            let (eff_k, eff_s, eff_spacing) = if is_index {
+            let (eff_k, eff_s) = if is_index {
                 skope::read_query_index_meta(targets)?
             } else {
                 validate_k_s(*kmer_length, *smer_length)?;
-                (
-                    *kmer_length,
-                    *smer_length,
-                    spacing.unwrap_or(*kmer_length as u16),
-                )
+                (*kmer_length, *smer_length)
             };
 
             // Configure thread pool if specified (non-zero)
@@ -703,7 +688,6 @@ fn main() -> Result<()> {
                 abundance_thresholds: abundance_thresholds.clone(),
                 discriminatory: *discriminatory,
                 positions: *positions,
-                spacing: eff_spacing,
                 individual: *individual,
                 limit_bp,
                 sort_order,

@@ -239,7 +239,6 @@ pub struct ContainmentConfig {
     pub abundance_thresholds: Vec<usize>,
     pub discriminatory: bool,
     pub positions: bool,
-    pub spacing: u16,
     pub individual: bool,
     pub limit_bp: Option<u64>,
     pub sort_order: SortOrder,
@@ -274,7 +273,6 @@ struct TargetsProcessor {
     buffers: Buffers,
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
-    spacing: u16,
     collect_positions: bool,
 
     // Progress tracking
@@ -292,7 +290,6 @@ impl TargetsProcessor {
         global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: std::time::Instant,
-        spacing: u16,
         collect_positions: bool,
     ) -> Self {
         let buffers = if kmer_length <= 32 {
@@ -308,7 +305,6 @@ impl TargetsProcessor {
             buffers,
             positions: Vec::new(),
             targets,
-            spacing,
             collect_positions,
             local_stats: ProcessingStats::default(),
             global_stats,
@@ -351,7 +347,6 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 self.smer_length,
                 &mut self.buffers,
                 &mut self.positions,
-                self.spacing,
             );
         } else {
             fill_syncmers(
@@ -360,7 +355,6 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 self.kmer_length,
                 self.smer_length,
                 &mut self.buffers,
-                self.spacing,
             );
         }
 
@@ -439,7 +433,6 @@ fn process_targets_file(
     kmer_length: u8,
     smer_length: u8,
     quiet: bool,
-    spacing: u16,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
     let in_path = if targets_path.to_string_lossy() == "-" {
@@ -463,7 +456,6 @@ fn process_targets_file(
         Arc::clone(&global_stats),
         spinner.clone(),
         start_time,
-        spacing,
         collect_positions,
     );
 
@@ -517,7 +509,6 @@ fn process_targets_dir(
     kmer_length: u8,
     smer_length: u8,
     quiet: bool,
-    spacing: u16,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
     let groups = discover_sequence_groups(dir_path)?;
@@ -531,7 +522,6 @@ fn process_targets_dir(
                 kmer_length,
                 smer_length,
                 quiet,
-                spacing,
                 collect_positions,
             )?;
             all_targets.extend(targets);
@@ -651,7 +641,6 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
             self.kmer_length,
             self.smer_length,
             &mut self.buffers,
-            1, // samples are always dense; thinning the sample side biases containment
         );
 
         // Count syncmers present in targets
@@ -1388,8 +1377,8 @@ const QUERY_INDEX_VERSION: u8 = 1;
 const QUERY_INDEX_FLAG_POSITIONS: u8 = 0b001;
 const QUERY_INDEX_FLAG_BACKGROUND: u8 = 0b010;
 
-// magic, kind, version, k, s, spacing, flags, n_targets
-type QueryIndexHeader = ([u8; 4], u8, u8, u8, u8, u16, u8, u32);
+// magic, kind, version, k, s, flags, n_targets
+type QueryIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, u32);
 type QueryIndexMeta = Vec<(String, u64, u64)>; // (name, length, entry_count)
 
 /// Config for `skope index build-query`
@@ -1398,7 +1387,6 @@ pub struct BuildQueryConfig {
     pub background_paths: Vec<PathBuf>,
     pub kmer_length: u8,
     pub smer_length: u8,
-    pub spacing: u16,
     pub individual: bool,
     pub positions: bool,
     pub threads: usize,
@@ -1416,21 +1404,21 @@ pub fn is_query_index(path: &Path) -> bool {
     read_index_kind(path) == Some(IndexKind::Query)
 }
 
-/// Read k, s, spacing from a query index header without loading entries
-pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8, u16)> {
+/// Read k, s from a query index header without loading entries
+pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8)> {
     let mut buf = [0u8; 64];
     let n = File::open(path)?.read(&mut buf)?;
     let mut cursor = wincode::io::Cursor::new(&buf[..n]);
-    let (magic, kind, version, k, s, spacing, _f, _n): QueryIndexHeader =
+    let (magic, kind, version, k, s, _f, _n): QueryIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to read query index header")?;
     validate_query_index_header(&magic, kind, version)?;
-    Ok((k, s, spacing))
+    Ok((k, s))
 }
 
 /// Print human-readable metadata for a query index (`skope index info`)
 pub fn print_query_index_info(path: &Path) -> Result<()> {
     let mut reader = BufReader::new(File::open(path)?);
-    let (magic, kind, version, kmer_length, smer_length, spacing, flags, n_targets): QueryIndexHeader =
+    let (magic, kind, version, kmer_length, smer_length, flags, n_targets): QueryIndexHeader =
         wincode::deserialize_from(&mut reader).context("Failed to read query index header")?;
     validate_query_index_header(&magic, kind, version)?;
     let meta: QueryIndexMeta =
@@ -1447,7 +1435,6 @@ pub fn print_query_index_info(path: &Path) -> Result<()> {
     eprintln!("  Format version: {version}");
     eprintln!("  K-mer length (k): {kmer_length}");
     eprintln!("  S-mer length (s): {smer_length}");
-    eprintln!("  Spacing: {spacing}");
     eprintln!("  Targets: {n_targets}");
     eprintln!("  Total syncmers: {total_syncmers}");
     eprintln!("  Total length: {}", format_bp(total_bp as usize));
@@ -1486,7 +1473,6 @@ fn save_query_index(
     targets: &[TargetInfo],
     kmer_length: u8,
     smer_length: u8,
-    spacing: u16,
     flags: u8,
     output_path: Option<&Path>,
 ) -> Result<()> {
@@ -1523,7 +1509,6 @@ fn save_query_index(
         QUERY_INDEX_VERSION,
         kmer_length,
         smer_length,
-        spacing,
         flags,
         targets.len() as u32,
     );
@@ -1573,7 +1558,7 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
         .with_context(|| format!("Failed to open query index: {}", path.display()))?;
     let mut cursor = wincode::io::Cursor::new(bytes.as_slice());
 
-    let (magic, kind, version, kmer_length, _smer_length, _spacing, flags, n_targets): QueryIndexHeader =
+    let (magic, kind, version, kmer_length, _smer_length, flags, n_targets): QueryIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to decode query index header")?;
     validate_query_index_header(&magic, kind, version)?;
 
@@ -1686,8 +1671,8 @@ pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
     let start = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
     eprintln!(
-        "Skope v{version}; mode: index build-query; options: k={}, s={}, spacing={}, threads={}",
-        config.kmer_length, config.smer_length, config.spacing, config.threads
+        "Skope v{version}; mode: index build-query; options: k={}, s={}, threads={}",
+        config.kmer_length, config.smer_length, config.threads
     );
 
     let collect_positions = config.positions;
@@ -1697,7 +1682,6 @@ pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
             config.kmer_length,
             config.smer_length,
             config.quiet,
-            config.spacing,
             collect_positions,
         )?
     } else {
@@ -1706,7 +1690,6 @@ pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
             config.kmer_length,
             config.smer_length,
             config.quiet,
-            config.spacing,
             collect_positions,
         )?;
         if config.individual || per_record.len() <= 1 {
@@ -1748,7 +1731,6 @@ pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
         &targets,
         config.kmer_length,
         config.smer_length,
-        config.spacing,
         flags,
         config.output_path.as_deref(),
     )?;
@@ -1844,7 +1826,6 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.kmer_length,
             config.smer_length,
             config.quiet,
-            config.spacing,
             collect_positions,
         )?
     } else {
@@ -1853,7 +1834,6 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             config.kmer_length,
             config.smer_length,
             config.quiet,
-            config.spacing,
             collect_positions,
         )?;
         if config.individual || per_record.len() <= 1 {

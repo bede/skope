@@ -28,7 +28,6 @@ fn test_multisample_processing() {
         dump_syncmers_path: None,
         confidence: false,
         no_total: false,
-        spacing: 1,
         individual: true,
     };
 
@@ -61,7 +60,6 @@ fn test_multisample_report_structure() {
         dump_syncmers_path: None,
         confidence: false,
         no_total: false,
-        spacing: 1,
         individual: true,
     };
 
@@ -155,7 +153,6 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
         dump_syncmers_path: None,
         confidence: true,
         no_total: false,
-        spacing: 31,
         individual: true,
     };
 
@@ -209,7 +206,6 @@ fn test_sort_target() {
         dump_syncmers_path: None,
         confidence: false,
         no_total: false,
-        spacing: 1,
         individual: true,
     };
 
@@ -257,7 +253,6 @@ fn test_sort_containment() {
         dump_syncmers_path: None,
         confidence: false,
         no_total: false,
-        spacing: 1,
         individual: true,
     };
 
@@ -495,7 +490,6 @@ fn test_query_directory_mixed_layout() {
         dump_syncmers_path: None,
         confidence: false,
         no_total: true,
-        spacing: 1,
         individual: false,
     };
     skope::run_containment_analysis(&config).unwrap();
@@ -576,7 +570,6 @@ fn test_dump_syncmers_respects_discriminatory() {
         dump_syncmers_path: Some(dump),
         confidence: false,
         no_total: true,
-        spacing: 1,
         individual: false,
     };
 
@@ -746,7 +739,6 @@ fn build_index(targets: PathBuf, background: Vec<PathBuf>, out: PathBuf) {
         background_paths: background,
         kmer_length: 15,
         smer_length: 7,
-        spacing: 15,
         individual: false,
         positions: false,
         threads: 1,
@@ -775,7 +767,6 @@ fn query_to_tsv(targets_path: PathBuf, sample: &std::path::Path, out: &std::path
         dump_syncmers_path: None,
         confidence: false,
         no_total: true,
-        spacing: 15,
         individual: false,
     })
     .unwrap();

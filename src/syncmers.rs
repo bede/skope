@@ -97,7 +97,6 @@ pub fn fill_syncmers_with_positions(
     smer_length: u8,
     buffers: &mut Buffers,
     positions_out: &mut Vec<usize>,
-    spacing: u16,
 ) {
     let Buffers {
         packed_nseq,
@@ -124,26 +123,17 @@ pub fn fill_syncmers_with_positions(
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
-    let step = spacing as u32;
     match syncmers {
         SyncmerVec::U64(vec) => {
-            let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u64() {
-                if pos >= next_allowed {
-                    vec.push(val);
-                    positions_out.push(pos as usize);
-                    next_allowed = pos.saturating_add(step);
-                }
+                vec.push(val);
+                positions_out.push(pos as usize);
             }
         }
         SyncmerVec::U128(vec) => {
-            let mut next_allowed: u32 = 0;
             for (pos, val) in m.pos_and_values_u128() {
-                if pos >= next_allowed {
-                    vec.push(val);
-                    positions_out.push(pos as usize);
-                    next_allowed = pos.saturating_add(step);
-                }
+                vec.push(val);
+                positions_out.push(pos as usize);
             }
         }
     }
@@ -156,7 +146,6 @@ pub fn fill_syncmers(
     kmer_length: u8,
     smer_length: u8,
     buffers: &mut Buffers,
-    spacing: u16,
 ) {
     let Buffers {
         packed_nseq,
@@ -182,24 +171,15 @@ pub fn fill_syncmers(
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
-    let step = spacing as u32;
     match syncmers {
         SyncmerVec::U64(vec) => {
-            let mut next_allowed: u32 = 0;
-            for (pos, val) in m.pos_and_values_u64() {
-                if pos >= next_allowed {
-                    vec.push(val);
-                    next_allowed = pos.saturating_add(step);
-                }
+            for (_pos, val) in m.pos_and_values_u64() {
+                vec.push(val);
             }
         }
         SyncmerVec::U128(vec) => {
-            let mut next_allowed: u32 = 0;
-            for (pos, val) in m.pos_and_values_u128() {
-                if pos >= next_allowed {
-                    vec.push(val);
-                    next_allowed = pos.saturating_add(step);
-                }
+            for (_pos, val) in m.pos_and_values_u128() {
+                vec.push(val);
             }
         }
     };
@@ -217,14 +197,14 @@ mod tests {
         let hasher = KmerHasher::new(s as usize);
         let mut buffers = Buffers::new_u64();
 
-        fill_syncmers(seq, &hasher, k, s, &mut buffers, 1);
+        fill_syncmers(seq, &hasher, k, s, &mut buffers);
 
         // We should have at least one syncmer
         assert!(!buffers.syncmers.is_empty());
 
         // Test with a sequence shorter than k
         let short_seq = b"ACGT";
-        fill_syncmers(short_seq, &hasher, k, s, &mut buffers, 1);
+        fill_syncmers(short_seq, &hasher, k, s, &mut buffers);
         assert!(buffers.syncmers.is_empty());
     }
 
@@ -237,7 +217,7 @@ mod tests {
         let mut buffers = Buffers::new_u64();
         let mut positions = Vec::new();
 
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, 1);
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions);
 
         // Should have same number of syncmers and positions
         assert_eq!(buffers.syncmers.len(), positions.len());
@@ -246,34 +226,17 @@ mod tests {
         for &pos in &positions {
             assert!(pos + k as usize <= seq.len());
         }
-
-        // Syncmers should be non-overlapping when spacing == k
-        positions.clear();
-        buffers = Buffers::new_u64();
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, k as u16);
-        for window in positions.windows(2) {
-            assert!(window[1] >= window[0] + k as usize);
-        }
-
-        // Larger spacing yields starts at least `spacing` apart
-        positions.clear();
-        buffers = Buffers::new_u64();
-        let spacing: u16 = 2 * k as u16;
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions, spacing);
-        for window in positions.windows(2) {
-            assert!(window[1] >= window[0] + spacing as usize);
-        }
     }
 
     #[test]
-    fn test_non_overlapping_syncmers_match_between_apis() {
+    fn test_syncmers_match_between_apis() {
         let seq = b"ACGTTGCATGTCGCATGATGCATGAGAGCTACGTTGCATGTCGCATGATGCATGAGAGCT";
         let k = 15;
         let s = 7;
         let hasher = KmerHasher::new(s as usize);
 
         let mut values_only_buffers = Buffers::new_u64();
-        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers, k as u16);
+        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers);
         let values_only = match &values_only_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),
             SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
@@ -281,26 +244,14 @@ mod tests {
 
         let mut with_pos_buffers = Buffers::new_u64();
         let mut positions = Vec::new();
-        fill_syncmers_with_positions(
-            seq,
-            &hasher,
-            k,
-            s,
-            &mut with_pos_buffers,
-            &mut positions,
-            k as u16,
-        );
+        fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions);
         let with_pos_values = match &with_pos_buffers.syncmers {
             SyncmerVec::U64(v) => v.clone(),
             SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
         };
 
-        // Both APIs should retain the same non-overlapping syncmers in the same order.
+        // Both APIs should retain the same syncmers in the same order.
         assert_eq!(values_only, with_pos_values);
         assert_eq!(with_pos_values.len(), positions.len());
-
-        for window in positions.windows(2) {
-            assert!(window[1] >= window[0] + k as usize);
-        }
     }
 }
