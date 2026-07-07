@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On-disk indexes now share the `.sk` extension for both classification and query indexes. Passing the wrong index type throws a clear error.
 - `skope index build` is now `skope index build-classify` (the old `build` name remains as an alias).
 - `--smer-length` is now long-only in `skope classify`
-- `skope query`: removed the `--disjoint`/`--spacing` target syncmer thinning option; all selected open syncmers are now retained. Positional (bp-distance) thinning is greedy and context-dependent, so it did not commute with background masking, `--discriminatory`, or cross-target set operations.
+- `skope query`: removed the `--disjoint`/`--spacing` target syncmer downsampling option. Replaced with FracMinHash downsampling of selected syncmers `--fraction` (`-f`).
 - `skope query`: a multi-fastx file passed as `<TARGETS>` is now merged into a single target named after the file unless `--individual` (`-i`) is passed. Directory inputs are unaffected (still one target per top-level file or subdirectory).
 - `skope query`: skip the shared-syncmer counting pass when there is only one target.
 - `skope query`: renamed `--dump-positions` to `--dump-syncmers` and added a third TSV column with the (canonical) k-mer sequence. Output is now `target\tposition\tkmer`. `--dump-syncmers` respects `--discriminatory`.

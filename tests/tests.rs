@@ -27,6 +27,7 @@ fn test_multisample_processing() {
         sort_order: SortOrder::Original,
         dump_syncmers_path: None,
         confidence: false,
+        fraction: 1.0,
         no_total: false,
         individual: true,
     };
@@ -59,6 +60,7 @@ fn test_multisample_report_structure() {
         sort_order: SortOrder::Original,
         dump_syncmers_path: None,
         confidence: false,
+        fraction: 1.0,
         no_total: false,
         individual: true,
     };
@@ -152,6 +154,7 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
         sort_order: SortOrder::Original,
         dump_syncmers_path: None,
         confidence: true,
+        fraction: 1.0,
         no_total: false,
         individual: true,
     };
@@ -175,7 +178,7 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
         .find(|line| !line.starts_with("TOTAL\t"))
         .unwrap();
     let ani_est = first_target.split('\t').nth(ani_est_idx).unwrap();
-    // ani_est is "-" when suppressed, otherwise a containment ANI in [0, 1].
+    // ani_est is "-" when suppressed, otherwise a containment ANI in [0, 1]
     assert!(
         ani_est == "-" || (0.0..=1.0).contains(&ani_est.parse::<f64>().unwrap()),
         "unexpected ani_est value: {ani_est}"
@@ -205,6 +208,7 @@ fn test_sort_target() {
         sort_order: SortOrder::Target,
         dump_syncmers_path: None,
         confidence: false,
+        fraction: 1.0,
         no_total: false,
         individual: true,
     };
@@ -252,6 +256,7 @@ fn test_sort_containment() {
         sort_order: SortOrder::Containment,
         dump_syncmers_path: None,
         confidence: false,
+        fraction: 1.0,
         no_total: false,
         individual: true,
     };
@@ -489,6 +494,7 @@ fn test_query_directory_mixed_layout() {
         sort_order: SortOrder::Original,
         dump_syncmers_path: None,
         confidence: false,
+        fraction: 1.0,
         no_total: true,
         individual: false,
     };
@@ -519,7 +525,7 @@ const DISC_COMMON: &str = "GATTACAGGCATCCTAGCTAGGACTTGCAACATGCTTAGCCATGGAACTGTCC
 const DISC_UNIQUE_A: &str = "TTGCAACGGTACCATTAGCGGATCCTTAGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCC";
 const DISC_UNIQUE_B: &str = "CCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCCTAGCTAGGACTTGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTA";
 
-// Parse a --dump-syncmers TSV into target -> set of k-mers (col 1 -> col 3).
+// Parse a --dump-syncmers TSV into target -> set of k-mers (col 1 -> col 3)
 fn parse_dump(
     path: &std::path::Path,
 ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
@@ -569,6 +575,7 @@ fn test_dump_syncmers_respects_discriminatory() {
         sort_order: SortOrder::Original,
         dump_syncmers_path: Some(dump),
         confidence: false,
+        fraction: 1.0,
         no_total: true,
         individual: false,
     };
@@ -744,6 +751,7 @@ fn build_index(targets: PathBuf, background: Vec<PathBuf>, out: PathBuf) {
         threads: 1,
         output_path: Some(out),
         quiet: true,
+        fraction: 1.0,
     })
     .unwrap();
 }
@@ -766,6 +774,7 @@ fn query_to_tsv(targets_path: PathBuf, sample: &std::path::Path, out: &std::path
         sort_order: SortOrder::Original,
         dump_syncmers_path: None,
         confidence: false,
+        fraction: 1.0,
         no_total: true,
         individual: false,
     })
@@ -791,6 +800,93 @@ fn test_query_index_matches_fastx() {
     let (i, f) = (dir.path().join("i.tsv"), dir.path().join("f.tsv"));
     query_to_tsv(index, &sample, &i);
     query_to_tsv(target, &sample, &f);
+    assert_eq!(
+        std::fs::read_to_string(i).unwrap(),
+        std::fs::read_to_string(f).unwrap()
+    );
+}
+
+// Deterministic pseudo-random DNA for thinning tests
+fn pseudo_dna_string(n: usize, seed: u64) -> String {
+    let mut x = seed | 1;
+    let bases = [b'A', b'C', b'G', b'T'];
+    (0..n)
+        .map(|_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            bases[((x >> 33) & 0b11) as usize] as char
+        })
+        .collect()
+}
+
+fn build_index_frac(targets: PathBuf, out: PathBuf, fraction: f64) {
+    skope::build_query_index(&skope::BuildQueryConfig {
+        targets_path: targets,
+        background_paths: vec![],
+        kmer_length: 15,
+        smer_length: 7,
+        individual: false,
+        positions: false,
+        threads: 1,
+        output_path: Some(out),
+        quiet: true,
+        fraction,
+    })
+    .unwrap();
+}
+
+fn query_frac(
+    targets_path: PathBuf,
+    sample: &std::path::Path,
+    out: &std::path::Path,
+    fraction: f64,
+) {
+    skope::run_containment_analysis(&ContainmentConfig {
+        background_paths: Vec::new(),
+        positions: false,
+        targets_path,
+        sample_paths: vec![vec![sample.to_path_buf()]],
+        sample_names: vec!["s".to_string()],
+        kmer_length: 15,
+        smer_length: 7,
+        threads: 1,
+        output_path: Some(out.to_path_buf()),
+        quiet: true,
+        abundance_thresholds: vec![1],
+        discriminatory: false,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_syncmers_path: None,
+        confidence: false,
+        fraction,
+        no_total: true,
+        individual: false,
+    })
+    .unwrap();
+}
+
+// Index-time and query-time thinning must yield identical containment
+#[test]
+fn test_thinning_index_matches_fastx() {
+    let dir = TempDir::new().unwrap();
+    let seq = pseudo_dna_string(20_000, 3);
+    let (target, sample, index) = (
+        dir.path().join("t.fa"),
+        dir.path().join("s.fa"),
+        dir.path().join("t01.sk"),
+    );
+    write_fasta(&target, "t1", &seq);
+    write_fasta(&sample, "s1", &seq);
+    build_index_frac(target.clone(), index.clone(), 0.1);
+
+    // Header stores the fraction
+    let (_k, _s, frac) = skope::read_query_index_meta(&index).unwrap();
+    assert!((frac - 0.1).abs() < 1e-4, "stored fraction {frac} != 0.1");
+
+    let (i, f) = (dir.path().join("i.tsv"), dir.path().join("f.tsv"));
+    query_frac(index, &sample, &i, 1.0); // index fraction wins; CLI default ignored
+    query_frac(target, &sample, &f, 0.1);
     assert_eq!(
         std::fs::read_to_string(i).unwrap(),
         std::fs::read_to_string(f).unwrap()

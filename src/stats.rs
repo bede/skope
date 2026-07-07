@@ -15,7 +15,7 @@ pub fn wilson_interval(successes: usize, n: usize, z: f64) -> (f64, f64) {
     ((center - margin).max(0.0), (center + margin).min(1.0))
 }
 
-/// Standard normal survival function, P(Z >= x).
+/// Standard normal survival function, P(Z >= x)
 pub fn normal_survival(x: f64) -> f64 {
     (1.0 - normal_cdf(x)).clamp(0.0, 1.0)
 }
@@ -25,7 +25,7 @@ fn normal_cdf(x: f64) -> f64 {
 }
 
 fn erf(x: f64) -> f64 {
-    // Abramowitz and Stegun 7.1.26 approximation.
+    // Abramowitz and Stegun 7.1.26 approximation
     const A1: f64 = 0.254_829_592;
     const A2: f64 = -0.284_496_736;
     const A3: f64 = 1.421_413_741;
@@ -78,7 +78,7 @@ mod tests {
         approx(hi, 1.0);
         assert!(lo < 1.0 && lo > 0.0);
 
-        // n = 0: degenerate.
+        // n = 0: degenerate
         assert_eq!(wilson_interval(0, 0, WILSON_Z_95), (0.0, 0.0));
     }
 

@@ -8,7 +8,16 @@ use skope::{derive_sample_name, find_fastx_files, find_fastx_files_recursive, va
 const DEFAULT_KMER_LENGTH: u8 = 31;
 const DEFAULT_SMER_LENGTH: u8 = 9;
 
-/// Validate that sample names are unique
+/// Validate the FracMinHash fraction is in (0, 1]
+fn validate_fraction(fraction: f64) -> Result<()> {
+    if !(fraction > 0.0 && fraction <= 1.0) {
+        return Err(anyhow::anyhow!(
+            "Invalid --fraction {fraction}: must be in (0, 1] (1 = retain all)"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_sample_names(names: &[String]) -> Result<()> {
     let mut seen = HashSet::new();
     let mut duplicates = Vec::new();
@@ -94,7 +103,7 @@ fn expand_sample_inputs(inputs: &[PathBuf]) -> Result<(Vec<Vec<PathBuf>>, Vec<bo
     Ok((expanded_samples, is_directory))
 }
 
-/// Expand background inputs into a flat list of fastx files (directories searched recursively).
+/// Expand background inputs into a flat list of fastx files (directories searched recursively)
 fn expand_background_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for input in inputs {
@@ -200,6 +209,10 @@ enum IndexCommands {
         #[arg(short = 'p', long = "positions", default_value_t = false)]
         positions: bool,
 
+        /// Fraction of target syncmers to keep [0, 1]
+        #[arg(short = 'f', long = "fraction", default_value_t = 1.0)]
+        fraction: f64,
+
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
@@ -302,6 +315,10 @@ enum Commands {
         /// Collect syncmer positions (implied by --confidence and --dump-syncmers)
         #[arg(short = 'p', long = "positions", default_value_t = false)]
         positions: bool,
+
+        /// Fraction of target syncmers to keep [0, 1]
+        #[arg(short = 'f', long = "fraction", default_value_t = 1.0)]
+        fraction: f64,
     },
 
     /// Classify sequences into groups by syncmer content
@@ -477,11 +494,13 @@ fn main() -> Result<()> {
                 smer_length,
                 individual,
                 positions,
+                fraction,
                 threads,
                 output,
                 quiet,
             } => {
                 validate_k_s(*kmer_length, *smer_length)?;
+                validate_fraction(*fraction)?;
 
                 if *threads > 0 {
                     rayon::ThreadPoolBuilder::new()
@@ -504,6 +523,7 @@ fn main() -> Result<()> {
                         Some(PathBuf::from(output))
                     },
                     quiet: *quiet,
+                    fraction: *fraction,
                 };
 
                 skope::build_query_index(&config).context("Failed to build query index")?;
@@ -610,6 +630,7 @@ fn main() -> Result<()> {
             confidence,
             background,
             positions,
+            fraction,
         } => {
             // Expand directories to lists of files
             let (expanded_samples, is_directory) = expand_sample_inputs(samples)?;
@@ -635,13 +656,15 @@ fn main() -> Result<()> {
                     .collect()
             };
 
-            // Validate uniqueness
+            // Validate uniqueness and FracMinHash fraction before resolving target/index parameters
             validate_sample_names(&derived_sample_names)?;
+            validate_fraction(*fraction)?;
 
-            // A prebuilt query index carries its own k/s; else validate CLI values.
+            // A prebuilt index carries its own k/s and fraction; else validate CLI k/s
             let is_index = !targets.is_dir() && skope::is_query_index(targets);
             let (eff_k, eff_s) = if is_index {
-                skope::read_query_index_meta(targets)?
+                let (k, s, _fraction) = skope::read_query_index_meta(targets)?;
+                (k, s)
             } else {
                 validate_k_s(*kmer_length, *smer_length)?;
                 (*kmer_length, *smer_length)
@@ -694,6 +717,7 @@ fn main() -> Result<()> {
                 dump_syncmers_path: dump_syncmers.as_ref().map(PathBuf::from),
                 no_total: *no_total,
                 confidence: *confidence,
+                fraction: *fraction,
             };
 
             config

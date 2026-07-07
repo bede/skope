@@ -1,6 +1,6 @@
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::syncmers::{
-    Buffers, KmerHasher, SyncmerVec, decode_u64, decode_u128, fill_syncmers,
+    Buffers, FracMinHash, KmerHasher, SyncmerVec, decode_u64, decode_u128, fill_syncmers,
     fill_syncmers_with_positions,
 };
 use crate::{
@@ -245,6 +245,7 @@ pub struct ContainmentConfig {
     pub dump_syncmers_path: Option<PathBuf>,
     pub no_total: bool,
     pub confidence: bool,
+    pub fraction: f64,
 }
 
 impl ContainmentConfig {
@@ -270,6 +271,7 @@ struct TargetsProcessor {
     kmer_length: u8,
     smer_length: u8,
     hasher: KmerHasher,
+    fmh: FracMinHash,
     buffers: Buffers,
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
@@ -286,6 +288,7 @@ impl TargetsProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
+        fmh: FracMinHash,
         targets: Arc<Mutex<Vec<TargetInfo>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
@@ -302,6 +305,7 @@ impl TargetsProcessor {
             kmer_length,
             smer_length,
             hasher: KmerHasher::new(smer_length as usize),
+            fmh,
             buffers,
             positions: Vec::new(),
             targets,
@@ -348,6 +352,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 &mut self.buffers,
                 &mut self.positions,
             );
+            self.fmh
+                .retain(&mut self.buffers.syncmers, Some(&mut self.positions));
         } else {
             fill_syncmers(
                 &sequence,
@@ -356,6 +362,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 self.smer_length,
                 &mut self.buffers,
             );
+            self.fmh.retain(&mut self.buffers.syncmers, None);
         }
 
         // Build unique syncmer set for this target
@@ -432,6 +439,7 @@ fn process_targets_file(
     targets_path: &Path,
     kmer_length: u8,
     smer_length: u8,
+    fmh: FracMinHash,
     quiet: bool,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
@@ -452,6 +460,7 @@ fn process_targets_file(
     let mut processor = TargetsProcessor::new(
         kmer_length,
         smer_length,
+        fmh,
         Arc::clone(&targets),
         Arc::clone(&global_stats),
         spinner.clone(),
@@ -508,6 +517,7 @@ fn process_targets_dir(
     dir_path: &Path,
     kmer_length: u8,
     smer_length: u8,
+    fmh: FracMinHash,
     quiet: bool,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
@@ -521,6 +531,7 @@ fn process_targets_dir(
                 file_path,
                 kmer_length,
                 smer_length,
+                fmh,
                 quiet,
                 collect_positions,
             )?;
@@ -729,7 +740,7 @@ const MIN_TARGET_KMERS_FOR_ANI_ADJUSTMENT: usize = 50;
 const MIN_NONZERO_KMERS_FOR_ANI_ADJUSTMENT: usize = 25;
 const MIN_DEPTH_BIN_FOR_ANI_ADJUSTMENT: usize = 3;
 const MAX_MEDIAN_DEPTH_FOR_ANI_ADJUSTMENT: f64 = 2.0;
-// Gates for displaying an ANI estimate: minimum target syncmers and minimum ANI.
+// Gates for displaying an ANI estimate: minimum target syncmers and minimum ANI
 const MIN_TARGET_KMERS_FOR_ANI_DISPLAY: usize = 50;
 const MIN_ANI_FOR_DISPLAY: f64 = 0.90;
 const MIN_TARGET_KMERS_FOR_PATCHINESS: usize = 50;
@@ -815,7 +826,7 @@ fn ani_estimate(
     lambda: Option<f64>,
     target_kmers: usize,
 ) -> Option<f64> {
-    // Need enough syncmers and at least one contained syncmer.
+    // Need enough syncmers and at least one contained syncmer
     if kmer_length == 0 || target_kmers < MIN_TARGET_KMERS_FOR_ANI_DISPLAY || containment <= 0.0 {
         return None;
     }
@@ -826,7 +837,7 @@ fn ani_estimate(
 
     let ani = kmer_identity.powf(1.0 / kmer_length as f64);
 
-    // Suppress low-confidence estimates.
+    // Suppress low-confidence estimates
     (ani >= MIN_ANI_FOR_DISPLAY).then_some(ani)
 }
 
@@ -1377,8 +1388,8 @@ const QUERY_INDEX_VERSION: u8 = 1;
 const QUERY_INDEX_FLAG_POSITIONS: u8 = 0b001;
 const QUERY_INDEX_FLAG_BACKGROUND: u8 = 0b010;
 
-// magic, kind, version, k, s, flags, n_targets
-type QueryIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, u32);
+// magic, kind, version, k, s, flags, n_targets, fraction (FracMinHash sampling fraction)
+type QueryIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, u32, f64);
 type QueryIndexMeta = Vec<(String, u64, u64)>; // (name, length, entry_count)
 
 /// Config for `skope index build-query`
@@ -1392,6 +1403,8 @@ pub struct BuildQueryConfig {
     pub threads: usize,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
+    /// Fraction for stable FracMinHash selection in `(0, 1]`
+    pub fraction: f64,
 }
 
 struct QueryIndex {
@@ -1404,21 +1417,21 @@ pub fn is_query_index(path: &Path) -> bool {
     read_index_kind(path) == Some(IndexKind::Query)
 }
 
-/// Read k, s from a query index header without loading entries
-pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8)> {
+/// Read k, s, and the FracMinHash fraction from a query index header without loading entries
+pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8, f64)> {
     let mut buf = [0u8; 64];
     let n = File::open(path)?.read(&mut buf)?;
     let mut cursor = wincode::io::Cursor::new(&buf[..n]);
-    let (magic, kind, version, k, s, _f, _n): QueryIndexHeader =
+    let (magic, kind, version, k, s, _flags, _n, fraction): QueryIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to read query index header")?;
     validate_query_index_header(&magic, kind, version)?;
-    Ok((k, s))
+    Ok((k, s, fraction))
 }
 
 /// Print human-readable metadata for a query index (`skope index info`)
 pub fn print_query_index_info(path: &Path) -> Result<()> {
     let mut reader = BufReader::new(File::open(path)?);
-    let (magic, kind, version, kmer_length, smer_length, flags, n_targets): QueryIndexHeader =
+    let (magic, kind, version, kmer_length, smer_length, flags, n_targets, fraction): QueryIndexHeader =
         wincode::deserialize_from(&mut reader).context("Failed to read query index header")?;
     validate_query_index_header(&magic, kind, version)?;
     let meta: QueryIndexMeta =
@@ -1438,6 +1451,14 @@ pub fn print_query_index_info(path: &Path) -> Result<()> {
     eprintln!("  Targets: {n_targets}");
     eprintln!("  Total syncmers: {total_syncmers}");
     eprintln!("  Total length: {}", format_bp(total_bp as usize));
+    eprintln!(
+        "  FracMinHash fraction: {}",
+        if fraction >= 1.0 {
+            "1 (retain all)".to_string()
+        } else {
+            format!("{fraction} (keeps ~{:.0}% of syncmers)", fraction * 100.0)
+        }
+    );
     eprintln!(
         "  Syncmer positions: {}",
         if flags & QUERY_INDEX_FLAG_POSITIONS != 0 {
@@ -1473,6 +1494,7 @@ fn save_query_index(
     targets: &[TargetInfo],
     kmer_length: u8,
     smer_length: u8,
+    fraction: f64,
     flags: u8,
     output_path: Option<&Path>,
 ) -> Result<()> {
@@ -1511,6 +1533,7 @@ fn save_query_index(
         smer_length,
         flags,
         targets.len() as u32,
+        fraction,
     );
     writer
         .write_all(&wincode::serialize(&header).context("Failed to encode query index header")?)?;
@@ -1558,7 +1581,7 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
         .with_context(|| format!("Failed to open query index: {}", path.display()))?;
     let mut cursor = wincode::io::Cursor::new(bytes.as_slice());
 
-    let (magic, kind, version, kmer_length, _smer_length, flags, n_targets): QueryIndexHeader =
+    let (magic, kind, version, kmer_length, _smer_length, flags, n_targets, _fraction): QueryIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to decode query index header")?;
     validate_query_index_header(&magic, kind, version)?;
 
@@ -1670,17 +1693,24 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
 pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
     let start = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
+    let fraction_str = if config.fraction < 1.0 {
+        format!(", fraction={}", config.fraction)
+    } else {
+        String::new()
+    };
     eprintln!(
-        "Skope v{version}; mode: index build-query; options: k={}, s={}, threads={}",
-        config.kmer_length, config.smer_length, config.threads
+        "Skope v{version}; mode: index build-query; options: k={}, s={}, threads={}{}",
+        config.kmer_length, config.smer_length, config.threads, fraction_str
     );
 
+    let fmh = FracMinHash::from_fraction(config.fraction);
     let collect_positions = config.positions;
     let mut targets = if config.targets_path.is_dir() {
         process_targets_dir(
             &config.targets_path,
             config.kmer_length,
             config.smer_length,
+            fmh,
             config.quiet,
             collect_positions,
         )?
@@ -1689,6 +1719,7 @@ pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
             &config.targets_path,
             config.kmer_length,
             config.smer_length,
+            fmh,
             config.quiet,
             collect_positions,
         )?;
@@ -1731,6 +1762,7 @@ pub fn build_query_index(config: &BuildQueryConfig) -> Result<()> {
         &targets,
         config.kmer_length,
         config.smer_length,
+        config.fraction,
         flags,
         config.output_path.as_deref(),
     )?;
@@ -1795,6 +1827,23 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
         ));
     }
     let from_index = index_kind == Some(IndexKind::Query);
+    // Prebuilt stored index fraction trumps
+    let (fmh, effective_fraction) = if from_index {
+        let (_k, _s, index_fraction) = read_query_index_meta(&config.targets_path)?;
+        if config.fraction < 1.0 && (config.fraction - index_fraction).abs() > 1e-12 {
+            return Err(anyhow::anyhow!(
+                "--fraction {} conflicts with the query index's fraction {:.6}; omit --fraction to use the index's",
+                config.fraction,
+                index_fraction
+            ));
+        }
+        (FracMinHash::from_fraction(index_fraction), index_fraction)
+    } else {
+        (FracMinHash::from_fraction(config.fraction), config.fraction)
+    };
+    if effective_fraction < 1.0 {
+        options.push_str(&format!(", fraction={effective_fraction}"));
+    }
     eprintln!(
         "Skope v{}; mode: query{}; options: {}",
         version,
@@ -1825,6 +1874,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             &config.targets_path,
             config.kmer_length,
             config.smer_length,
+            fmh,
             config.quiet,
             collect_positions,
         )?
@@ -1833,6 +1883,7 @@ pub fn run_containment_analysis(config: &ContainmentConfig) -> Result<()> {
             &config.targets_path,
             config.kmer_length,
             config.smer_length,
+            fmh,
             config.quiet,
             collect_positions,
         )?;

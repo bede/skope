@@ -468,7 +468,7 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
         if !config.quiet {
             eprintln!("Groups: none (target filtering disabled, single \"all\" bucket)");
         }
-        // Degenerate 1-group "all" setup; the index is never queried in this mode.
+        // Degenerate 1-group "all" setup; the index is never queried in this mode
         let empty_index = if config.kmer_length <= 32 {
             ClassificationIndex::U64(HashMap::with_hasher(crate::FixedRapidHasher))
         } else {

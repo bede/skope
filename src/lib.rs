@@ -34,8 +34,8 @@ pub use classify::{
 };
 
 pub use syncmers::{
-    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, KmerHasher, SyncmerVec, decode_u64,
-    decode_u128, fill_syncmers, fill_syncmers_with_positions,
+    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, FracMinHash, KmerHasher, SyncmerVec,
+    decode_u64, decode_u128, fill_syncmers, fill_syncmers_with_positions,
 };
 
 // ── Shared types ──────────────────────────────────────────────────────────────
