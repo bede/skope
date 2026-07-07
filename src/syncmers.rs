@@ -1,6 +1,6 @@
 use crate::FixedRapidHasher;
 use packed_seq::{PackedNSeqVec, SeqVec, unpack_base};
-use std::hash::{BuildHasher, Hasher};
+use std::hash::BuildHasher;
 
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
 pub const DEFAULT_SMER_LENGTH: u8 = 9;
@@ -40,12 +40,12 @@ impl FracMinHash {
 
     #[inline(always)]
     fn keeps_u64(&self, kmer: u64) -> bool {
-        rapid_mix(&kmer.to_le_bytes()) <= self.threshold
+        rapid_mix_u64(kmer) <= self.threshold
     }
 
     #[inline(always)]
     fn keeps_u128(&self, kmer: u128) -> bool {
-        rapid_mix(&kmer.to_le_bytes()) <= self.threshold
+        rapid_mix_u128(kmer) <= self.threshold
     }
 
     pub fn retain(&self, syncmers: &mut SyncmerVec, positions: Option<&mut Vec<usize>>) {
@@ -85,10 +85,13 @@ fn retain_paired<T: Copy>(
 }
 
 #[inline(always)]
-fn rapid_mix(bytes: &[u8]) -> u64 {
-    let mut h = FixedRapidHasher.build_hasher();
-    h.write(bytes);
-    h.finish()
+fn rapid_mix_u64(kmer: u64) -> u64 {
+    FixedRapidHasher.hash_one(kmer)
+}
+
+#[inline(always)]
+fn rapid_mix_u128(kmer: u128) -> u64 {
+    FixedRapidHasher.hash_one(kmer)
 }
 
 /// Zero-cost abstraction over u64 and u128 syncmer vectors
@@ -388,6 +391,22 @@ mod tests {
         assert!(
             (realised - 0.1).abs() < 0.03,
             "realised fraction {realised}"
+        );
+    }
+
+    #[test]
+    fn test_fmh_uses_fixed_rapid_hash_of_value() {
+        let fmh = FracMinHash::from_fraction(0.5);
+        let kmer64 = 0x0123_4567_89ab_cdef;
+        let kmer128 = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
+
+        assert_eq!(
+            fmh.keeps_u64(kmer64),
+            FixedRapidHasher.hash_one(kmer64) <= fmh.threshold
+        );
+        assert_eq!(
+            fmh.keeps_u128(kmer128),
+            FixedRapidHasher.hash_one(kmer128) <= fmh.threshold
         );
     }
 }
