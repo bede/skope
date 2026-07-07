@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - On-disk indexes now share the `.sk` extension for both classification and query indexes. Passing the wrong index type throws a clear error.
 - `skope index build` is now `skope index build-classify` (the old `build` name remains as an alias).
-- `--smer-length` is now long-only in `skope classify`
+- CLI flag renames (no backwards compatibility). All subcommands: `--kmer-length` → `--kmer`, `--smer-length` → `--smer` (now with short `-s`). `skope query`: `--sort` is long-only with word values `containment`/`target`/`sample`/`input`. `skope classify`/`lenhist`: `-m/--min-hits` → `-a/--abs-threshold`, `--min-fraction` → `-r/--rel-threshold`.
+- Clearer help: added value placeholders (`<K>`, `<S>`, `<BASES>`, `<INT,...>`, `<NAME,...>`, `<FILE>`, `<FLOAT>`, `<ABS_THRESHOLD>`, `<REL_THRESHOLD>`).
 - `skope query`: removed the `--disjoint`/`--spacing` target syncmer downsampling option. Replaced with FracMinHash downsampling of selected syncmers `--fraction` (`-f`).
 - `skope query`: a multi-fastx file passed as `<TARGETS>` is now merged into a single target named after the file unless `--individual` (`-i`) is passed. Directory inputs are unaffected (still one target per top-level file or subdirectory).
 - `skope query`: skip the shared-syncmer counting pass when there is only one target.

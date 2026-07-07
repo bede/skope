@@ -17,7 +17,7 @@ use std::time::Instant;
 
 // Index header constants and metadata
 use crate::INDEX_MAGIC;
-const CLASSIFICATION_INDEX_VERSION: u8 = 3;
+const CLASSIFICATION_INDEX_VERSION: u8 = 1;
 type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8, u8); // magic, kind, version, k, s, num_groups
 
 /// Classification index mapping syncmers to group bitmasks (up to 128 groups)
@@ -98,8 +98,8 @@ pub struct ClassifyConfig {
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
     pub smer_length: u8,
-    pub min_hits: u64,
-    pub min_fraction: f64,
+    pub abs_threshold: u64,
+    pub rel_threshold: f64,
     pub threads: usize,
     pub limit_bp: Option<u64>,
     pub output_path: Option<PathBuf>,
@@ -579,8 +579,8 @@ fn classify_seq(
     hits: &mut [u64; 128],
     num_groups: usize,
     total_kmers: usize,
-    min_hits: u64,
-    min_fraction: f64,
+    abs_threshold: u64,
+    rel_threshold: f64,
 ) -> Classification {
     if total_kmers == 0 {
         return Classification::Unclassified;
@@ -591,7 +591,7 @@ fn classify_seq(
     let mut single_match = 0usize;
 
     for (group_idx, &group_hits) in hits[..num_groups].iter().enumerate() {
-        if group_hits >= min_hits && (group_hits as f64 / total_kmers as f64) >= min_fraction {
+        if group_hits >= abs_threshold && (group_hits as f64 / total_kmers as f64) >= rel_threshold {
             matching_mask |= 1u128 << group_idx;
             match_count += 1;
             single_match = group_idx;
@@ -637,8 +637,8 @@ pub(crate) fn classify_seq_kmers(
     hits: &mut [u64; 128],
     num_groups: usize,
     index: &ClassificationIndex,
-    min_hits: u64,
-    min_fraction: f64,
+    abs_threshold: u64,
+    rel_threshold: f64,
 ) -> (usize, Classification) {
     fill_syncmers(seq, hasher, kmer_length, smer_length, buffers);
 
@@ -676,7 +676,7 @@ pub(crate) fn classify_seq_kmers(
         _ => panic!("Mismatch between SyncmerVec and ClassificationIndex types"),
     }
 
-    let classification = classify_seq(hits, num_groups, total_kmers, min_hits, min_fraction);
+    let classification = classify_seq(hits, num_groups, total_kmers, abs_threshold, rel_threshold);
 
     (total_kmers, classification)
 }
@@ -715,8 +715,8 @@ struct ClassifySummaryProcessor {
     hasher: KmerHasher,
     index: Arc<ClassificationIndex>,
     num_groups: usize,
-    min_hits: u64,
-    min_fraction: f64,
+    abs_threshold: u64,
+    rel_threshold: f64,
 
     buffers: Buffers,
     hits: [u64; 128],
@@ -742,8 +742,8 @@ impl ClassifySummaryProcessor {
         smer_length: u8,
         index: Arc<ClassificationIndex>,
         num_groups: usize,
-        min_hits: u64,
-        min_fraction: f64,
+        abs_threshold: u64,
+        rel_threshold: f64,
         global: Arc<Mutex<GlobalClassifyState>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         start_time: Instant,
@@ -761,8 +761,8 @@ impl ClassifySummaryProcessor {
             hasher: KmerHasher::new(smer_length as usize),
             index,
             num_groups,
-            min_hits,
-            min_fraction,
+            abs_threshold,
+            rel_threshold,
             buffers,
             hits: [0u64; 128],
             local_group_seqs: vec![0; num_groups],
@@ -805,8 +805,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifySummaryProcessor {
             &mut self.hits,
             self.num_groups,
             &self.index,
-            self.min_hits,
-            self.min_fraction,
+            self.abs_threshold,
+            self.rel_threshold,
         );
 
         match classification {
@@ -883,8 +883,8 @@ struct ClassifyPerSeqProcessor {
     index: Arc<ClassificationIndex>,
     num_groups: usize,
     group_names: Arc<Vec<String>>,
-    min_hits: u64,
-    min_fraction: f64,
+    abs_threshold: u64,
+    rel_threshold: f64,
     sample_name: String,
 
     buffers: Buffers,
@@ -908,8 +908,8 @@ impl ClassifyPerSeqProcessor {
         index: Arc<ClassificationIndex>,
         num_groups: usize,
         group_names: Arc<Vec<String>>,
-        min_hits: u64,
-        min_fraction: f64,
+        abs_threshold: u64,
+        rel_threshold: f64,
         sample_name: String,
         output_writer: Arc<Mutex<BufWriter<Box<dyn Write + Send>>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
@@ -930,8 +930,8 @@ impl ClassifyPerSeqProcessor {
             index,
             num_groups,
             group_names,
-            min_hits,
-            min_fraction,
+            abs_threshold,
+            rel_threshold,
             sample_name,
             buffers,
             hits: [0u64; 128],
@@ -972,8 +972,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyPerSeqProcessor {
             &mut self.hits,
             self.num_groups,
             &self.index,
-            self.min_hits,
-            self.min_fraction,
+            self.abs_threshold,
+            self.rel_threshold,
         );
 
         use std::fmt::Write as FmtWrite;
@@ -1063,13 +1063,13 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             .limit_bp
             .map_or(String::new(), |v| format!(", limit_bp={}", v));
         eprintln!(
-            "Skope v{}; mode: classify (from directory); options: k={}, s={}, threads={}, min_hits={}, min_fraction={:.2}{}",
+            "Skope v{}; mode: classify (from directory); options: k={}, s={}, threads={}, abs_threshold={}, rel_threshold={:.2}{}",
             version,
             config.kmer_length,
             config.smer_length,
             config.threads,
-            config.min_hits,
-            config.min_fraction,
+            config.abs_threshold,
+            config.rel_threshold,
             limit_str
         );
 
@@ -1087,8 +1087,8 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             .limit_bp
             .map_or(String::new(), |v| format!(", limit_bp={}", v));
         eprintln!(
-            "Skope v{}; mode: classify (from index); options: threads={}, min_hits={}, min_fraction={:.2}{}",
-            version, config.threads, config.min_hits, config.min_fraction, limit_str
+            "Skope v{}; mode: classify (from index); options: threads={}, abs_threshold={}, rel_threshold={:.2}{}",
+            version, config.threads, config.abs_threshold, config.rel_threshold, limit_str
         );
 
         let load_start = Instant::now();
@@ -1164,8 +1164,8 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                     Arc::clone(&index),
                     num_groups,
                     Arc::clone(&group_names),
-                    config.min_hits,
-                    config.min_fraction,
+                    config.abs_threshold,
+                    config.rel_threshold,
                     sample_name.clone(),
                     Arc::clone(&writer),
                     Arc::clone(&global_stats),
@@ -1225,8 +1225,8 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                     smer_length,
                     &index,
                     num_groups,
-                    config.min_hits,
-                    config.min_fraction,
+                    config.abs_threshold,
+                    config.rel_threshold,
                     config.threads,
                     config.quiet || is_multisample,
                     config.limit_bp,
@@ -1354,8 +1354,8 @@ fn process_sample_summary(
     smer_length: u8,
     index: &Arc<ClassificationIndex>,
     num_groups: usize,
-    min_hits: u64,
-    min_fraction: f64,
+    abs_threshold: u64,
+    rel_threshold: f64,
     threads: usize,
     quiet: bool,
     limit_bp: Option<u64>,
@@ -1382,8 +1382,8 @@ fn process_sample_summary(
             smer_length,
             Arc::clone(index),
             num_groups,
-            min_hits,
-            min_fraction,
+            abs_threshold,
+            rel_threshold,
             Arc::clone(&global),
             spinner.clone(),
             file_start,

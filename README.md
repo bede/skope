@@ -93,38 +93,40 @@ Arguments:
   <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
 
 Options:
-  -k, --kmer-length <KMER_LENGTH>
+  -k, --kmer <K>
           K-mer length (1-61) [default: 31]
-      --smer-length <SMER_LENGTH>
+  -s, --smer <S>
           S-mer length used for syncmer selection (s < k, s must be odd) [default: 9]
-  -a, --abundance-thresholds <ABUNDANCE_THRESHOLDS>
-          Comma-separated additional abundance thresholds for containment estimation [default: 10]
+  -i, --individual
+          Treat each fastx record as separate target (default: merge records into one target named after file)
   -c, --confidence
           Report confidence intervals, ANI estimates, and patchiness columns
   -d, --discriminatory
           Consider only syncmers unique to each target
-  -i, --individual
-          Treat each fastx record as separate target (default: merge records into one target named after file)
-  -t, --threads <THREADS>
-          Number of execution threads (0 = auto) [default: 8]
-  -l, --limit <LIMIT>
-          Terminate processing after approximately this many bases (e.g. 50M, 10G)
-  -o, --output <OUTPUT>
-          Path to output file (- for stdout) [default: -]
-  -n, --names <SAMPLE_NAMES>
-          Comma-separated sample names (default is file/dir name without extension)
-  -S, --sort <SORT>
-          Sort displayed results: c=containment (descending), t=target, s=sample, o=original [default: c] [possible values: c, t, o, s]
-  -q, --quiet
-          Suppress progress reporting
-      --no-total
-          Suppress TOTAL summary rows in output
-      --dump-syncmers <DUMP_SYNCMERS>
-          Dump selected target syncmers to TSV file (target, position, kmer)
-  -b, --background <BACKGROUND>
-          Path to fastx file(s) whose syncmers we wish to drop from our targets
   -p, --positions
           Collect syncmer positions (implied by --confidence and --dump-syncmers)
+  -f, --fraction <FLOAT>
+          Fraction of target syncmers to keep [0, 1] [default: 1]
+  -a, --abundance-thresholds <INT,...>
+          Comma-separated additional abundance thresholds for containment estimation [default: 10]
+  -b, --background <BACKGROUND>
+          Path to fastx file(s) whose syncmers we wish to drop from our targets
+  -l, --limit <BASES>
+          Terminate processing after approximately this many bases (e.g. 50M, 10G)
+  -t, --threads <THREADS>
+          Number of execution threads (0 = auto) [default: 8]
+  -o, --output <OUTPUT>
+          Path to output file (- for stdout) [default: -]
+  -n, --names <NAME,...>
+          Comma-separated sample names (default is file/dir name without extension)
+      --sort <SORT>
+          Sort displayed results: containment, target, sample, input [default: containment] [possible values: containment, target, sample, input]
+      --dump-syncmers <FILE>
+          Dump selected target syncmers to TSV file (target, position, kmer)
+      --no-total
+          Suppress TOTAL summary rows in output
+  -q, --quiet
+          Suppress progress reporting
   -h, --help
           Print help
 ```
@@ -133,7 +135,7 @@ Options:
 
 ```bash
 $ skope classify -h
-Classify sequences into groups by their syncmer content
+Classify sequences into groups by syncmer content
 
 Usage: skope classify [OPTIONS] <INDEX> <SAMPLES>...
 
@@ -142,20 +144,18 @@ Arguments:
   <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin)
 
 Options:
-  -k, --kmer-length <KMER_LENGTH>    K-mer length (only used when index is a directory) (1-61, must be odd) [default: 31]
-  -s, --smer-length <SMER_LENGTH>    S-mer length (only used when index is a directory) [default: 9]
-  -m, --min-hits <MIN_HITS>          Minimum syncmer hits to classify a sequence to a group [default: 1]
-  -r, --min-fraction <MIN_FRACTION>  Minimum fraction of sequence syncmers hitting a group [default: 0]
-  -d, --discriminatory               Consider only syncmers unique to each group
-  -t, --threads <THREADS>            Number of execution threads (0 = auto) [default: 8]
-  -l, --limit <LIMIT>                Terminate processing after approximately this many bases (e.g. 50M, 10G)
-  -o, --output <OUTPUT>              Path to output file (- for stdout) [default: -]
-      --per-seq                      Output per-sequence classifications instead of summary
-  -n, --names <SAMPLE_NAMES>         Comma-separated sample names (default is file/dir name without extension)
-  -q, --quiet                        Suppress progress reporting
-  -h, --help                         Print help
-(base) bede@zizzle skope % 
-
+  -k, --kmer <K>                       K-mer length (only used when index is a directory) (1-61, must be odd) [default: 31]
+  -s, --smer <S>                       S-mer length (only used when index is a directory) [default: 9]
+  -d, --discriminatory                 Consider only syncmers unique to each group
+  -a, --abs-threshold <ABS_THRESHOLD>  Minimum absolute number of syncmer hits for a match [default: 1]
+  -r, --rel-threshold <REL_THRESHOLD>  Minimum relative proportion (0.0-1.0) of syncmer hits for a match [default: 0]
+  -l, --limit <BASES>                  Terminate processing after approximately this many bases (e.g. 50M, 10G)
+  -t, --threads <THREADS>              Number of execution threads (0 = auto) [default: 8]
+  -o, --output <OUTPUT>                Path to output file (- for stdout) [default: -]
+  -n, --names <NAME,...>               Comma-separated sample names (default is file/dir name without extension)
+      --per-seq                        Output per-sequence classifications instead of summary
+  -q, --quiet                          Suppress progress reporting
+  -h, --help                           Print help
 ```
 
 ## Confidence and diagnostics

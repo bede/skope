@@ -54,8 +54,8 @@ pub struct LengthHistogramParameters {
     pub kmer_length: u8,
     pub smer_length: u8,
     pub threads: usize,
-    pub min_hits: u64,
-    pub min_fraction: f64,
+    pub abs_threshold: u64,
+    pub rel_threshold: f64,
     pub discriminatory: bool,
 }
 
@@ -67,8 +67,8 @@ pub struct LengthHistogramConfig {
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
     pub smer_length: u8,
-    pub min_hits: u64,
-    pub min_fraction: f64,
+    pub abs_threshold: u64,
+    pub rel_threshold: f64,
     pub discriminatory: bool,
     pub threads: usize,
     pub output_path: Option<PathBuf>,
@@ -100,8 +100,8 @@ struct LengthHistogramProcessor {
     hasher: KmerHasher,
     index: Arc<ClassificationIndex>,
     num_groups: usize,
-    min_hits: u64,
-    min_fraction: f64,
+    abs_threshold: u64,
+    rel_threshold: f64,
     include_all_seqs: bool,
 
     // Local buffers
@@ -125,8 +125,8 @@ impl LengthHistogramProcessor {
         smer_length: u8,
         index: Arc<ClassificationIndex>,
         num_groups: usize,
-        min_hits: u64,
-        min_fraction: f64,
+        abs_threshold: u64,
+        rel_threshold: f64,
         include_all_seqs: bool,
         global_buckets: Arc<Vec<Mutex<BucketState>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
@@ -149,8 +149,8 @@ impl LengthHistogramProcessor {
             hasher: KmerHasher::new(smer_length as usize),
             index,
             num_groups,
-            min_hits,
-            min_fraction,
+            abs_threshold,
+            rel_threshold,
             include_all_seqs,
             buffers,
             hits: [0u64; 128],
@@ -210,8 +210,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
                 &mut self.hits,
                 self.num_groups,
                 &self.index,
-                self.min_hits,
-                self.min_fraction,
+                self.abs_threshold,
+                self.rel_threshold,
             );
             match classification {
                 Classification::Classified(g) => g,
@@ -273,8 +273,8 @@ fn process_seqs_file(
     num_groups: usize,
     kmer_length: u8,
     smer_length: u8,
-    min_hits: u64,
-    min_fraction: f64,
+    abs_threshold: u64,
+    rel_threshold: f64,
     threads: usize,
     quiet: bool,
     include_all_seqs: bool,
@@ -306,8 +306,8 @@ fn process_seqs_file(
         smer_length,
         index,
         num_groups,
-        min_hits,
-        min_fraction,
+        abs_threshold,
+        rel_threshold,
         include_all_seqs,
         Arc::clone(&global_buckets),
         Arc::clone(&global_stats),
@@ -375,8 +375,8 @@ fn process_single_sample(
             num_groups,
             kmer_length,
             smer_length,
-            config.min_hits,
-            config.min_fraction,
+            config.abs_threshold,
+            config.rel_threshold,
             config.threads,
             quiet_sample,
             config.include_all_seqs,
@@ -444,8 +444,8 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
 
     if !config.include_all_seqs {
         options.push_str(&format!(
-            ", min_hits={}, min_fraction={:.2}",
-            config.min_hits, config.min_fraction
+            ", abs_threshold={}, rel_threshold={:.2}",
+            config.abs_threshold, config.rel_threshold
         ));
         if config.discriminatory {
             options.push_str(", discriminatory");
@@ -605,8 +605,8 @@ pub fn run_length_histogram_analysis(config: &LengthHistogramConfig) -> Result<(
             kmer_length,
             smer_length,
             threads: config.threads,
-            min_hits: config.min_hits,
-            min_fraction: config.min_fraction,
+            abs_threshold: config.abs_threshold,
+            rel_threshold: config.rel_threshold,
             discriminatory: config.discriminatory,
         },
         samples: sample_results,

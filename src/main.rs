@@ -126,8 +126,8 @@ fn expand_background_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Parse sample string with K/M/G/T suffix into bp count
-fn parse_sample(s: &str) -> Result<u64> {
+/// Parse a base-count string with K/M/G/T suffix into a bp count
+fn parse_bases(s: &str) -> Result<u64> {
     let s = s.trim().to_uppercase();
     let (num_str, multiplier) = if s.ends_with('T') {
         (&s[..s.len() - 1], 1_000_000_000_000u64)
@@ -143,7 +143,7 @@ fn parse_sample(s: &str) -> Result<u64> {
 
     let num: u64 = num_str
         .parse()
-        .with_context(|| format!("Invalid sample value: {}", s))?;
+        .with_context(|| format!("Invalid base count: {}", s))?;
 
     Ok(num * multiplier)
 }
@@ -164,11 +164,11 @@ enum IndexCommands {
         groups: PathBuf,
 
         /// K-mer length (1-61, must be odd)
-        #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
+        #[arg(short = 'k', long = "kmer", value_name = "K", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
         /// S-mer length used for open syncmer selection (s < k, s must be odd)
-        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
         /// Number of execution threads (0 = auto)
@@ -194,11 +194,11 @@ enum IndexCommands {
         background: Vec<PathBuf>,
 
         /// K-mer length (1-61)
-        #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
+        #[arg(short = 'k', long = "kmer", value_name = "K", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
         /// S-mer length used for open syncmer selection (s < k, s must be odd)
-        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
         /// Treat each fastx record as a separate target (default: merge records into one target)
@@ -210,7 +210,7 @@ enum IndexCommands {
         positions: bool,
 
         /// Fraction of target syncmers to keep [0, 1]
-        #[arg(short = 'f', long = "fraction", default_value_t = 1.0)]
+        #[arg(short = 'f', long = "fraction", value_name = "FLOAT", default_value_t = 1.0)]
         fraction: f64,
 
         /// Number of execution threads (0 = auto)
@@ -244,23 +244,17 @@ enum Commands {
         #[arg(required = true)]
         samples: Vec<PathBuf>,
 
-        // Algorithm parameters
         /// K-mer length (1-61)
-        #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
+        #[arg(short = 'k', long = "kmer", value_name = "K", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
         /// S-mer length used for syncmer selection (s < k, s must be odd)
-        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
-        /// Comma-separated additional abundance thresholds for containment estimation
-        #[arg(
-            short = 'a',
-            long = "abundance-thresholds",
-            value_delimiter = ',',
-            default_value = "10"
-        )]
-        abundance_thresholds: Vec<usize>,
+        /// Treat each fastx record as separate target (default: merge records into one target named after file)
+        #[arg(short = 'i', long = "individual", default_value_t = false)]
+        individual: bool,
 
         /// Report confidence intervals, ANI estimates, and patchiness columns
         #[arg(short = 'c', long = "confidence", default_value_t = false)]
@@ -270,55 +264,59 @@ enum Commands {
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
-        /// Treat each fastx record as separate target (default: merge records into one target named after file)
-        #[arg(short = 'i', long = "individual", default_value_t = false)]
-        individual: bool,
-
-        // Processing options
-        /// Number of execution threads (0 = auto)
-        #[arg(short = 't', long = "threads", default_value_t = 8)]
-        threads: usize,
-
-        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
-        #[arg(short = 'l', long = "limit")]
-        limit: Option<String>,
-
-        // Output options
-        /// Path to output file (- for stdout)
-        #[arg(short = 'o', long = "output", default_value = "-")]
-        output: String,
-
-        /// Comma-separated sample names (default is file/dir name without extension)
-        #[arg(short = 'n', long = "names", value_delimiter = ',')]
-        sample_names: Option<Vec<String>>,
-
-        /// Sort displayed results: c=containment, t=target, s=sample, o=original
-        #[arg(short = 'S', long = "sort", default_value = "c", value_parser = ["c", "t", "o", "s"])]
-        sort: String,
-
-        /// Suppress progress reporting
-        #[arg(short = 'q', long = "quiet", default_value_t = false)]
-        quiet: bool,
-
-        /// Suppress TOTAL summary rows in output
-        #[arg(long = "no-total", default_value_t = false)]
-        no_total: bool,
-
-        /// Dump selected target syncmers to TSV file (target, position, kmer)
-        #[arg(long = "dump-syncmers")]
-        dump_syncmers: Option<String>,
-
-        /// Path to fastx file(s) whose syncmers we wish to drop from our targets
-        #[arg(short = 'b', long = "background")]
-        background: Vec<PathBuf>,
-
         /// Collect syncmer positions (implied by --confidence and --dump-syncmers)
         #[arg(short = 'p', long = "positions", default_value_t = false)]
         positions: bool,
 
         /// Fraction of target syncmers to keep [0, 1]
-        #[arg(short = 'f', long = "fraction", default_value_t = 1.0)]
+        #[arg(short = 'f', long = "fraction", value_name = "FLOAT", default_value_t = 1.0)]
         fraction: f64,
+
+        /// Comma-separated additional abundance thresholds for containment estimation
+        #[arg(
+            short = 'a',
+            long = "abundance-thresholds",
+            value_name = "INT,...",
+            value_delimiter = ',',
+            default_value = "10"
+        )]
+        abundance_thresholds: Vec<usize>,
+
+        /// Path to fastx file(s) whose syncmers we wish to drop from our targets
+        #[arg(short = 'b', long = "background")]
+        background: Vec<PathBuf>,
+
+        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
+        #[arg(short = 'l', long = "limit", value_name = "BASES")]
+        limit: Option<String>,
+
+        /// Number of execution threads (0 = auto)
+        #[arg(short = 't', long = "threads", default_value_t = 8)]
+        threads: usize,
+
+        /// Path to output file (- for stdout)
+        #[arg(short = 'o', long = "output", default_value = "-")]
+        output: String,
+
+        /// Comma-separated sample names (default is file/dir name without extension)
+        #[arg(short = 'n', long = "names", value_name = "NAME,...", value_delimiter = ',')]
+        sample_names: Option<Vec<String>>,
+
+        /// Sort displayed results: containment, target, sample, input
+        #[arg(long = "sort", default_value = "containment", value_parser = ["containment", "target", "sample", "input"])]
+        sort: String,
+
+        /// Dump selected target syncmers to TSV file (target, position, kmer)
+        #[arg(long = "dump-syncmers", value_name = "FILE")]
+        dump_syncmers: Option<PathBuf>,
+
+        /// Suppress TOTAL summary rows in output
+        #[arg(long = "no-total", default_value_t = false)]
+        no_total: bool,
+
+        /// Suppress progress reporting
+        #[arg(short = 'q', long = "quiet", default_value_t = false)]
+        quiet: bool,
     },
 
     /// Classify sequences into groups by syncmer content
@@ -331,44 +329,44 @@ enum Commands {
         samples: Vec<PathBuf>,
 
         /// K-mer length (only used when index is a directory) (1-61, must be odd)
-        #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
+        #[arg(short = 'k', long = "kmer", value_name = "K", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
         /// S-mer length (only used when index is a directory)
-        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
-
-        /// Minimum syncmer hits to classify a sequence to a group
-        #[arg(short = 'm', long = "min-hits", default_value_t = 1)]
-        min_hits: u64,
-
-        /// Minimum fraction of sequence syncmers hitting a group
-        #[arg(short = 'r', long = "min-fraction", default_value_t = 0.0)]
-        min_fraction: f64,
 
         /// Consider only syncmers unique to each group
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
+        /// Minimum absolute number of syncmer hits for a match
+        #[arg(short = 'a', long = "abs-threshold", value_name = "ABS_THRESHOLD", default_value_t = 1)]
+        abs_threshold: u64,
+
+        /// Minimum relative proportion (0.0-1.0) of syncmer hits for a match
+        #[arg(short = 'r', long = "rel-threshold", value_name = "REL_THRESHOLD", default_value_t = 0.0)]
+        rel_threshold: f64,
+
+        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
+        #[arg(short = 'l', long = "limit", value_name = "BASES")]
+        limit: Option<String>,
+
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
-
-        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
-        #[arg(short = 'l', long = "limit")]
-        limit: Option<String>,
 
         /// Path to output file (- for stdout)
         #[arg(short = 'o', long = "output", default_value = "-")]
         output: String,
 
+        /// Comma-separated sample names (default is file/dir name without extension)
+        #[arg(short = 'n', long = "names", value_name = "NAME,...", value_delimiter = ',')]
+        sample_names: Option<Vec<String>>,
+
         /// Output per-sequence classifications instead of summary
         #[arg(long = "per-seq", default_value_t = false)]
         per_seq: bool,
-
-        /// Comma-separated sample names (default is file/dir name without extension)
-        #[arg(short = 'n', long = "names", value_delimiter = ',')]
-        sample_names: Option<Vec<String>>,
 
         /// Suppress progress reporting
         #[arg(short = 'q', long = "quiet", default_value_t = false)]
@@ -386,33 +384,33 @@ enum Commands {
 
         // Algorithm parameters
         /// K-mer length (only used when index is a directory or -) (1-61, must be odd)
-        #[arg(short = 'k', long = "kmer-length", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
+        #[arg(short = 'k', long = "kmer", value_name = "K", default_value_t = DEFAULT_KMER_LENGTH, value_parser = clap::value_parser!(u8).range(1..=61))]
         kmer_length: u8,
 
         /// S-mer length used for open syncmer selection (only used when index is a directory or -)
-        #[arg(long = "smer-length", default_value_t = DEFAULT_SMER_LENGTH)]
+        #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
-
-        /// Minimum syncmer hits to classify a sequence to a group
-        #[arg(short = 'm', long = "min-hits", default_value_t = 1)]
-        min_hits: u64,
-
-        /// Minimum fraction of sequence syncmers hitting a group
-        #[arg(short = 'r', long = "min-fraction", default_value_t = 0.0)]
-        min_fraction: f64,
 
         /// Consider only syncmers unique to each group
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
+        /// Minimum absolute number of syncmer hits for a match
+        #[arg(short = 'a', long = "abs-threshold", value_name = "ABS_THRESHOLD", default_value_t = 1)]
+        abs_threshold: u64,
+
+        /// Minimum relative proportion (0.0-1.0) of syncmer hits for a match
+        #[arg(short = 'r', long = "rel-threshold", value_name = "REL_THRESHOLD", default_value_t = 0.0)]
+        rel_threshold: f64,
+
         // Processing options
+        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
+        #[arg(short = 'l', long = "limit", value_name = "BASES")]
+        limit: Option<String>,
+
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
-
-        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
-        #[arg(short = 'l', long = "limit")]
-        limit: Option<String>,
 
         // Output options
         /// Path to output file (- for stdout)
@@ -420,7 +418,7 @@ enum Commands {
         output: String,
 
         /// Comma-separated sample names (default is file/dir name without extension)
-        #[arg(short = 'n', long = "names", value_delimiter = ',')]
+        #[arg(short = 'n', long = "names", value_name = "NAME,...", value_delimiter = ',')]
         sample_names: Option<Vec<String>>,
 
         /// Suppress progress reporting
@@ -540,8 +538,8 @@ fn main() -> Result<()> {
             sample_names,
             kmer_length,
             smer_length,
-            min_hits,
-            min_fraction,
+            abs_threshold,
+            rel_threshold,
             discriminatory,
             threads,
             limit,
@@ -583,7 +581,7 @@ fn main() -> Result<()> {
             }
 
             let limit_bp = if let Some(s) = limit {
-                Some(parse_sample(s)?)
+                Some(parse_bases(s)?)
             } else {
                 None
             };
@@ -594,8 +592,8 @@ fn main() -> Result<()> {
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
                 smer_length: *smer_length,
-                min_hits: *min_hits,
-                min_fraction: *min_fraction,
+                abs_threshold: *abs_threshold,
+                rel_threshold: *rel_threshold,
                 threads: *threads,
                 limit_bp,
                 output_path: if output == "-" {
@@ -680,17 +678,17 @@ fn main() -> Result<()> {
 
             // Parse limit if provided
             let limit_bp = if let Some(s) = limit {
-                Some(parse_sample(s)?)
+                Some(parse_bases(s)?)
             } else {
                 None
             };
 
             // Parse sort order
             let sort_order = match sort.as_str() {
-                "o" => skope::SortOrder::Original,
-                "t" => skope::SortOrder::Target,
-                "s" => skope::SortOrder::Sample,
-                "c" => skope::SortOrder::Containment,
+                "input" => skope::SortOrder::Original,
+                "target" => skope::SortOrder::Target,
+                "sample" => skope::SortOrder::Sample,
+                "containment" => skope::SortOrder::Containment,
                 _ => unreachable!("clap should have validated the sort order"),
             };
 
@@ -714,7 +712,7 @@ fn main() -> Result<()> {
                 individual: *individual,
                 limit_bp,
                 sort_order,
-                dump_syncmers_path: dump_syncmers.as_ref().map(PathBuf::from),
+                dump_syncmers_path: dump_syncmers.clone(),
                 no_total: *no_total,
                 confidence: *confidence,
                 fraction: *fraction,
@@ -730,8 +728,8 @@ fn main() -> Result<()> {
             sample_names,
             kmer_length,
             smer_length,
-            min_hits,
-            min_fraction,
+            abs_threshold,
+            rel_threshold,
             discriminatory,
             threads,
             output,
@@ -776,7 +774,7 @@ fn main() -> Result<()> {
 
             // Parse limit if provided
             let limit_bp = if let Some(s) = limit {
-                Some(parse_sample(s)?)
+                Some(parse_bases(s)?)
             } else {
                 None
             };
@@ -790,8 +788,8 @@ fn main() -> Result<()> {
                 sample_names: derived_sample_names,
                 kmer_length: *kmer_length,
                 smer_length: *smer_length,
-                min_hits: *min_hits,
-                min_fraction: *min_fraction,
+                abs_threshold: *abs_threshold,
+                rel_threshold: *rel_threshold,
                 discriminatory: *discriminatory,
                 threads: *threads,
                 output_path: if output == "-" {
