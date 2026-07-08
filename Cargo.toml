@@ -9,6 +9,7 @@ homepage = "https://github.com/bede/skope"
 keywords = ["bioinformatics", "genomics"]
 categories = ["science", "command-line-utilities"]
 license = "MIT"
+exclude = ["data/*", "plot/*", "*.pdf", "*.png"]
 
 [lints.clippy]
 too_many_arguments = "allow"
@@ -56,3 +57,6 @@ codegen-units = 1
 panic = "abort"
 strip = false
 debug = false
+
+[profile.dist]
+inherits = "release"
