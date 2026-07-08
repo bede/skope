@@ -252,7 +252,7 @@ enum Commands {
         #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
-        /// Treat each fastx record as separate target (default: merge records into one target named after file)
+        /// Treat each fastx record as separate target (default: merge records into one target)
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
@@ -302,7 +302,7 @@ enum Commands {
         #[arg(short = 'n', long = "names", value_name = "NAME,...", value_delimiter = ',')]
         sample_names: Option<Vec<String>>,
 
-        /// Sort displayed results: containment, target, sample, input
+        /// Sort results
         #[arg(long = "sort", default_value = "containment", value_parser = ["containment", "target", "sample", "input"])]
         sort: String,
 
