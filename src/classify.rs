@@ -1,7 +1,8 @@
-use crate::syncmers::{Buffers, KmerHasher, SyncmerVec, fill_syncmers};
+use crate::syncmers::{Buffers, Kdust, KmerHasher, SyncmerVec, fill_syncmers};
 use crate::{
     FixedRapidHasher, IndexKind, ProcessingStats, StdinTargets, TargetGroup, TargetSource,
-    create_spinner, format_bp, format_bp_per_sec, handle_process_result, reader_for_path,
+    check_index_complexity, complexity_info_line, create_spinner, format_bp, format_bp_per_sec,
+    handle_process_result, reader_for_path,
     reader_with_inferred_batch_size, resolve_targets, sample_limit_reached_io_error,
 };
 use anyhow::{Context, Result};
@@ -23,7 +24,8 @@ const CLASSIFICATION_INDEX_VERSION: u8 = 1;
 pub const MAX_GROUPS: usize = 128;
 /// Marker for `--individual` group-cap errors crossing the paraseq boundary
 const TOO_MANY_RECORDS_MSG: &str = "Too many records for --individual";
-type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8, u8); // magic, kind, version, k, s, num_groups
+// magic, kind, version, k, s, num_groups, complexity (kdust)
+type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, f32);
 
 /// Classification index mapping syncmers to group bitmasks (up to 128 groups)
 #[derive(Clone)]
@@ -89,6 +91,7 @@ pub struct BuildClassifyConfig {
     pub individual: bool,
     pub kmer_length: u8,
     pub smer_length: u8,
+    pub complexity: f32,
     pub threads: usize,
     pub output_path: Option<PathBuf>,
     pub quiet: bool,
@@ -101,6 +104,7 @@ pub struct ClassifyConfig {
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
     pub smer_length: u8,
+    pub complexity: f32,
     pub abs_threshold: u64,
     pub rel_threshold: f64,
     pub threads: usize,
@@ -117,6 +121,7 @@ struct GroupKmerProcessor {
     kmer_length: u8,
     smer_length: u8,
     hasher: KmerHasher,
+    kdust: Kdust,
     buffers: Buffers,
     group_bit: u128,
 
@@ -142,6 +147,7 @@ impl GroupKmerProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
+        kdust: Kdust,
         group_bit: u128,
         global_map_u64: Arc<Mutex<Option<HashMap<u64, u128, FixedRapidHasher>>>>,
         global_map_u128: Arc<Mutex<Option<HashMap<u128, u128, FixedRapidHasher>>>>,
@@ -165,6 +171,7 @@ impl GroupKmerProcessor {
             kmer_length,
             smer_length,
             hasher: KmerHasher::new(smer_length as usize),
+            kdust,
             buffers,
             group_bit,
             local_map_u64,
@@ -210,6 +217,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
             self.smer_length,
             &mut self.buffers,
         );
+        self.kdust.retain(&mut self.buffers.syncmers, None);
 
         match &self.buffers.syncmers {
             SyncmerVec::U64(vec) => {
@@ -264,6 +272,7 @@ pub(crate) fn build_classification_index(
     individual: bool,
     kmer_length: u8,
     smer_length: u8,
+    complexity: f32,
     threads: usize,
     quiet: bool,
 ) -> Result<(ClassificationIndex, Vec<String>)> {
@@ -300,11 +309,14 @@ pub(crate) fn build_classification_index(
             Arc::new(Mutex::new(None))
         };
 
+    let kdust = Kdust::from_threshold(complexity, kmer_length);
+
     if individual {
         let names = build_individual_groups(
             groups,
             kmer_length,
             smer_length,
+            kdust,
             Arc::clone(&global_map_u64),
             Arc::clone(&global_map_u128),
             quiet,
@@ -325,6 +337,7 @@ pub(crate) fn build_classification_index(
             let mut processor = GroupKmerProcessor::new(
                 kmer_length,
                 smer_length,
+                kdust,
                 group_bit,
                 Arc::clone(&global_map_u64),
                 Arc::clone(&global_map_u128),
@@ -424,6 +437,7 @@ fn build_individual_groups(
     groups: &[TargetGroup],
     kmer_length: u8,
     smer_length: u8,
+    kdust: Kdust,
     global_map_u64: GlobalMap<u64>,
     global_map_u128: GlobalMap<u128>,
     quiet: bool,
@@ -446,6 +460,7 @@ fn build_individual_groups(
     let mut processor = GroupKmerProcessor::new(
         kmer_length,
         smer_length,
+        kdust,
         0,
         global_map_u64,
         global_map_u128,
@@ -486,9 +501,13 @@ pub fn run_build_classify(config: &BuildClassifyConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
 
+    let mut options = String::new();
+    if config.complexity > 0.0 {
+        options.push_str(&format!(", complexity={}", config.complexity));
+    }
     eprintln!(
-        "Skope v{}; mode: index build; options: k={}, s={}, threads={}",
-        version, config.kmer_length, config.smer_length, config.threads
+        "Skope v{}; mode: index build; options: k={}, s={}, threads={}{}",
+        version, config.kmer_length, config.smer_length, config.threads, options
     );
 
     let source = resolve_targets(
@@ -509,6 +528,7 @@ pub fn run_build_classify(config: &BuildClassifyConfig) -> Result<()> {
         source.splits_records(config.individual),
         config.kmer_length,
         config.smer_length,
+        config.complexity,
         config.threads,
         config.quiet,
     )?;
@@ -518,6 +538,7 @@ pub fn run_build_classify(config: &BuildClassifyConfig) -> Result<()> {
         &group_names,
         config.kmer_length,
         config.smer_length,
+        config.complexity,
         config.output_path.as_ref(),
     )?;
 
@@ -535,6 +556,7 @@ fn save_index(
     group_names: &[String],
     kmer_length: u8,
     smer_length: u8,
+    complexity: f32,
     output_path: Option<&PathBuf>,
 ) -> Result<()> {
     let writer: Box<dyn Write> = if let Some(path) = output_path {
@@ -551,6 +573,7 @@ fn save_index(
         kmer_length,
         smer_length,
         group_names.len() as u8,
+        complexity,
     );
 
     let header_bytes = wincode::serialize(&header).context("Failed to encode index header")?;
@@ -588,7 +611,7 @@ fn save_index(
 /// Print human-readable metadata for a classification index (`skope index info`)
 pub fn print_classification_index_info(path: &Path) -> Result<()> {
     let mut reader = BufReader::new(File::open(path)?);
-    let (magic, kind, version, kmer_length, smer_length, num_groups): ClassificationIndexHeader =
+    let (magic, kind, version, kmer_length, smer_length, num_groups, complexity): ClassificationIndexHeader =
         wincode::deserialize_from(&mut reader).context("Failed to decode index header")?;
     if &magic != INDEX_MAGIC || IndexKind::from_byte(kind) != Some(IndexKind::Classify) {
         return Err(anyhow::anyhow!(
@@ -619,6 +642,7 @@ pub fn print_classification_index_info(path: &Path) -> Result<()> {
     eprintln!("  S-mer length (s): {smer_length}");
     eprintln!("  Groups: {num_groups}");
     eprintln!("  Distinct syncmers: {count}");
+    eprintln!("{}", complexity_info_line(complexity));
     for name in &group_names {
         eprintln!("    - {name}");
     }
@@ -627,14 +651,14 @@ pub fn print_classification_index_info(path: &Path) -> Result<()> {
 
 pub fn load_classification_index(
     path: &Path,
-) -> Result<(ClassificationIndex, Vec<String>, u8, u8)> {
+) -> Result<(ClassificationIndex, Vec<String>, u8, u8, f32)> {
     let file_bytes =
         fs::read(path).with_context(|| format!("Failed to open index file: {}", path.display()))?;
     let mut cursor = wincode::io::Cursor::new(file_bytes.as_slice());
 
     let header: ClassificationIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to decode index header")?;
-    let (magic, kind, format_version, kmer_length, smer_length, num_groups) = header;
+    let (magic, kind, format_version, kmer_length, smer_length, num_groups, complexity) = header;
 
     if &magic != INDEX_MAGIC || IndexKind::from_byte(kind) != Some(IndexKind::Classify) {
         return Err(anyhow::anyhow!(
@@ -721,7 +745,7 @@ pub fn load_classification_index(
         ClassificationIndex::U128(map)
     };
 
-    Ok((index, group_names, kmer_length, smer_length))
+    Ok((index, group_names, kmer_length, smer_length, complexity))
 }
 
 /// Classify one sequecne using per-group hit counts
@@ -1108,9 +1132,13 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         source,
         TargetSource::Index(_)
     ) {
-        let limit_str = config
-            .limit_bp
-            .map_or(String::new(), |v| format!(", limit_bp={}", v));
+        let mut options = String::new();
+        if config.complexity > 0.0 {
+            options.push_str(&format!(", complexity={}", config.complexity));
+        }
+        if let Some(limit) = config.limit_bp {
+            options.push_str(&format!(", limit_bp={}", limit));
+        }
         eprintln!(
             "Skope v{}; mode: classify (from {}); options: k={}, s={}, threads={}, abs_threshold={}, rel_threshold={:.2}{}",
             version,
@@ -1124,7 +1152,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             config.threads,
             config.abs_threshold,
             config.rel_threshold,
-            limit_str
+            options
         );
 
         let (index, group_names) = build_classification_index(
@@ -1133,6 +1161,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             source.splits_records(config.individual),
             config.kmer_length,
             config.smer_length,
+            config.complexity,
             config.threads,
             config.quiet,
         )?;
@@ -1148,7 +1177,9 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         );
 
         let load_start = Instant::now();
-        let (index, group_names, k, s) = load_classification_index(&config.targets_path)?;
+        let (index, group_names, k, s, index_complexity) =
+            load_classification_index(&config.targets_path)?;
+        check_index_complexity(config.complexity, index_complexity)?;
 
         if !config.quiet {
             let elapsed = load_start.elapsed();

@@ -23,8 +23,8 @@ pub use length::{LengthHistogramConfig, run_lenhist};
 pub use classify::{BuildClassifyConfig, ClassifyConfig, run_build_classify, run_classification};
 
 pub use syncmers::{
-    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, FracMinHash, KmerHasher, SyncmerVec,
-    decode_u64, decode_u128, fill_syncmers, fill_syncmers_with_positions,
+    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, FracMinHash, Kdust, KmerHasher, SyncmerVec,
+    calculate_kdust, decode_u64, decode_u128, fill_syncmers, fill_syncmers_with_positions,
 };
 
 // ── Shared types ──────────────────────────────────────────────────────────────
@@ -112,6 +112,26 @@ pub fn resolve_k_s(targets: &Path, k: Option<u8>, s: Option<u8>, quiet: bool) ->
     );
     validate_k_s(k, s)?;
     Ok((k, s))
+}
+
+/// Reject a CLI complexity threshold that disagrees with a prebuilt index's.
+/// Exact comparison: a CLI-parsed f32 round-trips through the header bit-identically
+pub fn check_index_complexity(cli: f32, index: f32) -> Result<()> {
+    if cli > 0.0 && cli != index {
+        return Err(anyhow::anyhow!(
+            "--complexity {cli} conflicts with the index's complexity {index}; omit --complexity to use the index's"
+        ));
+    }
+    Ok(())
+}
+
+/// Render the `index info` complexity line for either index kind
+pub fn complexity_info_line(complexity: f32) -> String {
+    if complexity > 0.0 {
+        format!("  Complexity filter: {complexity} (kdust)")
+    } else {
+        "  Complexity filter: 0 (retain all)".to_string()
+    }
 }
 
 /// Print metadata for a skope index of either kind (`skope index info`)

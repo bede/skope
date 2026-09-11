@@ -94,6 +94,81 @@ fn rapid_mix_u128(kmer: u128) -> u64 {
     FixedRapidHasher.hash_one(kmer)
 }
 
+/// kdust: max-normalised DUST triplet score in [0,1] of a packed canonical k-mer
+#[inline]
+pub fn calculate_kdust(code: u128, kmer_length: u8) -> f32 {
+    // k=3 divides by zero, k<3 has no triplets
+    if kmer_length < 4 {
+        return 1.0;
+    }
+    let k = kmer_length as usize;
+    let mut counts = [0u8; 64];
+    let mut score = 0u32;
+    let mut tri = 0usize;
+    for i in 0..k {
+        tri = ((tri << 2) | ((code >> (2 * i)) & 0b11) as usize) & 0b11_1111;
+        if i >= 2 {
+            score += counts[tri] as u32;
+            counts[tri] += 1;
+        }
+    }
+    let l = (k - 2) as f32;
+    1.0 - score as f32 / (l * (l - 1.0) / 2.0)
+}
+
+/// Discard syncmers below a kdust threshold in [0, 1]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Kdust {
+    threshold: f32,
+    kmer_length: u8,
+}
+
+impl Kdust {
+    /// Keep all syncmers
+    pub const NONE: Kdust = Kdust {
+        threshold: 0.0,
+        kmer_length: 0,
+    };
+
+    pub fn from_threshold(threshold: f32, kmer_length: u8) -> Kdust {
+        if threshold <= 0.0 || threshold.is_nan() {
+            Kdust::NONE
+        } else {
+            Kdust {
+                threshold,
+                kmer_length,
+            }
+        }
+    }
+
+    /// Whether filtering is a no-op (retains everything)
+    #[inline(always)]
+    pub fn is_none(&self) -> bool {
+        self.threshold <= 0.0
+    }
+
+    #[inline(always)]
+    fn keeps(&self, kmer: u128) -> bool {
+        calculate_kdust(kmer, self.kmer_length) >= self.threshold
+    }
+
+    pub fn retain(&self, syncmers: &mut SyncmerVec, positions: Option<&mut Vec<usize>>) {
+        if self.is_none() {
+            return;
+        }
+        match syncmers {
+            SyncmerVec::U64(vec) => match positions {
+                Some(pos) => retain_paired(vec, pos, |&v| self.keeps(v as u128)),
+                None => vec.retain(|&v| self.keeps(v as u128)),
+            },
+            SyncmerVec::U128(vec) => match positions {
+                Some(pos) => retain_paired(vec, pos, |&v| self.keeps(v)),
+                None => vec.retain(|&v| self.keeps(v)),
+            },
+        }
+    }
+}
+
 /// Zero-cost abstraction over u64 and u128 syncmer vectors
 #[derive(Debug, Clone)]
 pub enum SyncmerVec {
@@ -392,6 +467,117 @@ mod tests {
             (realised - 0.1).abs() < 0.03,
             "realised fraction {realised}"
         );
+    }
+
+    /// Pack ASCII bases as syncmer values are stored
+    fn pack(seq: &[u8]) -> u128 {
+        seq.iter().rev().fold(0u128, |acc, &b| {
+            let bits = match b {
+                b'A' => 0,
+                b'C' => 1,
+                b'G' => 2,
+                b'T' => 3,
+                _ => panic!("non-ACGT base"),
+            };
+            (acc << 2) | bits
+        })
+    }
+
+    fn revcomp(seq: &[u8]) -> Vec<u8> {
+        seq.iter()
+            .rev()
+            .map(|&b| match b {
+                b'A' => b'T',
+                b'C' => b'G',
+                b'G' => b'C',
+                b'T' => b'A',
+                _ => panic!("non-ACGT base"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_kdust_k3_is_not_nan() {
+        // k=3 has a single triplet and would divide by zero without the guard.
+        // validate_k_s forces odd k > s >= 1, so k<3 is unreachable
+        let score = calculate_kdust(pack(b"AAA"), 3);
+        assert!(score.is_finite(), "k=3 scored {score}");
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn test_kdust_is_reverse_complement_invariant() {
+        // revcomp only relabels triplet types, so the summed score is unchanged
+        for seed in [1u64, 7, 99] {
+            let seq = pseudo_dna(31, seed);
+            let rc = revcomp(&seq);
+            assert_eq!(
+                calculate_kdust(pack(&seq), 31),
+                calculate_kdust(pack(&rc), 31)
+            );
+        }
+        let skewed = b"AAAAACCCCCAAAAAGGGGGAAAAATTTTTA";
+        assert_eq!(
+            calculate_kdust(pack(skewed), 31),
+            calculate_kdust(pack(&revcomp(skewed)), 31)
+        );
+    }
+
+    #[test]
+    fn test_kdust_scores_and_ranks_by_repetitiveness() {
+        // Bounds: every triplet identical scores 0, no repeated triplet scores 1
+        let distinct = b"ACGTAACCGGTTACAGATCCTGGCATTGACT";
+        assert_eq!(distinct.len(), 31);
+        assert_eq!(calculate_kdust(pack(distinct), 31), 1.0);
+
+        // Only a homopolymer bottoms out at 0, shorter-period repeats sit in between
+        let homopolymer = calculate_kdust(pack(&[b'A'; 31]), 31);
+        let dinucleotide = calculate_kdust(pack(b"ATATATATATATATATATATATATATATATA"), 31);
+        let trinucleotide = calculate_kdust(pack(b"ATTATTATTATTATTATTATTATTATTATTA"), 31);
+        let random = calculate_kdust(pack(&pseudo_dna(31, 5)), 31);
+
+        assert_eq!(homopolymer, 0.0);
+        assert!(random > 0.9, "random 31-mer scored {random}");
+        assert!(
+            homopolymer < dinucleotide && dinucleotide < trinucleotide && trinucleotide < random,
+            "expected monotonic ordering, got {homopolymer} {dinucleotide} {trinucleotide} {random}"
+        );
+    }
+
+    #[test]
+    fn test_kdust_none_is_a_noop() {
+        let seq = pseudo_dna(2_000, 11);
+        let all = syncmers_u64(&seq, 31, 9, FracMinHash::NONE);
+        assert!(!all.is_empty());
+
+        let kdust = Kdust::from_threshold(0.0, 31);
+        assert!(kdust.is_none());
+        let mut vec = SyncmerVec::U64(all.clone());
+        kdust.retain(&mut vec, None);
+        match &vec {
+            SyncmerVec::U64(v) => assert_eq!(*v, all),
+            SyncmerVec::U128(_) => panic!("expected u64"),
+        }
+    }
+
+    #[test]
+    fn test_kdust_retain_drops_below_threshold_and_keeps_positions_aligned() {
+        // Hand-built values pin retain's behaviour, not syncmer selection
+        let low = pack(&[b'A'; 31]) as u64;
+        let mid = pack(b"ATATATATATATATATATATATATATATATA") as u64;
+        let high = pack(&pseudo_dna(31, 5)) as u64;
+        assert!(calculate_kdust(high as u128, 31) > 0.9);
+
+        let mut syncmers = SyncmerVec::U64(vec![high, low, high, mid, low]);
+        let mut positions = vec![10usize, 20, 30, 40, 50];
+        Kdust::from_threshold(0.9, 31).retain(&mut syncmers, Some(&mut positions));
+
+        match &syncmers {
+            SyncmerVec::U64(v) => assert_eq!(*v, vec![high, high]),
+            SyncmerVec::U128(_) => panic!("expected u64"),
+        }
+        // Survivors keep their paired positions
+        assert_eq!(positions, vec![10, 30]);
     }
 
     #[test]

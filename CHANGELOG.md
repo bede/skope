@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--complexity`: discard target syncmers scoring below a k-mer dust (kdust) threshold in `[0, 1]` (default 0, retain all).
+
 ### Changed
 
 - Every command taking targets now accepts the same things: a fastx file, a directory of fastx files/subdirectories (one group per child), or a prebuilt `.sk` index. Previously `classify`, `lenhist` and `index build-classify` rejected a plain fastx file, confusingly.

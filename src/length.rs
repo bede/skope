@@ -4,7 +4,8 @@ use crate::classify::{
 };
 use crate::syncmers::{Buffers, KmerHasher};
 use crate::{
-    IndexKind, ProcessingStats, StdinTargets, TargetSource, create_spinner, format_bp,
+    IndexKind, ProcessingStats, StdinTargets, TargetSource, check_index_complexity,
+    create_spinner, format_bp,
     format_bp_per_sec, handle_process_result, reader_with_inferred_batch_size, resolve_targets,
     sample_limit_reached_io_error,
 };
@@ -45,6 +46,7 @@ pub struct LengthHistogramConfig {
     pub sample_names: Vec<String>,
     pub kmer_length: u8,
     pub smer_length: u8,
+    pub complexity: f32,
     pub abs_threshold: u64,
     pub rel_threshold: f64,
     pub discriminatory: bool,
@@ -422,6 +424,10 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
         options.push_str(&format!(", samples={}", config.sample_paths.len()));
     }
 
+    if config.complexity > 0.0 {
+        options.push_str(&format!(", complexity={}", config.complexity));
+    }
+
     if let Some(limit) = config.limit_bp {
         options.push_str(&format!(", limit={}", format_bp(limit as usize)));
     }
@@ -453,7 +459,9 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
             StdinTargets::Reject,
         )? {
             TargetSource::Index(path) => {
-                let (index, group_names, k, s) = load_classification_index(&path)?;
+                let (index, group_names, k, s, index_complexity) =
+                    load_classification_index(&path)?;
+                check_index_complexity(config.complexity, index_complexity)?;
                 if !config.quiet {
                     eprintln!(
                         "Index: {} k-mers, {} groups, k={}, s={}",
@@ -475,6 +483,7 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
                     source.splits_records(config.individual),
                     config.kmer_length,
                     config.smer_length,
+                    config.complexity,
                     config.threads,
                     config.quiet,
                 )?;

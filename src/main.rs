@@ -8,6 +8,16 @@ use skope::{
     find_fastx_files_recursive, is_special_input_path, resolve_k_s, validate_k_s,
 };
 
+/// Check the kdust threshold is in [0, 1], rejecting NaN and inf
+fn validate_complexity(complexity: f32) -> Result<()> {
+    if !(0.0..=1.0).contains(&complexity) {
+        return Err(anyhow::anyhow!(
+            "Invalid --complexity {complexity}: must be in [0, 1] (0 = retain all)"
+        ));
+    }
+    Ok(())
+}
+
 /// Validate the FracMinHash fraction is in (0, 1]
 fn validate_fraction(fraction: f64) -> Result<()> {
     if !(fraction > 0.0 && fraction <= 1.0) {
@@ -191,6 +201,10 @@ enum IndexCommands {
         #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
+        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
+        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
+        complexity: f32,
+
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
@@ -237,6 +251,10 @@ enum IndexCommands {
             default_value_t = 1.0
         )]
         fraction: f64,
+
+        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
+        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
+        complexity: f32,
 
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
@@ -295,6 +313,10 @@ enum Commands {
             default_value_t = 1.0
         )]
         fraction: f64,
+
+        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
+        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
+        complexity: f32,
 
         /// Comma-separated additional abundance thresholds for containment estimation
         #[arg(
@@ -371,6 +393,10 @@ enum Commands {
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
+        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
+        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
+        complexity: f32,
+
         /// Minimum absolute number of syncmer hits for a match
         #[arg(
             short = 'a',
@@ -443,6 +469,10 @@ enum Commands {
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
+        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
+        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
+        complexity: f32,
+
         /// Minimum absolute number of syncmer hits for a match
         #[arg(
             short = 'a',
@@ -512,11 +542,13 @@ fn main() -> Result<()> {
                 individual,
                 kmer_length,
                 smer_length,
+                complexity,
                 threads,
                 output,
                 quiet,
             } => {
                 validate_k_s(*kmer_length, *smer_length)?;
+                validate_complexity(*complexity)?;
 
                 initialise_thread_pool(*threads)?;
 
@@ -525,6 +557,7 @@ fn main() -> Result<()> {
                     individual: *individual,
                     kmer_length: *kmer_length,
                     smer_length: *smer_length,
+                    complexity: *complexity,
                     threads: *threads,
                     output_path: output_path(output),
                     quiet: *quiet,
@@ -542,12 +575,14 @@ fn main() -> Result<()> {
                 individual,
                 positions,
                 fraction,
+                complexity,
                 threads,
                 output,
                 quiet,
             } => {
                 validate_k_s(*kmer_length, *smer_length)?;
                 validate_fraction(*fraction)?;
+                validate_complexity(*complexity)?;
 
                 initialise_thread_pool(*threads)?;
 
@@ -562,6 +597,7 @@ fn main() -> Result<()> {
                     output_path: output_path(output),
                     quiet: *quiet,
                     fraction: *fraction,
+                    complexity: *complexity,
                 };
 
                 skope::run_build_query(&config).context("Failed to build query index")?;
@@ -582,6 +618,7 @@ fn main() -> Result<()> {
             abs_threshold,
             rel_threshold,
             discriminatory,
+            complexity,
             threads,
             limit,
             output,
@@ -589,6 +626,7 @@ fn main() -> Result<()> {
             quiet,
         } => {
             let prepared = prepare_samples(samples, sample_names.as_deref())?;
+            validate_complexity(*complexity)?;
             let (kmer_length, smer_length) =
                 resolve_k_s(targets, *kmer_length, *smer_length, *quiet)?;
             initialise_thread_pool(*threads)?;
@@ -600,6 +638,7 @@ fn main() -> Result<()> {
                 sample_names: prepared.names,
                 kmer_length,
                 smer_length,
+                complexity: *complexity,
                 abs_threshold: *abs_threshold,
                 rel_threshold: *rel_threshold,
                 threads: *threads,
@@ -632,10 +671,12 @@ fn main() -> Result<()> {
             confidence,
             background,
             fraction,
+            complexity,
         } => {
             let prepared = prepare_samples(samples, sample_names.as_deref())?;
             let background_paths = expand_background_inputs(background)?;
             validate_fraction(*fraction)?;
+            validate_complexity(*complexity)?;
             let (kmer_length, smer_length) =
                 resolve_k_s(targets, *kmer_length, *smer_length, *quiet)?;
             initialise_thread_pool(*threads)?;
@@ -667,6 +708,7 @@ fn main() -> Result<()> {
                 no_total: *no_total,
                 confidence: *confidence,
                 fraction: *fraction,
+                complexity: *complexity,
             };
 
             config
@@ -683,12 +725,14 @@ fn main() -> Result<()> {
             abs_threshold,
             rel_threshold,
             discriminatory,
+            complexity,
             threads,
             output,
             quiet,
             limit,
         } => {
             let prepared = prepare_samples(samples, sample_names.as_deref())?;
+            validate_complexity(*complexity)?;
             let (kmer_length, smer_length) =
                 resolve_k_s(targets, *kmer_length, *smer_length, *quiet)?;
             initialise_thread_pool(*threads)?;
@@ -703,6 +747,7 @@ fn main() -> Result<()> {
                 sample_names: prepared.names,
                 kmer_length,
                 smer_length,
+                complexity: *complexity,
                 abs_threshold: *abs_threshold,
                 rel_threshold: *rel_threshold,
                 discriminatory: *discriminatory,

@@ -1,10 +1,11 @@
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::syncmers::{
-    Buffers, FracMinHash, KmerHasher, SyncmerVec, decode_u64, decode_u128, fill_syncmers,
+    Buffers, FracMinHash, Kdust, KmerHasher, SyncmerVec, decode_u64, decode_u128, fill_syncmers,
     fill_syncmers_with_positions,
 };
 use crate::{
-    ProcessingStats, RapidHashSet, StdinTargets, TargetSource, create_spinner, format_bp,
+    ProcessingStats, RapidHashSet, StdinTargets, TargetSource, check_index_complexity,
+    complexity_info_line, create_spinner, format_bp,
     format_bp_per_sec, handle_process_result, reader_for_path, reader_with_inferred_batch_size,
     resolve_targets, sample_limit_reached_io_error,
 };
@@ -212,6 +213,7 @@ pub struct ContainmentConfig {
     pub no_total: bool,
     pub confidence: bool,
     pub fraction: f64,
+    pub complexity: f32,
 }
 
 impl ContainmentConfig {
@@ -238,6 +240,7 @@ struct TargetsProcessor {
     smer_length: u8,
     hasher: KmerHasher,
     fmh: FracMinHash,
+    kdust: Kdust,
     buffers: Buffers,
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
@@ -255,6 +258,7 @@ impl TargetsProcessor {
         kmer_length: u8,
         smer_length: u8,
         fmh: FracMinHash,
+        kdust: Kdust,
         targets: Arc<Mutex<Vec<TargetInfo>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
@@ -272,6 +276,7 @@ impl TargetsProcessor {
             smer_length,
             hasher: KmerHasher::new(smer_length as usize),
             fmh,
+            kdust,
             buffers,
             positions: Vec::new(),
             targets,
@@ -320,6 +325,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
             );
             self.fmh
                 .retain(&mut self.buffers.syncmers, Some(&mut self.positions));
+            self.kdust
+                .retain(&mut self.buffers.syncmers, Some(&mut self.positions));
         } else {
             fill_syncmers(
                 &sequence,
@@ -329,6 +336,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 &mut self.buffers,
             );
             self.fmh.retain(&mut self.buffers.syncmers, None);
+            self.kdust.retain(&mut self.buffers.syncmers, None);
         }
 
         // Build unique syncmer set for this target
@@ -406,6 +414,7 @@ fn process_targets_file(
     kmer_length: u8,
     smer_length: u8,
     fmh: FracMinHash,
+    kdust: Kdust,
     quiet: bool,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
@@ -421,6 +430,7 @@ fn process_targets_file(
         kmer_length,
         smer_length,
         fmh,
+        kdust,
         Arc::clone(&targets),
         Arc::clone(&global_stats),
         spinner.clone(),
@@ -481,6 +491,7 @@ fn process_target_groups(
     kmer_length: u8,
     smer_length: u8,
     fmh: FracMinHash,
+    kdust: Kdust,
     quiet: bool,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
@@ -496,6 +507,7 @@ fn process_target_groups(
                 kmer_length,
                 smer_length,
                 fmh,
+                kdust,
                 quiet,
                 collect_positions,
             )?;
@@ -1330,8 +1342,8 @@ const QUERY_INDEX_VERSION: u8 = 1;
 const QUERY_INDEX_FLAG_POSITIONS: u8 = 0b001;
 const QUERY_INDEX_FLAG_BACKGROUND: u8 = 0b010;
 
-// magic, kind, version, k, s, flags, n_targets, fraction (FracMinHash sampling fraction)
-type QueryIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, u32, f64);
+// magic, kind, version, k, s, flags, n_targets, fraction (FracMinHash), complexity (kdust)
+type QueryIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, u32, f64, f32);
 type QueryIndexMeta = Vec<(String, u64, u64)>; // (name, length, entry_count)
 
 /// Config for `skope index build-query`
@@ -1347,6 +1359,8 @@ pub struct BuildQueryConfig {
     pub quiet: bool,
     /// Fraction for stable FracMinHash selection in `(0, 1]`
     pub fraction: f64,
+    /// Minimum kdust in `[0, 1]`, 0 retains all
+    pub complexity: f32,
 }
 
 struct QueryIndex {
@@ -1354,21 +1368,21 @@ struct QueryIndex {
     has_positions: bool,
 }
 
-/// Read k, s, and the FracMinHash fraction from a query index header without loading entries
-pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8, f64)> {
+/// Read a query index header without loading entries
+pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8, f64, f32)> {
     let mut buf = [0u8; 64];
     let n = File::open(path)?.read(&mut buf)?;
     let mut cursor = wincode::io::Cursor::new(&buf[..n]);
-    let (magic, kind, version, k, s, _flags, _n, fraction): QueryIndexHeader =
+    let (magic, kind, version, k, s, _flags, _n, fraction, complexity): QueryIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to read query index header")?;
     validate_query_index_header(&magic, kind, version)?;
-    Ok((k, s, fraction))
+    Ok((k, s, fraction, complexity))
 }
 
 /// Print human-readable metadata for a query index (`skope index info`)
 pub fn print_query_index_info(path: &Path) -> Result<()> {
     let mut reader = BufReader::new(File::open(path)?);
-    let (magic, kind, version, kmer_length, smer_length, flags, n_targets, fraction): QueryIndexHeader =
+    let (magic, kind, version, kmer_length, smer_length, flags, n_targets, fraction, complexity): QueryIndexHeader =
         wincode::deserialize_from(&mut reader).context("Failed to read query index header")?;
     validate_query_index_header(&magic, kind, version)?;
     let meta: QueryIndexMeta =
@@ -1396,6 +1410,7 @@ pub fn print_query_index_info(path: &Path) -> Result<()> {
             format!("{fraction} (keeps ~{:.0}% of syncmers)", fraction * 100.0)
         }
     );
+    eprintln!("{}", complexity_info_line(complexity));
     eprintln!(
         "  Syncmer positions: {}",
         if flags & QUERY_INDEX_FLAG_POSITIONS != 0 {
@@ -1432,6 +1447,7 @@ fn save_query_index(
     kmer_length: u8,
     smer_length: u8,
     fraction: f64,
+    complexity: f32,
     flags: u8,
     output_path: Option<&Path>,
 ) -> Result<()> {
@@ -1471,6 +1487,7 @@ fn save_query_index(
         flags,
         targets.len() as u32,
         fraction,
+        complexity,
     );
     writer
         .write_all(&wincode::serialize(&header).context("Failed to encode query index header")?)?;
@@ -1518,7 +1535,7 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
         .with_context(|| format!("Failed to open query index: {}", path.display()))?;
     let mut cursor = wincode::io::Cursor::new(bytes.as_slice());
 
-    let (magic, kind, version, kmer_length, _smer_length, flags, n_targets, _fraction): QueryIndexHeader =
+    let (magic, kind, version, kmer_length, _smer_length, flags, n_targets, _fraction, _complexity): QueryIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to decode query index header")?;
     validate_query_index_header(&magic, kind, version)?;
 
@@ -1630,17 +1647,20 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
 pub fn run_build_query(config: &BuildQueryConfig) -> Result<()> {
     let start = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
-    let fraction_str = if config.fraction < 1.0 {
-        format!(", fraction={}", config.fraction)
-    } else {
-        String::new()
-    };
+    let mut options = String::new();
+    if config.fraction < 1.0 {
+        options.push_str(&format!(", fraction={}", config.fraction));
+    }
+    if config.complexity > 0.0 {
+        options.push_str(&format!(", complexity={}", config.complexity));
+    }
     eprintln!(
         "Skope v{version}; mode: index build-query; options: k={}, s={}, threads={}{}",
-        config.kmer_length, config.smer_length, config.threads, fraction_str
+        config.kmer_length, config.smer_length, config.threads, options
     );
 
     let fmh = FracMinHash::from_fraction(config.fraction);
+    let kdust = Kdust::from_threshold(config.complexity, config.kmer_length);
     let collect_positions = config.positions;
     let source = resolve_targets(&config.targets_path, IndexKind::Query, StdinTargets::Accept)?;
     if let TargetSource::Index(path) = &source {
@@ -1655,6 +1675,7 @@ pub fn run_build_query(config: &BuildQueryConfig) -> Result<()> {
         config.kmer_length,
         config.smer_length,
         fmh,
+        kdust,
         config.quiet,
         collect_positions,
     )?;
@@ -1691,6 +1712,7 @@ pub fn run_build_query(config: &BuildQueryConfig) -> Result<()> {
         config.kmer_length,
         config.smer_length,
         config.fraction,
+        config.complexity,
         flags,
         config.output_path.as_deref(),
     )?;
@@ -1741,22 +1763,28 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
 
     let source = resolve_targets(&config.targets_path, IndexKind::Query, StdinTargets::Reject)?;
     let from_index = matches!(source, TargetSource::Index(_));
-    // Prebuilt stored index fraction trumps
-    let (fmh, effective_fraction) = if from_index {
-        let (_k, _s, index_fraction) = read_query_index_meta(&config.targets_path)?;
-        if config.fraction < 1.0 && (config.fraction - index_fraction).abs() > 1e-12 {
+    // Stored fraction and complexity trump
+    // A CLI-parsed float round-trips through the header bit-identically, so compare exactly
+    let (effective_fraction, effective_complexity) = if from_index {
+        let (_k, _s, index_fraction, index_complexity) =
+            read_query_index_meta(&config.targets_path)?;
+        if config.fraction < 1.0 && config.fraction != index_fraction {
             return Err(anyhow::anyhow!(
-                "--fraction {} conflicts with the query index's fraction {:.6}; omit --fraction to use the index's",
+                "--fraction {} conflicts with the query index's fraction {}; omit --fraction to use the index's",
                 config.fraction,
                 index_fraction
             ));
         }
-        (FracMinHash::from_fraction(index_fraction), index_fraction)
+        check_index_complexity(config.complexity, index_complexity)?;
+        (index_fraction, index_complexity)
     } else {
-        (FracMinHash::from_fraction(config.fraction), config.fraction)
+        (config.fraction, config.complexity)
     };
     if effective_fraction < 1.0 {
         options.push_str(&format!(", fraction={effective_fraction}"));
+    }
+    if effective_complexity > 0.0 {
+        options.push_str(&format!(", complexity={effective_complexity}"));
     }
     eprintln!(
         "Skope v{}; mode: query{}; options: {}",
@@ -1785,7 +1813,8 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
             config.individual,
             config.kmer_length,
             config.smer_length,
-            fmh,
+            FracMinHash::from_fraction(effective_fraction),
+            Kdust::from_threshold(effective_complexity, config.kmer_length),
             config.quiet,
             need_positions,
         )?

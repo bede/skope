@@ -17,6 +17,7 @@ fn test_multisample_processing() {
         sample_names: vec!["sample1".to_string(), "sample2".to_string()],
         kmer_length: 31,
         smer_length: 15,
+        complexity: 0.0,
         threads: 2,
         output_path: None,
         quiet: true,
@@ -49,6 +50,7 @@ fn test_multisample_tsv_structure() {
         sample_names: vec!["sample_a".to_string(), "sample_b".to_string()],
         kmer_length: 31,
         smer_length: 15,
+        complexity: 0.0,
         threads: 2,
         output_path: Some(output_path.clone()),
         quiet: true,
@@ -155,6 +157,7 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
         sample_names: vec!["sample".to_string()],
         kmer_length: 31,
         smer_length: 15,
+        complexity: 0.0,
         threads: 2,
         output_path: Some(temp_output.path().to_path_buf()),
         quiet: true,
@@ -208,6 +211,7 @@ fn test_sort_target() {
         sample_names: vec!["test".to_string()],
         kmer_length: 31,
         smer_length: 15,
+        complexity: 0.0,
         threads: 2,
         output_path: Some(temp_output.path().to_path_buf()),
         quiet: true,
@@ -255,6 +259,7 @@ fn test_sort_containment() {
         sample_names: vec!["test".to_string()],
         kmer_length: 31,
         smer_length: 15,
+        complexity: 0.0,
         threads: 2,
         output_path: Some(temp_output.path().to_path_buf()),
         quiet: true,
@@ -332,6 +337,7 @@ fn test_length_histogram() {
         sample_names: vec!["test".to_string()],
         kmer_length: 31,
         smer_length: 15,
+        complexity: 0.0,
         abs_threshold: 1,
         rel_threshold: 0.0,
         discriminatory: false,
@@ -371,6 +377,7 @@ fn test_length_histogram_all_seqs() {
         sample_names: vec!["test".to_string()],
         kmer_length: 31,
         smer_length: 15,
+        complexity: 0.0,
         abs_threshold: 1,
         rel_threshold: 0.0,
         discriminatory: false,
@@ -415,6 +422,7 @@ fn classify_to(
         sample_names: sample_names.iter().map(|name| name.to_string()).collect(),
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         abs_threshold: 1,
         rel_threshold: 0.0,
         threads: 1,
@@ -521,6 +529,7 @@ fn test_query_directory_mixed_layout() {
         sample_names: vec!["s".to_string()],
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         threads: 1,
         output_path: Some(output.path().to_path_buf()),
         quiet: true,
@@ -601,6 +610,7 @@ fn test_dump_syncmers_respects_discriminatory() {
         sample_names: vec!["s".to_string()],
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         threads: 1,
         output_path: None,
         quiet: true,
@@ -665,6 +675,7 @@ fn test_classify_build_mixed_layout() {
         targets_path: root.to_path_buf(),
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         threads: 1,
         output_path: Some(idx_out.path().to_path_buf()),
         quiet: true,
@@ -687,6 +698,7 @@ fn test_classify_build_mixed_layout() {
         sample_names: vec!["s".to_string()],
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         abs_threshold: 1,
         rel_threshold: 0.0,
         threads: 1,
@@ -717,6 +729,7 @@ fn test_classify_too_many_groups_errors() {
         targets_path: root.to_path_buf(),
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         threads: 1,
         output_path: Some(idx_out.path().to_path_buf()),
         quiet: true,
@@ -894,6 +907,7 @@ fn build_index(targets: PathBuf, background: Vec<PathBuf>, out: PathBuf) {
         background_paths: background,
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         individual: false,
         positions: false,
         threads: 1,
@@ -912,6 +926,7 @@ fn query_to_tsv(targets_path: PathBuf, sample: &std::path::Path, out: &std::path
         sample_names: vec!["s".to_string()],
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         threads: 1,
         output_path: Some(out.to_path_buf()),
         quiet: true,
@@ -969,6 +984,7 @@ fn test_query_index_positions_required_only_when_consumed() {
             background_paths: vec![],
             kmer_length: 15,
             smer_length: 7,
+            complexity: 0.0,
             individual: false,
             positions,
             threads: 1,
@@ -989,6 +1005,7 @@ fn test_query_index_positions_required_only_when_consumed() {
             sample_names: vec!["s".to_string()],
             kmer_length: 15,
             smer_length: 7,
+            complexity: 0.0,
             threads: 1,
             output_path: Some(output_path),
             quiet: true,
@@ -1029,6 +1046,7 @@ fn build_index_frac(targets: PathBuf, out: PathBuf, fraction: f64) {
         background_paths: vec![],
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         individual: false,
         positions: false,
         threads: 1,
@@ -1052,6 +1070,7 @@ fn query_frac(
         sample_names: vec!["s".to_string()],
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         threads: 1,
         output_path: Some(out.to_path_buf()),
         quiet: true,
@@ -1083,11 +1102,11 @@ fn test_thinning_index_matches_fastx() {
     build_index_frac(target.clone(), index.clone(), 0.1);
 
     // Header stores the fraction
-    let (_k, _s, frac) = skope::read_query_index_meta(&index).unwrap();
+    let (_k, _s, frac, _c) = skope::read_query_index_meta(&index).unwrap();
     assert!((frac - 0.1).abs() < 1e-4, "stored fraction {frac} != 0.1");
 
     let (i, f) = (dir.path().join("i.tsv"), dir.path().join("f.tsv"));
-    query_frac(index, &sample, &i, 1.0); // index fraction wins; CLI default ignored
+    query_frac(index, &sample, &i, 1.0); // Index fraction wins, CLI default ignored
     query_frac(target, &sample, &f, 0.1);
     assert_eq!(
         std::fs::read_to_string(i).unwrap(),
@@ -1133,6 +1152,7 @@ fn lenhist_groups(
         sample_names: vec!["s".to_string()],
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         abs_threshold: 1,
         rel_threshold: 0.0,
         discriminatory: false,
@@ -1218,6 +1238,7 @@ fn test_classify_accepts_bare_fastx_file() {
         sample_names: vec!["s".to_string()],
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         abs_threshold: 1,
         rel_threshold: 0.0,
         threads: 1,
@@ -1365,6 +1386,7 @@ fn test_build_classify_accepts_bare_fastx_file() {
         individual: false,
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         threads: 1,
         output_path: Some(index.clone()),
         quiet: true,
@@ -1392,6 +1414,7 @@ fn test_wrong_index_kind_names_both_kinds() {
         individual: false,
         kmer_length: 15,
         smer_length: 7,
+        complexity: 0.0,
         threads: 1,
         output_path: Some(classify_index.clone()),
         quiet: true,
@@ -1502,4 +1525,118 @@ fn test_resolve_targets_input_forms() {
     .unwrap_err()
     .to_string();
     assert!(err.contains("does not exist"), "got: {err}");
+}
+
+fn build_index_complexity(targets: PathBuf, out: PathBuf, complexity: f32) {
+    skope::run_build_query(&skope::BuildQueryConfig {
+        targets_path: targets,
+        background_paths: vec![],
+        kmer_length: 31,
+        smer_length: 9,
+        complexity,
+        individual: false,
+        positions: false,
+        threads: 1,
+        output_path: Some(out),
+        quiet: true,
+        fraction: 1.0,
+    })
+    .unwrap()
+}
+
+fn query_complexity(
+    targets_path: PathBuf,
+    out: &std::path::Path,
+    complexity: f32,
+) -> anyhow::Result<()> {
+    skope::run_query(&ContainmentConfig {
+        background_paths: Vec::new(),
+        targets_path,
+        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_names: vec!["s".to_string()],
+        kmer_length: 31,
+        smer_length: 9,
+        complexity,
+        threads: 1,
+        output_path: Some(out.to_path_buf()),
+        quiet: true,
+        abundance_thresholds: vec![1],
+        discriminatory: false,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_syncmers_path: None,
+        confidence: false,
+        fraction: 1.0,
+        no_total: true,
+        individual: false,
+    })
+}
+
+/// Sum of the target_kmers column, the syncmers surviving filtering
+fn target_kmers(tsv: &std::path::Path) -> u64 {
+    let text = std::fs::read_to_string(tsv).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let idx = lines[0]
+        .split('\t')
+        .position(|col| col == "target_kmers")
+        .expect("target_kmers column not found");
+    lines[1..]
+        .iter()
+        .map(|line| line.split('\t').nth(idx).unwrap().parse::<u64>().unwrap())
+        .sum()
+}
+
+// Index-time and query-time filtering must give identical containment
+#[test]
+fn test_complexity_index_matches_fastx() {
+    let dir = TempDir::new().unwrap();
+    let (target, index) = (
+        PathBuf::from("data/zmrp21.viruses.fa"),
+        dir.path().join("t90.sk"),
+    );
+    build_index_complexity(target.clone(), index.clone(), 0.9);
+
+    // Header stores the threshold
+    // An f32 threshold round-trips through the header bit-identically
+    let (_k, _s, _frac, complexity) = skope::read_query_index_meta(&index).unwrap();
+    assert_eq!(complexity, 0.9, "stored complexity {complexity} != 0.9");
+
+    let (i, f) = (dir.path().join("i.tsv"), dir.path().join("f.tsv"));
+    query_complexity(index, &i, 0.0).unwrap(); // Index threshold wins, CLI default ignored
+    query_complexity(target, &f, 0.9).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(i).unwrap(),
+        std::fs::read_to_string(f).unwrap()
+    );
+}
+
+#[test]
+fn test_complexity_drops_low_complexity_syncmers() {
+    let dir = TempDir::new().unwrap();
+    let target = PathBuf::from("data/zmrp21.viruses.fa");
+    let (off, on) = (dir.path().join("off.tsv"), dir.path().join("on.tsv"));
+
+    query_complexity(target.clone(), &off, 0.0).unwrap();
+    query_complexity(target, &on, 0.95).unwrap();
+
+    let (unfiltered, filtered) = (target_kmers(&off), target_kmers(&on));
+    assert!(unfiltered > 0);
+    assert!(
+        filtered < unfiltered,
+        "filtering kept {filtered} of {unfiltered} syncmers"
+    );
+}
+
+#[test]
+fn test_complexity_conflicting_with_index_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    let index = dir.path().join("t90.sk");
+    build_index_complexity(PathBuf::from("data/zmrp21.viruses.fa"), index.clone(), 0.9);
+
+    let out = dir.path().join("out.tsv");
+    let err = query_complexity(index, &out, 0.5).unwrap_err();
+    assert!(
+        err.to_string().contains("conflicts with the index's complexity"),
+        "unexpected error: {err}"
+    );
 }
