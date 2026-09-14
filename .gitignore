@@ -1,5 +1,6 @@
 /target
 /misc
+/benches
 .DS_Store
 benches.sh
 *S.md
