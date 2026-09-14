@@ -635,16 +635,16 @@ pub fn print_classification_index_info(path: &Path) -> Result<()> {
     let count: u64 =
         wincode::deserialize_from(&mut reader).context("Failed to decode entry count")?;
 
-    eprintln!("Index information:");
-    eprintln!("  Format: classify (open syncmer set)");
-    eprintln!("  Format version: {version}");
-    eprintln!("  K-mer length (k): {kmer_length}");
-    eprintln!("  S-mer length (s): {smer_length}");
-    eprintln!("  Groups: {num_groups}");
-    eprintln!("  Distinct syncmers: {count}");
-    eprintln!("{}", complexity_info_line(complexity));
+    println!("Index information:");
+    println!("  Format: classify (open syncmer set)");
+    println!("  Format version: {version}");
+    println!("  K-mer length (k): {kmer_length}");
+    println!("  S-mer length (s): {smer_length}");
+    println!("  Groups: {num_groups}");
+    println!("  Distinct syncmers: {count}");
+    println!("{}", complexity_info_line(complexity));
     for name in &group_names {
-        eprintln!("    - {name}");
+        println!("    - {name}");
     }
     Ok(())
 }

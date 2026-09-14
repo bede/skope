@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-09-14
 
 ### Added
 
@@ -16,11 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every command taking targets now accepts the same things: a fastx file, a directory of fastx files/subdirectories (one group per child), or a prebuilt `.sk` index. Previously `classify`, `lenhist` and `index build-classify` rejected a plain fastx file, confusingly.
 - `classify` and `lenhist` gain `-i`/`--individual`, making each record of a fastx file its own group, as `query` already did. `<INDEX>` becomes `<TARGETS>` in both.
 - `index build-query` and `index build-classify` can read targets from stdin (`-`). Elsewhere `-` still means the samples.
-- Better errors for a bad `<TARGETS>`: the wrong kind of index, a pipe, or a file that isn't sequence data are all caught up front rather than deep in the parser.
-- `Note: using k=…, s=… from index` is now printed only when `-k`/`-s` were actually given.
 - `query` no longer exposes the ineffective `--positions` option implied by `--confidence` and `--dump-syncmers`.
 - Removed the redundant `query --sort sample`.
-- Removed unused public query and length-histogram result/report types.
 
 ## [0.4.0] - 2026-07-08
 

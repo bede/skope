@@ -1394,15 +1394,15 @@ pub fn print_query_index_info(path: &Path) -> Result<()> {
     let total_syncmers: u64 = meta.iter().map(|(_, _, count)| count).sum();
     let total_bp: u64 = meta.iter().map(|(_, length, _)| length).sum();
 
-    eprintln!("Index information:");
-    eprintln!("  Format: query (open syncmer set)");
-    eprintln!("  Format version: {version}");
-    eprintln!("  K-mer length (k): {kmer_length}");
-    eprintln!("  S-mer length (s): {smer_length}");
-    eprintln!("  Targets: {n_targets}");
-    eprintln!("  Total syncmers: {total_syncmers}");
-    eprintln!("  Total length: {}", format_bp(total_bp as usize));
-    eprintln!(
+    println!("Index information:");
+    println!("  Format: query (open syncmer set)");
+    println!("  Format version: {version}");
+    println!("  K-mer length (k): {kmer_length}");
+    println!("  S-mer length (s): {smer_length}");
+    println!("  Targets: {n_targets}");
+    println!("  Total syncmers: {total_syncmers}");
+    println!("  Total length: {}", format_bp(total_bp as usize));
+    println!(
         "  FracMinHash fraction: {}",
         if fraction >= 1.0 {
             "1 (retain all)".to_string()
@@ -1410,8 +1410,8 @@ pub fn print_query_index_info(path: &Path) -> Result<()> {
             format!("{fraction} (keeps ~{:.0}% of syncmers)", fraction * 100.0)
         }
     );
-    eprintln!("{}", complexity_info_line(complexity));
-    eprintln!(
+    println!("{}", complexity_info_line(complexity));
+    println!(
         "  Syncmer positions: {}",
         if flags & QUERY_INDEX_FLAG_POSITIONS != 0 {
             "stored"
@@ -1419,7 +1419,7 @@ pub fn print_query_index_info(path: &Path) -> Result<()> {
             "not stored"
         }
     );
-    eprintln!(
+    println!(
         "  Background masking: {}",
         if flags & QUERY_INDEX_FLAG_BACKGROUND != 0 {
             "applied"
