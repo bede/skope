@@ -1,4 +1,5 @@
 [![Crates.io version](https://img.shields.io/crates/v/skope?style=flat-square)](https://crates.io/crates/skope)
+[![Conda version](https://img.shields.io/conda/v/bioconda/skope?style=flat-square&label=bioconda&color=blue)](https://anaconda.org/bioconda/skope)
 
 # Skope
 
@@ -7,6 +8,9 @@ Accelerated streaming containment and abundance estimation using syncmers. Like 
 ## Install & update
 
 ```bash
+# Bioconda
+conda install -c bioconda deacon
+
 # Latest stable
 RUSTFLAGS="-C target-cpu=native" cargo install skope
 
