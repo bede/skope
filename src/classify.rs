@@ -1,9 +1,9 @@
-use crate::syncmers::{Buffers, Kdust, KmerHasher, SyncmerVec, fill_syncmers};
+use crate::kmers::{Buffers, Kdust, KmerVec, SmerHasher, fill_kmers, make_hasher};
 use crate::{
     FixedRapidHasher, IndexKind, ProcessingStats, StdinTargets, TargetGroup, TargetSource,
     check_index_complexity, complexity_info_line, create_spinner, format_bp, format_bp_per_sec,
-    handle_process_result, reader_for_path,
-    reader_with_inferred_batch_size, resolve_targets, sample_limit_reached_io_error,
+    handle_process_result, reader_for_path, reader_with_inferred_batch_size, resolve_targets,
+    sample_limit_reached_io_error,
 };
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
@@ -27,7 +27,7 @@ const TOO_MANY_RECORDS_MSG: &str = "Too many records for --individual";
 // magic, kind, version, k, s, num_groups, complexity (kdust)
 type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, f32);
 
-/// Classification index mapping syncmers to group bitmasks (up to 128 groups)
+/// Classification index mapping k-mers to group bitmasks (up to 128 groups)
 #[derive(Clone)]
 pub enum ClassificationIndex {
     U64(HashMap<u64, u128, FixedRapidHasher>),
@@ -47,8 +47,8 @@ impl ClassificationIndex {
     }
 }
 
-/// Remove syncmers shared across groups, keeping only group-unique syncmers
-/// Returns how many shared syncmers were removed
+/// Remove k-mers shared across groups, keeping only group-unique k-mers
+/// Returns how many shared k-mers were removed
 pub(crate) fn apply_discriminatory_filter(index: &mut ClassificationIndex) -> usize {
     match index {
         ClassificationIndex::U64(map) => {
@@ -115,12 +115,12 @@ pub struct ClassifyConfig {
     pub quiet: bool,
 }
 
-/// Collect syncmers from one group FASTA file
+/// Collect k-mers from one group FASTA file
 #[derive(Clone)]
 struct GroupKmerProcessor {
     kmer_length: u8,
     smer_length: u8,
-    hasher: KmerHasher,
+    hasher: SmerHasher,
     kdust: Kdust,
     buffers: Buffers,
     group_bit: u128,
@@ -170,7 +170,7 @@ impl GroupKmerProcessor {
         Self {
             kmer_length,
             smer_length,
-            hasher: KmerHasher::new(smer_length as usize),
+            hasher: make_hasher(smer_length),
             kdust,
             buffers,
             group_bit,
@@ -210,23 +210,23 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
         self.local_stats.total_seqs += 1;
         self.local_stats.total_bp += seq.len() as u64;
 
-        fill_syncmers(
+        fill_kmers(
             &seq,
             &self.hasher,
             self.kmer_length,
             self.smer_length,
             &mut self.buffers,
         );
-        self.kdust.retain(&mut self.buffers.syncmers, None);
+        self.kdust.retain(&mut self.buffers.kmers, None);
 
-        match &self.buffers.syncmers {
-            SyncmerVec::U64(vec) => {
+        match &self.buffers.kmers {
+            KmerVec::U64(vec) => {
                 let local = self.local_map_u64.as_mut().unwrap();
                 for &kmer in vec {
                     *local.entry(kmer).or_insert(0) |= group_bit;
                 }
             }
-            SyncmerVec::U128(vec) => {
+            KmerVec::U128(vec) => {
                 let local = self.local_map_u128.as_mut().unwrap();
                 for &kmer in vec {
                     *local.entry(kmer).or_insert(0) |= group_bit;
@@ -374,7 +374,7 @@ pub(crate) fn build_classification_index(
 
         if !quiet {
             eprintln!(
-                "  [{}] {} ({} file{}): {} seqs ({}), {} syncmers ({} unique)",
+                "  [{}] {} ({} file{}): {} seqs ({}), {} k-mers ({} unique)",
                 group_idx,
                 group.name,
                 group.files.len(),
@@ -422,7 +422,7 @@ fn finish_index(
             ClassificationIndex::U128(m) => m.values().filter(|v| v.count_ones() > 1).count(),
         };
         eprintln!(
-            "Index: {} total syncmers, {} shared across groups",
+            "Index: {} total k-mers, {} shared across groups",
             index.len(),
             shared
         );
@@ -636,12 +636,12 @@ pub fn print_classification_index_info(path: &Path) -> Result<()> {
         wincode::deserialize_from(&mut reader).context("Failed to decode entry count")?;
 
     println!("Index information:");
-    println!("  Format: classify (open syncmer set)");
+    println!("  Format: classify");
     println!("  Format version: {version}");
     println!("  K-mer length (k): {kmer_length}");
     println!("  S-mer length (s): {smer_length}");
     println!("  Groups: {num_groups}");
-    println!("  Distinct syncmers: {count}");
+    println!("  Distinct k-mers: {count}");
     println!("{}", complexity_info_line(complexity));
     for name in &group_names {
         println!("    - {name}");
@@ -805,7 +805,7 @@ fn update_classify_spinner(
 /// Classify one sequence and populate per-group hit counts
 pub(crate) fn classify_seq_kmers(
     seq: &[u8],
-    hasher: &KmerHasher,
+    hasher: &SmerHasher,
     kmer_length: u8,
     smer_length: u8,
     buffers: &mut Buffers,
@@ -815,16 +815,16 @@ pub(crate) fn classify_seq_kmers(
     abs_threshold: u64,
     rel_threshold: f64,
 ) -> (usize, Classification) {
-    fill_syncmers(seq, hasher, kmer_length, smer_length, buffers);
+    fill_kmers(seq, hasher, kmer_length, smer_length, buffers);
 
     for h in hits[..num_groups].iter_mut() {
         *h = 0;
     }
 
-    let total_kmers = buffers.syncmers.len();
+    let total_kmers = buffers.kmers.len();
 
-    match (&buffers.syncmers, index) {
-        (SyncmerVec::U64(vec), ClassificationIndex::U64(map)) => {
+    match (&buffers.kmers, index) {
+        (KmerVec::U64(vec), ClassificationIndex::U64(map)) => {
             for &kmer in vec {
                 if let Some(&bitmask) = map.get(&kmer) {
                     for group_idx in set_bits(bitmask) {
@@ -833,7 +833,7 @@ pub(crate) fn classify_seq_kmers(
                 }
             }
         }
-        (SyncmerVec::U128(vec), ClassificationIndex::U128(map)) => {
+        (KmerVec::U128(vec), ClassificationIndex::U128(map)) => {
             for &kmer in vec {
                 if let Some(&bitmask) = map.get(&kmer) {
                     for group_idx in set_bits(bitmask) {
@@ -842,7 +842,7 @@ pub(crate) fn classify_seq_kmers(
                 }
             }
         }
-        _ => panic!("Mismatch between SyncmerVec and ClassificationIndex types"),
+        _ => panic!("Mismatch between KmerVec and ClassificationIndex types"),
     }
 
     let classification = classify_seq(hits, num_groups, total_kmers, abs_threshold, rel_threshold);
@@ -998,7 +998,7 @@ impl ClassifyOutput {
 struct ClassifyProcessor {
     kmer_length: u8,
     smer_length: u8,
-    hasher: KmerHasher,
+    hasher: SmerHasher,
     index: Arc<ClassificationIndex>,
     num_groups: usize,
     abs_threshold: u64,
@@ -1037,7 +1037,7 @@ impl ClassifyProcessor {
         Self {
             kmer_length,
             smer_length,
-            hasher: KmerHasher::new(smer_length as usize),
+            hasher: make_hasher(smer_length),
             index,
             num_groups,
             abs_threshold,
@@ -1204,7 +1204,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         let removed = apply_discriminatory_filter(&mut index);
         if !config.quiet {
             eprintln!(
-                "Discriminatory mode: removed {} shared syncmers, {} unique syncmers remain",
+                "Discriminatory mode: removed {} shared k-mers, {} unique k-mers remain",
                 removed,
                 index.len()
             );

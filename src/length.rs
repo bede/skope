@@ -2,12 +2,11 @@ use crate::classify::{
     Classification, ClassificationIndex, apply_discriminatory_filter, build_classification_index,
     classify_seq_kmers, load_classification_index,
 };
-use crate::syncmers::{Buffers, KmerHasher};
+use crate::kmers::{Buffers, SmerHasher, make_hasher};
 use crate::{
-    IndexKind, ProcessingStats, StdinTargets, TargetSource, check_index_complexity,
-    create_spinner, format_bp,
-    format_bp_per_sec, handle_process_result, reader_with_inferred_batch_size, resolve_targets,
-    sample_limit_reached_io_error,
+    IndexKind, ProcessingStats, StdinTargets, TargetSource, check_index_complexity, create_spinner,
+    format_bp, format_bp_per_sec, handle_process_result, reader_with_inferred_batch_size,
+    resolve_targets, sample_limit_reached_io_error,
 };
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -77,7 +76,7 @@ struct BucketState {
 struct LengthHistogramProcessor {
     kmer_length: u8,
     smer_length: u8,
-    hasher: KmerHasher,
+    hasher: SmerHasher,
     index: Arc<ClassificationIndex>,
     num_groups: usize,
     abs_threshold: u64,
@@ -126,7 +125,7 @@ impl LengthHistogramProcessor {
         Self {
             kmer_length,
             smer_length,
-            hasher: KmerHasher::new(smer_length as usize),
+            hasher: make_hasher(smer_length),
             index,
             num_groups,
             abs_threshold,
@@ -497,7 +496,7 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
         let removed = apply_discriminatory_filter(&mut index);
         if !config.quiet {
             eprintln!(
-                "Discriminatory mode: removed {} shared syncmers, {} unique syncmers remain",
+                "Discriminatory mode: removed {} shared k-mers, {} unique k-mers remain",
                 removed,
                 index.len()
             );

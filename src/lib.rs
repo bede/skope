@@ -1,9 +1,9 @@
-//! Accelerated genome containment estimation using syncmers
+//! Accelerated genome containment estimation using open syncmers or all k-mers
 pub mod classify;
+pub mod kmers;
 pub mod length;
 pub mod query;
 pub mod stats;
-pub mod syncmers;
 
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -22,9 +22,9 @@ pub use length::{LengthHistogramConfig, run_lenhist};
 
 pub use classify::{BuildClassifyConfig, ClassifyConfig, run_build_classify, run_classification};
 
-pub use syncmers::{
-    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, FracMinHash, Kdust, KmerHasher, SyncmerVec,
-    calculate_kdust, decode_u64, decode_u128, fill_syncmers, fill_syncmers_with_positions,
+pub use kmers::{
+    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, FracMinHash, Kdust, KmerVec, SmerHasher,
+    calculate_kdust, decode_u64, decode_u128, fill_kmers, fill_kmers_with_positions, make_hasher,
 };
 
 // ── Shared types ──────────────────────────────────────────────────────────────
@@ -687,14 +687,16 @@ pub fn derive_sample_name(path: &Path, is_directory: bool) -> String {
     }
 }
 
-/// Validate k-mer and s-mer size constraints for open syncmers
+/// Validate k-mer and s-mer size constraints (s = 0 selects every k-mer)
 pub fn validate_k_s(kmer_length: u8, smer_length: u8) -> Result<()> {
     let k = kmer_length as usize;
     let s = smer_length as usize;
 
-    if k > 61 || s >= k || !(1..=32).contains(&s) || k.is_multiple_of(2) || s.is_multiple_of(2) {
+    // s = 0 bypasses syncmer selection, so the s constraints do not apply
+    let s_ok = s == 0 || (s < k && s <= 32 && !s.is_multiple_of(2));
+    if k > 61 || k.is_multiple_of(2) || !s_ok {
         return Err(anyhow::anyhow!(
-            "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32)",
+            "Invalid k-s combination: k={}, s={} (constraints: k<=61, k odd, s odd, 1<=s<k, s<=32; s=0 takes every k-mer)",
             k,
             s
         ));

@@ -175,7 +175,7 @@ fn parse_bases(s: &str) -> Result<u64> {
 }
 
 #[derive(Parser)]
-#[command(author, version, about = "Containment and abundance estimation using open syncmers", long_about = None)]
+#[command(author, version, about = "Containment and abundance estimation using open syncmers or all k-mers", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -201,7 +201,15 @@ enum IndexCommands {
         #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
-        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
+        /// Evaluate all k-mers, bypassing syncmer selection (alias for s=0)
+        #[arg(
+            long = "all-kmers",
+            default_value_t = false,
+            conflicts_with = "smer_length"
+        )]
+        all_kmers: bool,
+
+        /// Discard target k-mers below this kdust complexity [0, 1] (0 = retain all)
         #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
         complexity: f32,
 
@@ -218,12 +226,12 @@ enum IndexCommands {
         quiet: bool,
     },
 
-    /// Build a query index (.sk) from target fastx file(s), optionally masking background syncmers (alpha)
+    /// Build a query index (.sk) from target fastx file(s), optionally masking background k-mers (alpha)
     BuildQuery {
         /// Path to fastx file (single target unless -i), directory of fastx files/subdirs (one target per child file/subdir), or - for stdin
         targets: PathBuf,
 
-        /// Path to fastx file(s) whose syncmers we wish to drop from our targets
+        /// Path to fastx file(s) whose k-mers we wish to drop from our targets
         #[arg(short = 'b', long = "background")]
         background: Vec<PathBuf>,
 
@@ -239,11 +247,23 @@ enum IndexCommands {
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
-        /// Store syncmer positions (needed for --confidence/--dump-syncmers at query time)
+        /// Store k-mer positions (needed for --confidence/--dump-kmers at query time)
         #[arg(short = 'p', long = "positions", default_value_t = false)]
         positions: bool,
 
-        /// Fraction of target syncmers to keep [0, 1]
+        /// Evaluate all k-mers, bypassing syncmer selection (alias for s=0)
+        #[arg(
+            long = "all-kmers",
+            default_value_t = false,
+            conflicts_with = "smer_length"
+        )]
+        all_kmers: bool,
+
+        /// Discard target k-mers below this kdust complexity [0, 1] (0 = retain all)
+        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
+        complexity: f32,
+
+        /// FracMinHash fraction of target k-mers to keep [0, 1]
         #[arg(
             short = 'f',
             long = "fraction",
@@ -251,10 +271,6 @@ enum IndexCommands {
             default_value_t = 1.0
         )]
         fraction: f64,
-
-        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
-        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
-        complexity: f32,
 
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
@@ -278,7 +294,7 @@ enum IndexCommands {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Estimate target containment & abundance in fastx file(s) or directories thereof using open syncmers
+    /// Estimate target containment & abundance in fastx file(s) or directories thereof using open syncmers or all k-mers
     Query {
         /// Path to fastx file (single target unless -i), directory of fastx files/subdirs (one target per child file/subdir) or query index (.sk)
         targets: PathBuf,
@@ -301,11 +317,23 @@ enum Commands {
         #[arg(short = 'c', long = "confidence", default_value_t = false)]
         confidence: bool,
 
-        /// Consider only syncmers unique to each target
+        /// Consider only k-mers unique to each target
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
-        /// Fraction of target syncmers to keep [0, 1]
+        /// Evaluate all k-mers, bypassing syncmer selection (alias for s=0)
+        #[arg(
+            long = "all-kmers",
+            default_value_t = false,
+            conflicts_with = "smer_length"
+        )]
+        all_kmers: bool,
+
+        /// Discard target k-mers below this kdust complexity [0, 1] (0 = retain all)
+        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
+        complexity: f32,
+
+        /// FracMinHash fraction of target k-mers to keep [0, 1]
         #[arg(
             short = 'f',
             long = "fraction",
@@ -313,10 +341,6 @@ enum Commands {
             default_value_t = 1.0
         )]
         fraction: f64,
-
-        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
-        #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
-        complexity: f32,
 
         /// Comma-separated additional abundance thresholds for containment estimation
         #[arg(
@@ -328,7 +352,7 @@ enum Commands {
         )]
         abundance_thresholds: Vec<usize>,
 
-        /// Path to fastx file(s) whose syncmers we wish to drop from our targets
+        /// Path to fastx file(s) whose k-mers we wish to drop from our targets
         #[arg(short = 'b', long = "background")]
         background: Vec<PathBuf>,
 
@@ -357,9 +381,9 @@ enum Commands {
         #[arg(long = "sort", default_value = "containment", value_parser = ["containment", "target", "input"])]
         sort: String,
 
-        /// Dump selected target syncmers to TSV file (target, position, kmer)
-        #[arg(long = "dump-syncmers", value_name = "FILE")]
-        dump_syncmers: Option<PathBuf>,
+        /// Dump selected target k-mers to TSV file (target, position, kmer)
+        #[arg(long = "dump-kmers", value_name = "FILE")]
+        dump_kmers: Option<PathBuf>,
 
         /// Suppress TOTAL summary rows in output
         #[arg(long = "no-total", default_value_t = false)]
@@ -370,7 +394,7 @@ enum Commands {
         quiet: bool,
     },
 
-    /// Classify sequences into groups by syncmer content (alpha)
+    /// Classify sequences into groups by k-mer content (alpha)
     Classify {
         /// Path to fastx file (single group unless -i), directory of fastx files/subdirs (one group per child file/subdir) or classification index (.sk)
         targets: PathBuf,
@@ -389,15 +413,23 @@ enum Commands {
         #[arg(short = 's', long = "smer", value_name = "S", help = s_help())]
         smer_length: Option<u8>,
 
-        /// Consider only syncmers unique to each group
+        /// Consider only k-mers unique to each group
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
-        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
+        /// Evaluate all k-mers, bypassing syncmer selection (alias for s=0)
+        #[arg(
+            long = "all-kmers",
+            default_value_t = false,
+            conflicts_with = "smer_length"
+        )]
+        all_kmers: bool,
+
+        /// Discard target k-mers below this kdust complexity [0, 1] (0 = retain all)
         #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
         complexity: f32,
 
-        /// Minimum absolute number of syncmer hits for a match
+        /// Minimum absolute number of k-mer hits for a match
         #[arg(
             short = 'a',
             long = "abs-threshold",
@@ -406,7 +438,7 @@ enum Commands {
         )]
         abs_threshold: u64,
 
-        /// Minimum relative proportion (0.0-1.0) of syncmer hits for a match
+        /// Minimum relative proportion (0.0-1.0) of k-mer hits for a match
         #[arg(
             short = 'r',
             long = "rel-threshold",
@@ -445,7 +477,7 @@ enum Commands {
         quiet: bool,
     },
 
-    /// Generate per-group length histograms based on syncmer classification (alpha)
+    /// Generate per-group length histograms based on k-mer classification (alpha)
     Lenhist {
         /// Path to fastx file (single group unless -i), directory of fastx files/subdirs (one group per child file/subdir), classification index (.sk), or - to disable group filtering (single "all" bucket)
         targets: PathBuf,
@@ -465,15 +497,23 @@ enum Commands {
         #[arg(short = 's', long = "smer", value_name = "S", help = s_help())]
         smer_length: Option<u8>,
 
-        /// Consider only syncmers unique to each group
+        /// Consider only k-mers unique to each group
         #[arg(short = 'd', long = "discriminatory", default_value_t = false)]
         discriminatory: bool,
 
-        /// Discard target syncmers below this kdust complexity [0, 1] (0 = retain all)
+        /// Evaluate all k-mers, bypassing syncmer selection (alias for s=0)
+        #[arg(
+            long = "all-kmers",
+            default_value_t = false,
+            conflicts_with = "smer_length"
+        )]
+        all_kmers: bool,
+
+        /// Discard target k-mers below this kdust complexity [0, 1] (0 = retain all)
         #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
         complexity: f32,
 
-        /// Minimum absolute number of syncmer hits for a match
+        /// Minimum absolute number of k-mer hits for a match
         #[arg(
             short = 'a',
             long = "abs-threshold",
@@ -482,7 +522,7 @@ enum Commands {
         )]
         abs_threshold: u64,
 
-        /// Minimum relative proportion (0.0-1.0) of syncmer hits for a match
+        /// Minimum relative proportion (0.0-1.0) of k-mer hits for a match
         #[arg(
             short = 'r',
             long = "rel-threshold",
@@ -542,12 +582,14 @@ fn main() -> Result<()> {
                 individual,
                 kmer_length,
                 smer_length,
+                all_kmers,
                 complexity,
                 threads,
                 output,
                 quiet,
             } => {
-                validate_k_s(*kmer_length, *smer_length)?;
+                let smer_length = if *all_kmers { 0 } else { *smer_length };
+                validate_k_s(*kmer_length, smer_length)?;
                 validate_complexity(*complexity)?;
 
                 initialise_thread_pool(*threads)?;
@@ -556,7 +598,7 @@ fn main() -> Result<()> {
                     targets_path: targets.clone(),
                     individual: *individual,
                     kmer_length: *kmer_length,
-                    smer_length: *smer_length,
+                    smer_length,
                     complexity: *complexity,
                     threads: *threads,
                     output_path: output_path(output),
@@ -572,6 +614,7 @@ fn main() -> Result<()> {
                 background,
                 kmer_length,
                 smer_length,
+                all_kmers,
                 individual,
                 positions,
                 fraction,
@@ -580,7 +623,8 @@ fn main() -> Result<()> {
                 output,
                 quiet,
             } => {
-                validate_k_s(*kmer_length, *smer_length)?;
+                let smer_length = if *all_kmers { 0 } else { *smer_length };
+                validate_k_s(*kmer_length, smer_length)?;
                 validate_fraction(*fraction)?;
                 validate_complexity(*complexity)?;
 
@@ -590,7 +634,7 @@ fn main() -> Result<()> {
                     targets_path: targets.clone(),
                     background_paths: expand_background_inputs(background)?,
                     kmer_length: *kmer_length,
-                    smer_length: *smer_length,
+                    smer_length,
                     individual: *individual,
                     positions: *positions,
                     threads: *threads,
@@ -615,6 +659,7 @@ fn main() -> Result<()> {
             sample_names,
             kmer_length,
             smer_length,
+            all_kmers,
             abs_threshold,
             rel_threshold,
             discriminatory,
@@ -627,8 +672,12 @@ fn main() -> Result<()> {
         } => {
             let prepared = prepare_samples(samples, sample_names.as_deref())?;
             validate_complexity(*complexity)?;
-            let (kmer_length, smer_length) =
-                resolve_k_s(targets, *kmer_length, *smer_length, *quiet)?;
+            let (kmer_length, smer_length) = resolve_k_s(
+                targets,
+                *kmer_length,
+                if *all_kmers { Some(0) } else { *smer_length },
+                *quiet,
+            )?;
             initialise_thread_pool(*threads)?;
 
             let config = skope::ClassifyConfig {
@@ -658,6 +707,7 @@ fn main() -> Result<()> {
             sample_names,
             kmer_length,
             smer_length,
+            all_kmers,
             threads,
             output,
             quiet,
@@ -666,7 +716,7 @@ fn main() -> Result<()> {
             individual,
             limit,
             sort,
-            dump_syncmers,
+            dump_kmers,
             no_total,
             confidence,
             background,
@@ -677,8 +727,12 @@ fn main() -> Result<()> {
             let background_paths = expand_background_inputs(background)?;
             validate_fraction(*fraction)?;
             validate_complexity(*complexity)?;
-            let (kmer_length, smer_length) =
-                resolve_k_s(targets, *kmer_length, *smer_length, *quiet)?;
+            let (kmer_length, smer_length) = resolve_k_s(
+                targets,
+                *kmer_length,
+                if *all_kmers { Some(0) } else { *smer_length },
+                *quiet,
+            )?;
             initialise_thread_pool(*threads)?;
 
             // Parse sort order
@@ -704,7 +758,7 @@ fn main() -> Result<()> {
                 individual: *individual,
                 limit_bp: parse_limit(limit.as_deref())?,
                 sort_order,
-                dump_syncmers_path: dump_syncmers.clone(),
+                dump_kmers_path: dump_kmers.clone(),
                 no_total: *no_total,
                 confidence: *confidence,
                 fraction: *fraction,
@@ -722,6 +776,7 @@ fn main() -> Result<()> {
             sample_names,
             kmer_length,
             smer_length,
+            all_kmers,
             abs_threshold,
             rel_threshold,
             discriminatory,
@@ -733,8 +788,12 @@ fn main() -> Result<()> {
         } => {
             let prepared = prepare_samples(samples, sample_names.as_deref())?;
             validate_complexity(*complexity)?;
-            let (kmer_length, smer_length) =
-                resolve_k_s(targets, *kmer_length, *smer_length, *quiet)?;
+            let (kmer_length, smer_length) = resolve_k_s(
+                targets,
+                *kmer_length,
+                if *all_kmers { Some(0) } else { *smer_length },
+                *quiet,
+            )?;
             initialise_thread_pool(*threads)?;
 
             // `-` keeps its lenhist-specific meaning: no filtering, single "all" bucket

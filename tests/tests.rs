@@ -25,7 +25,7 @@ fn test_multisample_processing() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: false,
         fraction: 1.0,
         no_total: false,
@@ -58,7 +58,7 @@ fn test_multisample_tsv_structure() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: false,
         fraction: 1.0,
         no_total: false,
@@ -165,7 +165,7 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: true,
         fraction: 1.0,
         no_total: false,
@@ -219,7 +219,7 @@ fn test_sort_target() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Target,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: false,
         fraction: 1.0,
         no_total: false,
@@ -267,7 +267,7 @@ fn test_sort_containment() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Containment,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: false,
         fraction: 1.0,
         no_total: false,
@@ -309,7 +309,7 @@ fn test_sort_containment() {
         );
     }
 
-    // With non-overlapping syncmers, absolute containment is lower than before,
+    // With non-overlapping kmers, absolute containment is lower than before,
     // but the top hit should still be non-zero.
     assert!(
         containments[0] > 0.0,
@@ -537,7 +537,7 @@ fn test_query_directory_mixed_layout() {
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: false,
         fraction: 1.0,
         no_total: true,
@@ -565,12 +565,12 @@ fn test_query_directory_mixed_layout() {
 }
 
 // Two targets sharing a common region but with distinct unique tails. The shared
-// region yields cross-target syncmers; the unique tails do not.
+// region yields cross-target kmers; the unique tails do not.
 const DISC_COMMON: &str = "GATTACAGGCATCCTAGCTAGGACTTGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCCTA";
 const DISC_UNIQUE_A: &str = "TTGCAACGGTACCATTAGCGGATCCTTAGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCC";
 const DISC_UNIQUE_B: &str = "CCAGTTACGGATCCTAGGCATTAGCCAGTTCATGGACTTAGCGGATCCTAGCTAGGACTTGCAACATGCTTAGCCATGGAACTGTCCAGTTACGGATCCTA";
 
-// Parse a --dump-syncmers TSV into target -> set of k-mers (col 1 -> col 3)
+// Parse a --dump-kmers TSV into target -> set of k-mers (col 1 -> col 3)
 fn parse_dump(
     path: &std::path::Path,
 ) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
@@ -588,7 +588,7 @@ fn parse_dump(
 }
 
 #[test]
-fn test_dump_syncmers_respects_discriminatory() {
+fn test_dump_kmers_respects_discriminatory() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     let seq_a = format!("{}{}", DISC_COMMON, DISC_UNIQUE_A);
@@ -618,7 +618,7 @@ fn test_dump_syncmers_respects_discriminatory() {
         discriminatory,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_syncmers_path: Some(dump),
+        dump_kmers_path: Some(dump),
         confidence: false,
         fraction: 1.0,
         no_total: true,
@@ -638,7 +638,7 @@ fn test_dump_syncmers_respects_discriminatory() {
     let shared: Vec<_> = plain_a.intersection(plain_b).collect();
     assert!(
         !shared.is_empty(),
-        "expected cross-target shared syncmers in plain dump"
+        "expected cross-target shared kmers in plain dump"
     );
 
     let disc_a = &disc["tA"];
@@ -646,7 +646,7 @@ fn test_dump_syncmers_respects_discriminatory() {
     let disc_shared: Vec<_> = disc_a.intersection(disc_b).collect();
     assert!(
         disc_shared.is_empty(),
-        "discriminatory dump must contain no cross-target shared syncmers, found: {:?}",
+        "discriminatory dump must contain no cross-target shared kmers, found: {:?}",
         disc_shared
     );
 
@@ -654,7 +654,7 @@ fn test_dump_syncmers_respects_discriminatory() {
     let disc_total = disc_a.len() + disc_b.len();
     assert!(
         disc_total < plain_total,
-        "discriminatory dump ({}) should have fewer syncmers than plain ({})",
+        "discriminatory dump ({}) should have fewer kmers than plain ({})",
         disc_total,
         plain_total
     );
@@ -934,7 +934,7 @@ fn query_to_tsv(targets_path: PathBuf, sample: &std::path::Path, out: &std::path
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: false,
         fraction: 1.0,
         no_total: true,
@@ -1014,7 +1014,7 @@ fn test_query_index_positions_required_only_when_consumed() {
             individual: false,
             limit_bp: None,
             sort_order: SortOrder::Original,
-            dump_syncmers_path: None,
+            dump_kmers_path: None,
             no_total: true,
             confidence: true,
             fraction: 1.0,
@@ -1078,7 +1078,7 @@ fn query_frac(
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: false,
         fraction,
         no_total: true,
@@ -1564,7 +1564,7 @@ fn query_complexity(
         discriminatory: false,
         limit_bp: None,
         sort_order: SortOrder::Original,
-        dump_syncmers_path: None,
+        dump_kmers_path: None,
         confidence: false,
         fraction: 1.0,
         no_total: true,
@@ -1572,7 +1572,7 @@ fn query_complexity(
     })
 }
 
-/// Sum of the target_kmers column, the syncmers surviving filtering
+/// Sum of the target_kmers column, the kmers surviving filtering
 fn target_kmers(tsv: &std::path::Path) -> u64 {
     let text = std::fs::read_to_string(tsv).unwrap();
     let lines: Vec<&str> = text.lines().collect();
@@ -1611,7 +1611,7 @@ fn test_complexity_index_matches_fastx() {
 }
 
 #[test]
-fn test_complexity_drops_low_complexity_syncmers() {
+fn test_complexity_drops_low_complexity_kmers() {
     let dir = TempDir::new().unwrap();
     let target = PathBuf::from("data/zmrp21.viruses.fa");
     let (off, on) = (dir.path().join("off.tsv"), dir.path().join("on.tsv"));
@@ -1623,7 +1623,7 @@ fn test_complexity_drops_low_complexity_syncmers() {
     assert!(unfiltered > 0);
     assert!(
         filtered < unfiltered,
-        "filtering kept {filtered} of {unfiltered} syncmers"
+        "filtering kept {filtered} of {unfiltered} kmers"
     );
 }
 
@@ -1636,7 +1636,104 @@ fn test_complexity_conflicting_with_index_is_rejected() {
     let out = dir.path().join("out.tsv");
     let err = query_complexity(index, &out, 0.5).unwrap_err();
     assert!(
-        err.to_string().contains("conflicts with the index's complexity"),
+        err.to_string()
+            .contains("conflicts with the index's complexity"),
         "unexpected error: {err}"
+    );
+}
+
+// ── All-kmers mode (s = 0, --all-kmers) ─────────────────────────────────────
+
+fn query_all_kmers(
+    targets_path: PathBuf,
+    out: &std::path::Path,
+    smer_length: u8,
+) -> anyhow::Result<()> {
+    skope::run_query(&ContainmentConfig {
+        background_paths: Vec::new(),
+        targets_path,
+        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_names: vec!["s".to_string()],
+        kmer_length: 31,
+        smer_length,
+        complexity: 0.0,
+        threads: 1,
+        output_path: Some(out.to_path_buf()),
+        quiet: true,
+        abundance_thresholds: vec![1],
+        discriminatory: false,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_kmers_path: None,
+        confidence: false,
+        fraction: 1.0,
+        no_total: true,
+        individual: true,
+    })
+}
+
+/// Write one record per k-mer, the case syncmer selection cannot serve
+fn write_kmer_records(path: &std::path::Path, k: usize, n: usize) {
+    use std::io::Write;
+    let source = format!("{DISC_COMMON}{DISC_UNIQUE_A}{DISC_UNIQUE_B}");
+    let mut f = std::fs::File::create(path).unwrap();
+    for i in 0..n {
+        writeln!(f, ">km{i}\n{}", &source[i..i + k]).unwrap();
+    }
+}
+
+// A fastx of bare k-mers keeps every record in all-kmers mode, but syncmer
+// selection retains only ~1/w of them
+#[test]
+fn test_all_kmers_keeps_every_kmer_record() {
+    let dir = TempDir::new().unwrap();
+    let targets = dir.path().join("kmers.fa");
+    write_kmer_records(&targets, 31, 200);
+
+    let all = dir.path().join("all.tsv");
+    query_all_kmers(targets.clone(), &all, 0).unwrap();
+    let syncmers = dir.path().join("sync.tsv");
+    query_all_kmers(targets, &syncmers, 9).unwrap();
+
+    let all_n = target_kmers(&all);
+    let sync_n = target_kmers(&syncmers);
+    assert_eq!(all_n, 200, "every k-mer record should be retained");
+    assert!(
+        sync_n * 5 < all_n,
+        "syncmer selection should keep far fewer: {sync_n} vs {all_n}"
+    );
+}
+
+// A query index built with --all-kmers must reproduce the direct fastx run
+#[test]
+fn test_all_kmers_index_matches_fastx() {
+    let dir = TempDir::new().unwrap();
+    let targets = dir.path().join("t.fa");
+    write_fasta(&targets, "t", &format!("{DISC_COMMON}{DISC_UNIQUE_A}"));
+
+    let index = dir.path().join("t.sk");
+    skope::run_build_query(&skope::BuildQueryConfig {
+        targets_path: targets.clone(),
+        background_paths: vec![],
+        kmer_length: 31,
+        smer_length: 0,
+        complexity: 0.0,
+        individual: true,
+        positions: false,
+        threads: 1,
+        output_path: Some(index.clone()),
+        quiet: true,
+        fraction: 1.0,
+    })
+    .unwrap();
+
+    let from_fastx = dir.path().join("fastx.tsv");
+    query_all_kmers(targets, &from_fastx, 0).unwrap();
+    let from_index = dir.path().join("index.tsv");
+    query_all_kmers(index, &from_index, 0).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&from_fastx).unwrap(),
+        std::fs::read_to_string(&from_index).unwrap()
     );
 }

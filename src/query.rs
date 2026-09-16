@@ -1,13 +1,13 @@
-use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
-use crate::syncmers::{
-    Buffers, FracMinHash, Kdust, KmerHasher, SyncmerVec, decode_u64, decode_u128, fill_syncmers,
-    fill_syncmers_with_positions,
+use crate::kmers::{
+    Buffers, FracMinHash, Kdust, KmerVec, SmerHasher, decode_u64, decode_u128, fill_kmers,
+    fill_kmers_with_positions, make_hasher,
 };
+use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::{
     ProcessingStats, RapidHashSet, StdinTargets, TargetSource, check_index_complexity,
-    complexity_info_line, create_spinner, format_bp,
-    format_bp_per_sec, handle_process_result, reader_for_path, reader_with_inferred_batch_size,
-    resolve_targets, sample_limit_reached_io_error,
+    complexity_info_line, create_spinner, format_bp, format_bp_per_sec, handle_process_result,
+    reader_for_path, reader_with_inferred_batch_size, resolve_targets,
+    sample_limit_reached_io_error,
 };
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
@@ -32,117 +32,121 @@ pub enum SortOrder {
     Containment, // Descending by containment1 (highest first)
 }
 
-/// Zero-cost (hopefully?) abstraction over u64 and u128 syncmer sets
+/// Zero-cost (hopefully?) abstraction over u64 and u128 k-mer sets
 #[derive(Debug, Clone)]
-enum SyncmerSet {
+enum KmerSet {
     U64(RapidHashSet<u64>),
     U128(RapidHashSet<u128>),
 }
 
-impl SyncmerSet {
+impl KmerSet {
     fn len(&self) -> usize {
         match self {
-            SyncmerSet::U64(set) => set.len(),
-            SyncmerSet::U128(set) => set.len(),
+            KmerSet::U64(set) => set.len(),
+            KmerSet::U128(set) => set.len(),
         }
     }
 
-    fn extend(&mut self, other: &SyncmerSet) {
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn extend(&mut self, other: &KmerSet) {
         match (self, other) {
-            (SyncmerSet::U64(a), SyncmerSet::U64(b)) => a.extend(b.iter().copied()),
-            (SyncmerSet::U128(a), SyncmerSet::U128(b)) => a.extend(b.iter().copied()),
-            _ => panic!("Cannot extend SyncmerSet: mismatched variants"),
+            (KmerSet::U64(a), KmerSet::U64(b)) => a.extend(b.iter().copied()),
+            (KmerSet::U128(a), KmerSet::U128(b)) => a.extend(b.iter().copied()),
+            _ => panic!("Cannot extend KmerSet: mismatched variants"),
         }
     }
 
-    /// Remove all syncmers from --background stream, returning count
-    fn retain_not_in(&mut self, other: &SyncmerSet) -> usize {
+    /// Remove all k-mers from --background stream, returning count
+    fn retain_not_in(&mut self, other: &KmerSet) -> usize {
         match (self, other) {
-            (SyncmerSet::U64(a), SyncmerSet::U64(b)) => {
+            (KmerSet::U64(a), KmerSet::U64(b)) => {
                 let before = a.len();
                 a.retain(|s| !b.contains(s));
                 before - a.len()
             }
-            (SyncmerSet::U128(a), SyncmerSet::U128(b)) => {
+            (KmerSet::U128(a), KmerSet::U128(b)) => {
                 let before = a.len();
                 a.retain(|s| !b.contains(s));
                 before - a.len()
             }
-            _ => panic!("Cannot mask SyncmerSet: mismatched variants"),
+            _ => panic!("Cannot mask KmerSet: mismatched variants"),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-enum PositionedSyncmers {
+enum PositionedKmers {
     U64(Vec<(u64, usize)>),
     U128(Vec<(u128, usize)>),
     Empty,
 }
 
-impl PositionedSyncmers {
+impl PositionedKmers {
     fn offset_positions(&mut self, offset: usize) {
         match self {
-            PositionedSyncmers::U64(entries) => {
+            PositionedKmers::U64(entries) => {
                 for (_, position) in entries {
                     *position += offset;
                 }
             }
-            PositionedSyncmers::U128(entries) => {
+            PositionedKmers::U128(entries) => {
                 for (_, position) in entries {
                     *position += offset;
                 }
             }
-            PositionedSyncmers::Empty => {}
+            PositionedKmers::Empty => {}
         }
     }
 
-    fn extend(&mut self, other: PositionedSyncmers) {
+    fn extend(&mut self, other: PositionedKmers) {
         match self {
-            PositionedSyncmers::U64(a) => match other {
-                PositionedSyncmers::U64(b) => a.extend(b),
-                PositionedSyncmers::Empty => {}
-                _ => panic!("Cannot extend PositionedSyncmers: mismatched variants"),
+            PositionedKmers::U64(a) => match other {
+                PositionedKmers::U64(b) => a.extend(b),
+                PositionedKmers::Empty => {}
+                _ => panic!("Cannot extend PositionedKmers: mismatched variants"),
             },
-            PositionedSyncmers::U128(a) => match other {
-                PositionedSyncmers::U128(b) => a.extend(b),
-                PositionedSyncmers::Empty => {}
-                _ => panic!("Cannot extend PositionedSyncmers: mismatched variants"),
+            PositionedKmers::U128(a) => match other {
+                PositionedKmers::U128(b) => a.extend(b),
+                PositionedKmers::Empty => {}
+                _ => panic!("Cannot extend PositionedKmers: mismatched variants"),
             },
-            PositionedSyncmers::Empty => *self = other,
+            PositionedKmers::Empty => *self = other,
         }
     }
 
-    fn retain_in_set(&mut self, syncmers: &SyncmerSet) {
-        match (self, syncmers) {
-            (PositionedSyncmers::U64(entries), SyncmerSet::U64(set)) => {
-                entries.retain(|(syncmer, _)| set.contains(syncmer));
+    fn retain_in_set(&mut self, kmers: &KmerSet) {
+        match (self, kmers) {
+            (PositionedKmers::U64(entries), KmerSet::U64(set)) => {
+                entries.retain(|(kmer, _)| set.contains(kmer));
             }
-            (PositionedSyncmers::U128(entries), SyncmerSet::U128(set)) => {
-                entries.retain(|(syncmer, _)| set.contains(syncmer));
+            (PositionedKmers::U128(entries), KmerSet::U128(set)) => {
+                entries.retain(|(kmer, _)| set.contains(kmer));
             }
-            (PositionedSyncmers::Empty, _) => {}
-            _ => panic!("Cannot filter PositionedSyncmers: mismatched variants"),
+            (PositionedKmers::Empty, _) => {}
+            _ => panic!("Cannot filter PositionedKmers: mismatched variants"),
         }
     }
 
     fn positions(&self) -> Vec<usize> {
         match self {
-            PositionedSyncmers::U64(entries) => {
+            PositionedKmers::U64(entries) => {
                 entries.iter().map(|(_, position)| *position).collect()
             }
-            PositionedSyncmers::U128(entries) => {
+            PositionedKmers::U128(entries) => {
                 entries.iter().map(|(_, position)| *position).collect()
             }
-            PositionedSyncmers::Empty => Vec::new(),
+            PositionedKmers::Empty => Vec::new(),
         }
     }
 
     fn len(&self) -> usize {
         match self {
-            PositionedSyncmers::U64(entries) => entries.len(),
-            PositionedSyncmers::U128(entries) => entries.len(),
-            PositionedSyncmers::Empty => 0,
+            PositionedKmers::U64(entries) => entries.len(),
+            PositionedKmers::U128(entries) => entries.len(),
+            PositionedKmers::Empty => 0,
         }
     }
 }
@@ -151,9 +155,9 @@ impl PositionedSyncmers {
 struct TargetInfo {
     name: String,
     length: usize,
-    syncmers: SyncmerSet,
-    syncmer_positions: Vec<usize>,
-    positioned_syncmers: PositionedSyncmers,
+    kmers: KmerSet,
+    kmer_positions: Vec<usize>,
+    positioned_kmers: PositionedKmers,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -209,7 +213,7 @@ pub struct ContainmentConfig {
     pub individual: bool,
     pub limit_bp: Option<u64>,
     pub sort_order: SortOrder,
-    pub dump_syncmers_path: Option<PathBuf>,
+    pub dump_kmers_path: Option<PathBuf>,
     pub no_total: bool,
     pub confidence: bool,
     pub fraction: f64,
@@ -233,12 +237,12 @@ fn normalize_abundance_thresholds(thresholds: &[usize]) -> Vec<usize> {
     thresholds
 }
 
-/// Processor for collecting target sequence records with syncmers
+/// Processor for collecting target sequence records with k-mers
 #[derive(Clone)]
 struct TargetsProcessor {
     kmer_length: u8,
     smer_length: u8,
-    hasher: KmerHasher,
+    hasher: SmerHasher,
     fmh: FracMinHash,
     kdust: Kdust,
     buffers: Buffers,
@@ -274,7 +278,7 @@ impl TargetsProcessor {
         Self {
             kmer_length,
             smer_length,
-            hasher: KmerHasher::new(smer_length as usize),
+            hasher: make_hasher(smer_length),
             fmh,
             kdust,
             buffers,
@@ -296,7 +300,7 @@ impl TargetsProcessor {
             let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
 
             spinner.lock().set_message(format!(
-                "Collecting target syncmers: {} seqs ({}). {:.0} seqs/s ({})",
+                "Collecting target k-mers: {} seqs ({}). {:.0} seqs/s ({})",
                 stats.total_seqs,
                 format_bp(stats.total_bp as usize),
                 seqs_per_sec,
@@ -315,7 +319,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         self.local_stats.total_bp += sequence.len() as u64;
 
         if self.collect_positions {
-            fill_syncmers_with_positions(
+            fill_kmers_with_positions(
                 &sequence,
                 &self.hasher,
                 self.kmer_length,
@@ -324,42 +328,42 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 &mut self.positions,
             );
             self.fmh
-                .retain(&mut self.buffers.syncmers, Some(&mut self.positions));
+                .retain(&mut self.buffers.kmers, Some(&mut self.positions));
             self.kdust
-                .retain(&mut self.buffers.syncmers, Some(&mut self.positions));
+                .retain(&mut self.buffers.kmers, Some(&mut self.positions));
         } else {
-            fill_syncmers(
+            fill_kmers(
                 &sequence,
                 &self.hasher,
                 self.kmer_length,
                 self.smer_length,
                 &mut self.buffers,
             );
-            self.fmh.retain(&mut self.buffers.syncmers, None);
-            self.kdust.retain(&mut self.buffers.syncmers, None);
+            self.fmh.retain(&mut self.buffers.kmers, None);
+            self.kdust.retain(&mut self.buffers.kmers, None);
         }
 
-        // Build unique syncmer set for this target
-        let syncmers = match &self.buffers.syncmers {
-            SyncmerVec::U64(vec) => {
+        // Build unique k-mer set for this target
+        let kmers = match &self.buffers.kmers {
+            KmerVec::U64(vec) => {
                 let set: RapidHashSet<u64> = vec.iter().copied().collect();
-                SyncmerSet::U64(set)
+                KmerSet::U64(set)
             }
-            SyncmerVec::U128(vec) => {
+            KmerVec::U128(vec) => {
                 let set: RapidHashSet<u128> = vec.iter().copied().collect();
-                SyncmerSet::U128(set)
+                KmerSet::U128(set)
             }
         };
 
-        let positioned_syncmers = if self.collect_positions {
-            match &self.buffers.syncmers {
-                SyncmerVec::U64(vec) => PositionedSyncmers::U64(
+        let positioned_kmers = if self.collect_positions {
+            match &self.buffers.kmers {
+                KmerVec::U64(vec) => PositionedKmers::U64(
                     vec.iter()
                         .copied()
                         .zip(self.positions.iter().copied())
                         .collect(),
                 ),
-                SyncmerVec::U128(vec) => PositionedSyncmers::U128(
+                KmerVec::U128(vec) => PositionedKmers::U128(
                     vec.iter()
                         .copied()
                         .zip(self.positions.iter().copied())
@@ -367,10 +371,10 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
                 ),
             }
         } else {
-            PositionedSyncmers::Empty
+            PositionedKmers::Empty
         };
 
-        let syncmer_positions = if self.collect_positions {
+        let kmer_positions = if self.collect_positions {
             self.positions.clone()
         } else {
             Vec::new()
@@ -379,9 +383,9 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         self.targets.lock().push(TargetInfo {
             name: target_name,
             length: sequence.len(),
-            syncmers,
-            syncmer_positions,
-            positioned_syncmers,
+            kmers,
+            kmer_positions,
+            positioned_kmers,
         });
 
         Ok(())
@@ -465,15 +469,15 @@ fn merge_targets(targets: Vec<TargetInfo>, name: String) -> Result<TargetInfo> {
 
     for t in iter {
         let offset = merged.length;
-        let mut positioned_syncmers = t.positioned_syncmers;
-        positioned_syncmers.offset_positions(offset);
-        merged.syncmers.extend(&t.syncmers);
-        merged.syncmer_positions.extend(
-            t.syncmer_positions
+        let mut positioned_kmers = t.positioned_kmers;
+        positioned_kmers.offset_positions(offset);
+        merged.kmers.extend(&t.kmers);
+        merged.kmer_positions.extend(
+            t.kmer_positions
                 .into_iter()
                 .map(|position| position + offset),
         );
-        merged.positioned_syncmers.extend(positioned_syncmers);
+        merged.positioned_kmers.extend(positioned_kmers);
         merged.length += t.length;
     }
 
@@ -523,13 +527,13 @@ fn process_target_groups(
     Ok(results)
 }
 
-/// Processor for counting syncmer depths from sequences
+/// Processor for counting k-mer depths from sequences
 #[derive(Clone)]
 struct SeqsProcessor {
     kmer_length: u8,
     smer_length: u8,
-    hasher: KmerHasher,
-    targets_syncmers: Arc<SyncmerSet>,
+    hasher: SmerHasher,
+    targets_kmers: Arc<KmerSet>,
 
     // Local buffers
     buffers: Buffers,
@@ -552,7 +556,7 @@ impl SeqsProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
-        targets_syncmers: Arc<SyncmerSet>,
+        targets_kmers: Arc<KmerSet>,
         global_counts_u64: Arc<Mutex<Option<HashMap<u64, CountDepth>>>>,
         global_counts_u128: Arc<Mutex<Option<HashMap<u128, CountDepth>>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
@@ -576,8 +580,8 @@ impl SeqsProcessor {
         Self {
             kmer_length,
             smer_length,
-            hasher: KmerHasher::new(smer_length as usize),
-            targets_syncmers,
+            hasher: make_hasher(smer_length),
+            targets_kmers,
             buffers,
             local_stats: ProcessingStats::default(),
             local_counts_u64,
@@ -627,7 +631,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
         self.local_stats.total_seqs += 1;
         self.local_stats.total_bp += seq.len() as u64;
 
-        fill_syncmers(
+        fill_kmers(
             &seq,
             &self.hasher,
             self.kmer_length,
@@ -635,31 +639,31 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
             &mut self.buffers,
         );
 
-        // Count syncmers present in targets
-        match (&self.buffers.syncmers, &*self.targets_syncmers) {
-            (SyncmerVec::U64(vec), SyncmerSet::U64(targets_set)) => {
+        // Count k-mers present in targets
+        match (&self.buffers.kmers, &*self.targets_kmers) {
+            (KmerVec::U64(vec), KmerSet::U64(targets_set)) => {
                 let local_counts = self.local_counts_u64.as_mut().unwrap();
-                for &syncmer in vec {
-                    if targets_set.contains(&syncmer) {
+                for &kmer in vec {
+                    if targets_set.contains(&kmer) {
                         local_counts
-                            .entry(syncmer)
+                            .entry(kmer)
                             .and_modify(|e| *e = e.saturating_add(1))
                             .or_insert(1);
                     }
                 }
             }
-            (SyncmerVec::U128(vec), SyncmerSet::U128(targets_set)) => {
+            (KmerVec::U128(vec), KmerSet::U128(targets_set)) => {
                 let local_counts = self.local_counts_u128.as_mut().unwrap();
-                for &syncmer in vec {
-                    if targets_set.contains(&syncmer) {
+                for &kmer in vec {
+                    if targets_set.contains(&kmer) {
                         local_counts
-                            .entry(syncmer)
+                            .entry(kmer)
                             .and_modify(|e| *e = e.saturating_add(1))
                             .or_insert(1);
                     }
                 }
             }
-            _ => panic!("Mismatch between SyncmerVec and SyncmerSet types"),
+            _ => panic!("Mismatch between KmerVec and KmerSet types"),
         }
 
         Ok(())
@@ -670,9 +674,9 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
         if let Some(local) = &mut self.local_counts_u64 {
             let mut global = self.global_counts_u64.lock();
             let global_map = global.as_mut().unwrap();
-            for (&syncmer, &count) in local.iter() {
+            for (&kmer, &count) in local.iter() {
                 global_map
-                    .entry(syncmer)
+                    .entry(kmer)
                     .and_modify(|e| *e = e.saturating_add(count))
                     .or_insert(count);
             }
@@ -681,9 +685,9 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
             let mut global = self.global_counts_u128.lock();
             let global_map = global.as_mut().unwrap();
             let local = self.local_counts_u128.as_mut().unwrap();
-            for (&syncmer, &count) in local.iter() {
+            for (&kmer, &count) in local.iter() {
                 global_map
-                    .entry(syncmer)
+                    .entry(kmer)
                     .and_modify(|e| *e = e.saturating_add(count))
                     .or_insert(count);
             }
@@ -721,7 +725,7 @@ const MIN_TARGET_KMERS_FOR_ANI_ADJUSTMENT: usize = 50;
 const MIN_NONZERO_KMERS_FOR_ANI_ADJUSTMENT: usize = 25;
 const MIN_DEPTH_BIN_FOR_ANI_ADJUSTMENT: usize = 3;
 const MAX_MEDIAN_DEPTH_FOR_ANI_ADJUSTMENT: f64 = 2.0;
-// Gates for displaying an ANI estimate: minimum target syncmers and minimum ANI
+// Gates for displaying an ANI estimate: minimum target k-mers and minimum ANI
 const MIN_TARGET_KMERS_FOR_ANI_DISPLAY: usize = 50;
 const MIN_ANI_FOR_DISPLAY: f64 = 0.90;
 const MIN_TARGET_KMERS_FOR_PATCHINESS: usize = 50;
@@ -807,7 +811,7 @@ fn ani_estimate(
     lambda: Option<f64>,
     target_kmers: usize,
 ) -> Option<f64> {
-    // Need enough syncmers and at least one contained syncmer
+    // Need enough k-mers and at least one contained k-mer
     if kmer_length == 0 || target_kmers < MIN_TARGET_KMERS_FOR_ANI_DISPLAY || containment <= 0.0 {
         return None;
     }
@@ -859,7 +863,7 @@ fn calculate_patchiness_from_labels(labels: &[bool]) -> Option<PatchinessResult>
 }
 
 fn calculate_patchiness_u64(
-    positioned_syncmers: &[(u64, usize)],
+    positioned_kmers: &[(u64, usize)],
     abundances: &HashMap<u64, CountDepth>,
     threshold: usize,
 ) -> Option<PatchinessResult> {
@@ -868,27 +872,21 @@ fn calculate_patchiness_u64(
     }
 
     let mut occurrence_counts: HashMap<u64, usize> = HashMap::new();
-    for &(syncmer, _) in positioned_syncmers {
-        *occurrence_counts.entry(syncmer).or_insert(0) += 1;
+    for &(kmer, _) in positioned_kmers {
+        *occurrence_counts.entry(kmer).or_insert(0) += 1;
     }
 
-    let labels: Vec<bool> = positioned_syncmers
+    let labels: Vec<bool> = positioned_kmers
         .iter()
-        .filter(|(syncmer, _)| {
-            occurrence_counts
-                .get(syncmer)
-                .is_some_and(|&count| count == 1)
-        })
-        .map(|(syncmer, _)| {
-            abundances.get(syncmer).copied().unwrap_or(0) >= threshold as CountDepth
-        })
+        .filter(|(kmer, _)| occurrence_counts.get(kmer).is_some_and(|&count| count == 1))
+        .map(|(kmer, _)| abundances.get(kmer).copied().unwrap_or(0) >= threshold as CountDepth)
         .collect();
 
     calculate_patchiness_from_labels(&labels)
 }
 
 fn calculate_patchiness_u128(
-    positioned_syncmers: &[(u128, usize)],
+    positioned_kmers: &[(u128, usize)],
     abundances: &HashMap<u128, CountDepth>,
     threshold: usize,
 ) -> Option<PatchinessResult> {
@@ -897,45 +895,39 @@ fn calculate_patchiness_u128(
     }
 
     let mut occurrence_counts: HashMap<u128, usize> = HashMap::new();
-    for &(syncmer, _) in positioned_syncmers {
-        *occurrence_counts.entry(syncmer).or_insert(0) += 1;
+    for &(kmer, _) in positioned_kmers {
+        *occurrence_counts.entry(kmer).or_insert(0) += 1;
     }
 
-    let labels: Vec<bool> = positioned_syncmers
+    let labels: Vec<bool> = positioned_kmers
         .iter()
-        .filter(|(syncmer, _)| {
-            occurrence_counts
-                .get(syncmer)
-                .is_some_and(|&count| count == 1)
-        })
-        .map(|(syncmer, _)| {
-            abundances.get(syncmer).copied().unwrap_or(0) >= threshold as CountDepth
-        })
+        .filter(|(kmer, _)| occurrence_counts.get(kmer).is_some_and(|&count| count == 1))
+        .map(|(kmer, _)| abundances.get(kmer).copied().unwrap_or(0) >= threshold as CountDepth)
         .collect();
 
     calculate_patchiness_from_labels(&labels)
 }
 
 fn calculate_patchiness(
-    positioned_syncmers: &PositionedSyncmers,
+    positioned_kmers: &PositionedKmers,
     abundance_map: &AbundanceMap,
     threshold: usize,
 ) -> Option<PatchinessResult> {
-    match (positioned_syncmers, abundance_map) {
-        (PositionedSyncmers::U64(positioned), AbundanceMap::U64(map)) => {
+    match (positioned_kmers, abundance_map) {
+        (PositionedKmers::U64(positioned), AbundanceMap::U64(map)) => {
             calculate_patchiness_u64(positioned, map, threshold)
         }
-        (PositionedSyncmers::U128(positioned), AbundanceMap::U128(map)) => {
+        (PositionedKmers::U128(positioned), AbundanceMap::U128(map)) => {
             calculate_patchiness_u128(positioned, map, threshold)
         }
-        (PositionedSyncmers::Empty, _) => None,
-        _ => panic!("Mismatch between PositionedSyncmers and AbundanceMap types"),
+        (PositionedKmers::Empty, _) => None,
+        _ => panic!("Mismatch between PositionedKmers and AbundanceMap types"),
     }
 }
 
 fn process_seqs_file(
     seq_path: &Path,
-    targets_syncmers: Arc<SyncmerSet>,
+    targets_kmers: Arc<KmerSet>,
     kmer_length: u8,
     smer_length: u8,
     threads: usize,
@@ -956,7 +948,7 @@ fn process_seqs_file(
         pb.lock().set_message(format!("{label}: 0 seqs (0bp)"));
     }
 
-    let total_target_syncmers = targets_syncmers.len();
+    let total_target_kmers = targets_kmers.len();
 
     let start_time = Instant::now();
     let (global_counts_u64, global_counts_u128) = if kmer_length <= 32 {
@@ -975,7 +967,7 @@ fn process_seqs_file(
     let mut processor = SeqsProcessor::new(
         kmer_length,
         smer_length,
-        targets_syncmers,
+        targets_kmers,
         Arc::clone(&global_counts_u64),
         Arc::clone(&global_counts_u128),
         Arc::clone(&global_stats),
@@ -1011,17 +1003,17 @@ fn process_seqs_file(
 
     if !quiet {
         let elapsed = start_time.elapsed();
-        let unique_syncmers = match &abundance_map {
+        let unique_kmers = match &abundance_map {
             AbundanceMap::U64(m) => m.len(),
             AbundanceMap::U128(m) => m.len(),
         };
         let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
         eprintln!(
-            "{summary_label}: {} records ({}), found {} of {} distinct target syncmers ({})",
+            "{summary_label}: {} records ({}), found {} of {} distinct target k-mers ({})",
             stats.total_seqs,
             format_bp(stats.total_bp as usize),
-            unique_syncmers,
-            total_target_syncmers,
+            unique_kmers,
+            total_target_kmers,
             format_bp_per_sec(bp_per_sec)
         );
     }
@@ -1039,31 +1031,31 @@ fn calculate_containment_statistics(
     targets
         .iter()
         .map(|target| {
-            let target_kmers = target.syncmers.len();
+            let target_kmers = target.kmers.len();
             let mut abundances: Vec<CountDepth> = Vec::new();
             let mut contained_count = 0;
 
-            // Collect abundances for all unique syncmers in this target
-            match (&target.syncmers, abundance_map) {
-                (SyncmerSet::U64(set), AbundanceMap::U64(map)) => {
-                    for &syncmer in set {
-                        let abundance = map.get(&syncmer).copied().unwrap_or(0);
+            // Collect abundances for all unique k-mers in this target
+            match (&target.kmers, abundance_map) {
+                (KmerSet::U64(set), AbundanceMap::U64(map)) => {
+                    for &kmer in set {
+                        let abundance = map.get(&kmer).copied().unwrap_or(0);
                         abundances.push(abundance);
                         if abundance > 0 {
                             contained_count += 1;
                         }
                     }
                 }
-                (SyncmerSet::U128(set), AbundanceMap::U128(map)) => {
-                    for &syncmer in set {
-                        let abundance = map.get(&syncmer).copied().unwrap_or(0);
+                (KmerSet::U128(set), AbundanceMap::U128(map)) => {
+                    for &kmer in set {
+                        let abundance = map.get(&kmer).copied().unwrap_or(0);
                         abundances.push(abundance);
                         if abundance > 0 {
                             contained_count += 1;
                         }
                     }
                 }
-                _ => panic!("Mismatch between SyncmerSet and AbundanceMap types"),
+                _ => panic!("Mismatch between KmerSet and AbundanceMap types"),
             }
 
             let containment1 = if target_kmers > 0 {
@@ -1072,7 +1064,7 @@ fn calculate_containment_statistics(
                 0.0
             };
 
-            // Ignore zero-abundance syncmers for median calc
+            // Ignore zero-abundance k-mers for median calc
             let non_zero_abundances: Vec<CountDepth> =
                 abundances.iter().copied().filter(|&a| a > 0).collect();
 
@@ -1100,7 +1092,7 @@ fn calculate_containment_statistics(
             let lambda = estimate_lambda(&abundance_histogram, target_kmers, median_nz_abundance);
             let ani_est = ani_estimate(containment1, kmer_length, lambda, target_kmers);
             let patchiness = if calculate_patchiness_metrics {
-                calculate_patchiness(&target.positioned_syncmers, abundance_map, 1)
+                calculate_patchiness(&target.positioned_kmers, abundance_map, 1)
             } else {
                 None
             };
@@ -1146,7 +1138,7 @@ fn process_single_sample(
     sample_paths: &[PathBuf], // Multiple files per sample
     sample_name: &str,
     targets: &[TargetInfo],
-    targets_syncmers: Arc<SyncmerSet>,
+    targets_kmers: Arc<KmerSet>,
     abundance_thresholds: &[usize],
     config: &ContainmentConfig,
 ) -> Result<SampleResults> {
@@ -1166,7 +1158,7 @@ fn process_single_sample(
     for seq_path in sample_paths {
         let (file_abundance_map, file_seqs, file_bp) = process_seqs_file(
             seq_path,
-            Arc::clone(&targets_syncmers),
+            Arc::clone(&targets_kmers),
             config.kmer_length,
             config.smer_length,
             config.threads,
@@ -1179,17 +1171,17 @@ fn process_single_sample(
         // Merge abundance maps
         match (&mut combined_abundance_map, file_abundance_map) {
             (AbundanceMap::U64(combined), AbundanceMap::U64(new)) => {
-                for (syncmer, count) in new {
+                for (kmer, count) in new {
                     combined
-                        .entry(syncmer)
+                        .entry(kmer)
                         .and_modify(|e| *e = e.saturating_add(count))
                         .or_insert(count);
                 }
             }
             (AbundanceMap::U128(combined), AbundanceMap::U128(new)) => {
-                for (syncmer, count) in new {
+                for (kmer, count) in new {
                     combined
-                        .entry(syncmer)
+                        .entry(kmer)
                         .and_modify(|e| *e = e.saturating_add(count))
                         .or_insert(count);
                 }
@@ -1264,32 +1256,32 @@ fn process_single_sample(
     })
 }
 
-/// Combined set of every target's syncmers
-fn build_union(targets: &[TargetInfo], kmer_length: u8) -> SyncmerSet {
+/// Combined set of every target's k-mers
+fn build_union(targets: &[TargetInfo], kmer_length: u8) -> KmerSet {
     if kmer_length <= 32 {
         let mut set = RapidHashSet::default();
         for t in targets {
-            if let SyncmerSet::U64(s) = &t.syncmers {
+            if let KmerSet::U64(s) = &t.kmers {
                 set.extend(s.iter());
             }
         }
-        SyncmerSet::U64(set)
+        KmerSet::U64(set)
     } else {
         let mut set = RapidHashSet::default();
         for t in targets {
-            if let SyncmerSet::U128(s) = &t.syncmers {
+            if let KmerSet::U128(s) = &t.kmers {
                 set.extend(s.iter());
             }
         }
-        SyncmerSet::U128(set)
+        KmerSet::U128(set)
     }
 }
 
-/// Drop target syncmers shared with background sequences. Streaming via `process_seqs_file`
+/// Drop target k-mers shared with background sequences. Streaming via `process_seqs_file`
 /// keeps peak memory bounded by the targets, not the background. Returns count removed.
 fn mask_background(
     targets: &mut [TargetInfo],
-    union: &SyncmerSet,
+    union: &KmerSet,
     background_paths: &[PathBuf],
     kmer_length: u8,
     smer_length: u8,
@@ -1318,17 +1310,17 @@ fn mask_background(
     }
 
     let to_remove = if kmer_length <= 32 {
-        SyncmerSet::U64(rm_u64)
+        KmerSet::U64(rm_u64)
     } else {
-        SyncmerSet::U128(rm_u128)
+        KmerSet::U128(rm_u128)
     };
     let removed = to_remove.len();
 
     // Apply removal to each target; re-sync positions like the discriminatory filter
     for target in targets.iter_mut() {
-        target.syncmers.retain_not_in(&to_remove);
-        target.positioned_syncmers.retain_in_set(&target.syncmers);
-        target.syncmer_positions = target.positioned_syncmers.positions();
+        target.kmers.retain_not_in(&to_remove);
+        target.positioned_kmers.retain_in_set(&target.kmers);
+        target.kmer_positions = target.positioned_kmers.positions();
     }
     Ok(removed)
 }
@@ -1391,28 +1383,28 @@ pub fn print_query_index_info(path: &Path) -> Result<()> {
         return Err(anyhow::anyhow!("Query index target count mismatch"));
     }
 
-    let total_syncmers: u64 = meta.iter().map(|(_, _, count)| count).sum();
+    let total_kmers: u64 = meta.iter().map(|(_, _, count)| count).sum();
     let total_bp: u64 = meta.iter().map(|(_, length, _)| length).sum();
 
     println!("Index information:");
-    println!("  Format: query (open syncmer set)");
+    println!("  Format: query");
     println!("  Format version: {version}");
     println!("  K-mer length (k): {kmer_length}");
     println!("  S-mer length (s): {smer_length}");
     println!("  Targets: {n_targets}");
-    println!("  Total syncmers: {total_syncmers}");
+    println!("  Total k-mers: {total_kmers}");
     println!("  Total length: {}", format_bp(total_bp as usize));
     println!(
         "  FracMinHash fraction: {}",
         if fraction >= 1.0 {
             "1 (retain all)".to_string()
         } else {
-            format!("{fraction} (keeps ~{:.0}% of syncmers)", fraction * 100.0)
+            format!("{fraction} (keeps ~{:.0}% of k-mers)", fraction * 100.0)
         }
     );
     println!("{}", complexity_info_line(complexity));
     println!(
-        "  Syncmer positions: {}",
+        "  K-mer positions: {}",
         if flags & QUERY_INDEX_FLAG_POSITIONS != 0 {
             "stored"
         } else {
@@ -1470,9 +1462,9 @@ fn save_query_index(
         .iter()
         .map(|t| {
             let count = if has_positions {
-                t.positioned_syncmers.len()
+                t.positioned_kmers.len()
             } else {
-                t.syncmers.len()
+                t.kmers.len()
             } as u64;
             (t.name.clone(), t.length as u64, count)
         })
@@ -1496,29 +1488,29 @@ fn save_query_index(
 
     for t in targets {
         if has_positions {
-            match &t.positioned_syncmers {
-                PositionedSyncmers::U64(entries) => {
+            match &t.positioned_kmers {
+                PositionedKmers::U64(entries) => {
                     for &(v, pos) in entries {
                         writer.write_all(&v.to_le_bytes()[..kmer_bytes])?;
                         writer.write_all(&(pos as u32).to_le_bytes())?;
                     }
                 }
-                PositionedSyncmers::U128(entries) => {
+                PositionedKmers::U128(entries) => {
                     for &(v, pos) in entries {
                         writer.write_all(&v.to_le_bytes()[..kmer_bytes])?;
                         writer.write_all(&(pos as u32).to_le_bytes())?;
                     }
                 }
-                PositionedSyncmers::Empty => {}
+                PositionedKmers::Empty => {}
             }
         } else {
-            match &t.syncmers {
-                SyncmerSet::U64(set) => {
+            match &t.kmers {
+                KmerSet::U64(set) => {
                     for &v in set {
                         writer.write_all(&v.to_le_bytes()[..kmer_bytes])?;
                     }
                 }
-                SyncmerSet::U128(set) => {
+                KmerSet::U128(set) => {
                     for &v in set {
                         writer.write_all(&v.to_le_bytes()[..kmer_bytes])?;
                     }
@@ -1579,13 +1571,13 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
         let mut target = TargetInfo {
             name,
             length: length as usize,
-            syncmers: if kmer_length <= 32 {
-                SyncmerSet::U64(RapidHashSet::default())
+            kmers: if kmer_length <= 32 {
+                KmerSet::U64(RapidHashSet::default())
             } else {
-                SyncmerSet::U128(RapidHashSet::default())
+                KmerSet::U128(RapidHashSet::default())
             },
-            syncmer_positions: Vec::new(),
-            positioned_syncmers: PositionedSyncmers::Empty,
+            kmer_positions: Vec::new(),
+            positioned_kmers: PositionedKmers::Empty,
         };
 
         if has_positions {
@@ -1602,8 +1594,8 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
                     positions.push(pos);
                     set.insert(v);
                 }
-                target.syncmers = SyncmerSet::U64(set);
-                target.positioned_syncmers = PositionedSyncmers::U64(entries);
+                target.kmers = KmerSet::U64(set);
+                target.positioned_kmers = PositionedKmers::U64(entries);
             } else {
                 let mut entries = Vec::with_capacity(count);
                 let mut set = RapidHashSet::default();
@@ -1616,22 +1608,22 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
                     positions.push(pos);
                     set.insert(v);
                 }
-                target.syncmers = SyncmerSet::U128(set);
-                target.positioned_syncmers = PositionedSyncmers::U128(entries);
+                target.kmers = KmerSet::U128(set);
+                target.positioned_kmers = PositionedKmers::U128(entries);
             }
-            target.syncmer_positions = positions;
+            target.kmer_positions = positions;
         } else if kmer_length <= 32 {
             let mut set = RapidHashSet::default();
             for i in 0..count {
                 set.insert(read_u64(&block[i * entry..]));
             }
-            target.syncmers = SyncmerSet::U64(set);
+            target.kmers = KmerSet::U64(set);
         } else {
             let mut set = RapidHashSet::default();
             for i in 0..count {
                 set.insert(read_u128(&block[i * entry..]));
             }
-            target.syncmers = SyncmerSet::U128(set);
+            target.kmers = KmerSet::U128(set);
         }
 
         targets.push(target);
@@ -1701,7 +1693,7 @@ pub fn run_build_query(config: &BuildQueryConfig) -> Result<()> {
         // only the multi-file aggregate adds information.
         if !config.quiet && config.background_paths.len() > 1 {
             eprintln!(
-                "Masked {removed} background syncmers across {} files",
+                "Masked {removed} background k-mers across {} files",
                 config.background_paths.len()
             );
         }
@@ -1718,9 +1710,9 @@ pub fn run_build_query(config: &BuildQueryConfig) -> Result<()> {
     )?;
 
     if !config.quiet {
-        let total: usize = targets.iter().map(|t| t.syncmers.len()).sum();
+        let total: usize = targets.iter().map(|t| t.kmers.len()).sum();
         eprintln!(
-            "Wrote query index ({} targets, {total} syncmers, positions={}) in {:.1}s",
+            "Wrote query index ({} targets, {total} k-mers, positions={}) in {:.1}s",
             targets.len(),
             config.positions,
             start.elapsed().as_secs_f64()
@@ -1798,12 +1790,12 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
     );
 
     // Load a prebuilt query index else extract targets from fastx
-    let need_positions = config.dump_syncmers_path.is_some() || config.confidence;
+    let need_positions = config.dump_kmers_path.is_some() || config.confidence;
     let mut targets = if let TargetSource::Index(path) = &source {
         let index = load_query_index(path)?;
         if need_positions && !index.has_positions {
             return Err(anyhow::anyhow!(
-                "Query index built without --positions; cannot use --confidence or --dump-syncmers"
+                "Query index built without --positions; cannot use --confidence or --dump-kmers"
             ));
         }
         index.targets
@@ -1836,126 +1828,134 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
         // only the multi-file aggregate adds information.
         if !config.quiet && config.background_paths.len() > 1 {
             eprintln!(
-                "Masked {removed} background syncmers across {} files",
+                "Masked {removed} background k-mers across {} files",
                 config.background_paths.len()
             );
         }
     }
 
-    // Count syncmers shared between targets (only meaningful with >1 target)
-    let (shared_syncmers, unique_across_all) = if targets.len() > 1 {
+    // Count k-mers shared between targets (only meaningful with >1 target)
+    let (shared_kmers, unique_across_all) = if targets.len() > 1 {
         if !config.quiet {
-            eprint!("Counting shared syncmers…\r");
+            eprint!("Counting shared k-mers…\r");
         }
-        let mut syncmer_target_counts: HashMap<u64, usize> = HashMap::new();
-        let mut syncmer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
+        let mut kmer_target_counts: HashMap<u64, usize> = HashMap::new();
+        let mut kmer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
 
         for target in &targets {
-            match &target.syncmers {
-                SyncmerSet::U64(set) => {
-                    for &syncmer in set {
-                        *syncmer_target_counts.entry(syncmer).or_insert(0) += 1;
+            match &target.kmers {
+                KmerSet::U64(set) => {
+                    for &kmer in set {
+                        *kmer_target_counts.entry(kmer).or_insert(0) += 1;
                     }
                 }
-                SyncmerSet::U128(set) => {
-                    for &syncmer in set {
-                        *syncmer_target_counts_u128.entry(syncmer).or_insert(0) += 1;
+                KmerSet::U128(set) => {
+                    for &kmer in set {
+                        *kmer_target_counts_u128.entry(kmer).or_insert(0) += 1;
                     }
                 }
             }
         }
 
         let shared = if config.kmer_length <= 32 {
-            syncmer_target_counts
+            kmer_target_counts
                 .values()
                 .filter(|&&count| count > 1)
                 .count()
         } else {
-            syncmer_target_counts_u128
+            kmer_target_counts_u128
                 .values()
                 .filter(|&&count| count > 1)
                 .count()
         };
 
         let unique = if config.kmer_length <= 32 {
-            syncmer_target_counts.len()
+            kmer_target_counts.len()
         } else {
-            syncmer_target_counts_u128.len()
+            kmer_target_counts_u128.len()
         };
 
         // Apply discriminatory filtering if enabled
         if config.discriminatory {
             for target in &mut targets {
-                match &mut target.syncmers {
-                    SyncmerSet::U64(set) => {
-                        set.retain(|syncmer| {
-                            syncmer_target_counts
-                                .get(syncmer)
-                                .is_none_or(|&count| count == 1)
+                match &mut target.kmers {
+                    KmerSet::U64(set) => {
+                        set.retain(|kmer| {
+                            kmer_target_counts.get(kmer).is_none_or(|&count| count == 1)
                         });
                     }
-                    SyncmerSet::U128(set) => {
-                        set.retain(|syncmer| {
-                            syncmer_target_counts_u128
-                                .get(syncmer)
+                    KmerSet::U128(set) => {
+                        set.retain(|kmer| {
+                            kmer_target_counts_u128
+                                .get(kmer)
                                 .is_none_or(|&count| count == 1)
                         });
                     }
                 }
-                target.positioned_syncmers.retain_in_set(&target.syncmers);
-                target.syncmer_positions = target.positioned_syncmers.positions();
+                target.positioned_kmers.retain_in_set(&target.kmers);
+                target.kmer_positions = target.positioned_kmers.positions();
             }
         }
 
         (shared, unique)
     } else {
-        (0, targets.first().map(|t| t.syncmers.len()).unwrap_or(0))
+        (0, targets.first().map(|t| t.kmers.len()).unwrap_or(0))
     };
 
     if !config.quiet {
         eprint!("\r"); // Clear space
-        let total_unique_syncmers: usize = targets.iter().map(|t| t.syncmers.len()).sum();
+        let total_unique_kmers: usize = targets.iter().map(|t| t.kmers.len()).sum();
         let total_bp: usize = targets.iter().map(|t| t.length).sum();
 
         if config.discriminatory {
             eprintln!(
-                "Targets: {} records ({}), {} discriminatory syncmers ({} shared syncmers dropped)",
+                "Targets: {} records ({}), {} discriminatory k-mers ({} shared k-mers dropped)",
                 targets.len(),
                 format_bp(total_bp),
-                total_unique_syncmers,
-                shared_syncmers
+                total_unique_kmers,
+                shared_kmers
             );
         } else {
             let shared_pct = if unique_across_all > 0 {
-                shared_syncmers as f64 / unique_across_all as f64 * 100.0
+                shared_kmers as f64 / unique_across_all as f64 * 100.0
             } else {
                 0.0
             };
             eprintln!(
-                "Targets: {} records ({}), {} syncmers, of which {} ({:.1}%) shared by multiple targets",
+                "Targets: {} records ({}), {} k-mers, of which {} ({:.1}%) shared by multiple targets",
                 targets.len(),
                 format_bp(total_bp),
-                total_unique_syncmers,
-                shared_syncmers,
+                total_unique_kmers,
+                shared_kmers,
                 shared_pct
+            );
+        }
+
+        // Records shorter than k vanish silently, the likely mistake when targets are k-mers
+        let empty = targets.iter().filter(|t| t.kmers.is_empty()).count();
+        if empty > 0 {
+            eprintln!(
+                "Note: {empty} of {} targets yielded no k-mers (records shorter than k={}?)",
+                targets.len(),
+                config.kmer_length
             );
         }
     }
 
-    // Build set of all unique syncmers across targets
+    // Build set of all unique k-mers across targets
     if !config.quiet {
-        eprint!("Building syncmer set…\r");
+        eprint!("Building k-mer set…\r");
     }
-    let targets_syncmers = Arc::new(build_union(&targets, config.kmer_length));
+    let targets_kmers = Arc::new(build_union(&targets, config.kmer_length));
 
-    // Dump syncmers (position + k-mer sequence) if requested
-    if let Some(ref path) = config.dump_syncmers_path {
+    // Dump k-mers (position + k-mer sequence) if requested
+    if let Some(ref path) = config.dump_kmers_path {
         let mut file = BufWriter::new(File::create(path)?);
         let k = config.kmer_length;
         let mut total = 0usize;
         for target in &targets {
-            match &target.positioned_syncmers {
-                PositionedSyncmers::U64(entries) => {
+            match &target.positioned_kmers {
+                PositionedKmers::U64(entries) => {
                     for &(value, pos) in entries {
                         let kmer = decode_u64(value, k);
                         writeln!(
@@ -1968,7 +1968,7 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
                         total += 1;
                     }
                 }
-                PositionedSyncmers::U128(entries) => {
+                PositionedKmers::U128(entries) => {
                     for &(value, pos) in entries {
                         let kmer = decode_u128(value, k);
                         writeln!(
@@ -1981,12 +1981,12 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
                         total += 1;
                     }
                 }
-                PositionedSyncmers::Empty => {}
+                PositionedKmers::Empty => {}
             }
         }
         file.flush()?;
         if !config.quiet {
-            eprintln!("Dumped {} syncmers to {}", total, path.display());
+            eprintln!("Dumped {} k-mers to {}", total, path.display());
         }
     }
 
@@ -2018,7 +2018,7 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
                 sample_paths, // Now a &Vec<PathBuf>
                 sample_name,
                 &targets,
-                Arc::clone(&targets_syncmers),
+                Arc::clone(&targets_kmers),
                 &abundance_thresholds,
                 config,
             );

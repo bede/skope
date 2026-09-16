@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `--all-kmers` disables syncmer selection and instead selects and evaluates all (canonical) *k*-mers. Underneath this simply fixes `s=0`. Use this to hunt for individual k-mers. This (unsurprisingly!) uses more memory.
+
+### Changed
+
+- `--dump-syncmers` is now `--dump-kmers`.
+
 ## [0.5.0] - 2026-09-14
 
 ### Added

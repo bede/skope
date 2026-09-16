@@ -1,20 +1,25 @@
 use crate::FixedRapidHasher;
-use packed_seq::{PackedNSeqVec, SeqVec, unpack_base};
+use packed_seq::{PackedNSeq, PackedNSeqVec, Seq, SeqVec, unpack_base};
 use std::hash::BuildHasher;
 
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
 pub const DEFAULT_SMER_LENGTH: u8 = 9;
 
-pub type KmerHasher = simd_minimizers::seq_hash::NtHasher<true, 1>;
+pub type SmerHasher = simd_minimizers::seq_hash::NtHasher<true, 1>;
 
-/// FracMinHash: keep syncmer if mix(hash(kmer)) lte [0,1] threshold
+/// Hasher for syncmer selection. Unused when s is 0, but NtHasher::new(0) underflows
+pub fn make_hasher(smer_length: u8) -> SmerHasher {
+    SmerHasher::new(smer_length.max(1) as usize)
+}
+
+/// FracMinHash: keep k-mer if mix(hash(kmer)) lte [0,1] threshold
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FracMinHash {
     threshold: u64,
 }
 
 impl FracMinHash {
-    /// Keep all syncmers
+    /// Keep all k-mers
     pub const NONE: FracMinHash = FracMinHash {
         threshold: u64::MAX,
     };
@@ -48,16 +53,16 @@ impl FracMinHash {
         rapid_mix_u128(kmer) <= self.threshold
     }
 
-    pub fn retain(&self, syncmers: &mut SyncmerVec, positions: Option<&mut Vec<usize>>) {
+    pub fn retain(&self, kmers: &mut KmerVec, positions: Option<&mut Vec<usize>>) {
         if self.is_none() {
             return;
         }
-        match syncmers {
-            SyncmerVec::U64(vec) => match positions {
+        match kmers {
+            KmerVec::U64(vec) => match positions {
                 Some(pos) => retain_paired(vec, pos, |&v| self.keeps_u64(v)),
                 None => vec.retain(|&v| self.keeps_u64(v)),
             },
-            SyncmerVec::U128(vec) => match positions {
+            KmerVec::U128(vec) => match positions {
                 Some(pos) => retain_paired(vec, pos, |&v| self.keeps_u128(v)),
                 None => vec.retain(|&v| self.keeps_u128(v)),
             },
@@ -116,7 +121,7 @@ pub fn calculate_kdust(code: u128, kmer_length: u8) -> f32 {
     1.0 - score as f32 / (l * (l - 1.0) / 2.0)
 }
 
-/// Discard syncmers below a kdust threshold in [0, 1]
+/// Discard k-mers below a kdust threshold in [0, 1]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Kdust {
     threshold: f32,
@@ -124,7 +129,7 @@ pub struct Kdust {
 }
 
 impl Kdust {
-    /// Keep all syncmers
+    /// Keep all k-mers
     pub const NONE: Kdust = Kdust {
         threshold: 0.0,
         kmer_length: 0,
@@ -152,16 +157,16 @@ impl Kdust {
         calculate_kdust(kmer, self.kmer_length) >= self.threshold
     }
 
-    pub fn retain(&self, syncmers: &mut SyncmerVec, positions: Option<&mut Vec<usize>>) {
+    pub fn retain(&self, kmers: &mut KmerVec, positions: Option<&mut Vec<usize>>) {
         if self.is_none() {
             return;
         }
-        match syncmers {
-            SyncmerVec::U64(vec) => match positions {
+        match kmers {
+            KmerVec::U64(vec) => match positions {
                 Some(pos) => retain_paired(vec, pos, |&v| self.keeps(v as u128)),
                 None => vec.retain(|&v| self.keeps(v as u128)),
             },
-            SyncmerVec::U128(vec) => match positions {
+            KmerVec::U128(vec) => match positions {
                 Some(pos) => retain_paired(vec, pos, |&v| self.keeps(v)),
                 None => vec.retain(|&v| self.keeps(v)),
             },
@@ -169,64 +174,64 @@ impl Kdust {
     }
 }
 
-/// Zero-cost abstraction over u64 and u128 syncmer vectors
+/// Zero-cost abstraction over u64 and u128 k-mer vectors
 #[derive(Debug, Clone)]
-pub enum SyncmerVec {
+pub enum KmerVec {
     U64(Vec<u64>),
     U128(Vec<u128>),
 }
 
-impl SyncmerVec {
+impl KmerVec {
     pub fn clear(&mut self) {
         match self {
-            SyncmerVec::U64(v) => v.clear(),
-            SyncmerVec::U128(v) => v.clear(),
+            KmerVec::U64(v) => v.clear(),
+            KmerVec::U128(v) => v.clear(),
         }
     }
 
     pub fn len(&self) -> usize {
         match self {
-            SyncmerVec::U64(v) => v.len(),
-            SyncmerVec::U128(v) => v.len(),
+            KmerVec::U64(v) => v.len(),
+            KmerVec::U128(v) => v.len(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         match self {
-            SyncmerVec::U64(v) => v.is_empty(),
-            SyncmerVec::U128(v) => v.is_empty(),
+            KmerVec::U64(v) => v.is_empty(),
+            KmerVec::U128(v) => v.is_empty(),
         }
     }
 }
 
-/// Decode u64 syncmer (2-bit canonical k-mer)
-pub fn decode_u64(syncmer: u64, k: u8) -> Vec<u8> {
+/// Decode u64 k-mer (2-bit canonical k-mer)
+pub fn decode_u64(kmer: u64, k: u8) -> Vec<u8> {
     (0..k)
         .map(|i| {
-            let base_bits = ((syncmer >> (2 * i)) & 0b11) as u8;
+            let base_bits = ((kmer >> (2 * i)) & 0b11) as u8;
             unpack_base(base_bits)
         })
         .rev()
         .collect()
 }
 
-/// Decode u128 syncmer (2-bit canonical k-mer)
-pub fn decode_u128(syncmer: u128, k: u8) -> Vec<u8> {
+/// Decode u128 k-mer (2-bit canonical k-mer)
+pub fn decode_u128(kmer: u128, k: u8) -> Vec<u8> {
     (0..k)
         .map(|i| {
-            let base_bits = ((syncmer >> (2 * i)) & 0b11) as u8;
+            let base_bits = ((kmer >> (2 * i)) & 0b11) as u8;
             unpack_base(base_bits)
         })
         .rev()
         .collect()
 }
 
-/// Reusable buffers for syncmer computation
+/// Reusable buffers for k-mer computation
 #[derive(Clone)]
 pub struct Buffers {
     pub packed_nseq: PackedNSeqVec,
     pub positions: Vec<u32>,
-    pub syncmers: SyncmerVec,
+    pub kmers: KmerVec,
 }
 
 impl Buffers {
@@ -237,7 +242,7 @@ impl Buffers {
                 ambiguous: Default::default(),
             },
             positions: Default::default(),
-            syncmers: SyncmerVec::U64(Vec::new()),
+            kmers: KmerVec::U64(Vec::new()),
         }
     }
 
@@ -248,15 +253,15 @@ impl Buffers {
                 ambiguous: Default::default(),
             },
             positions: Default::default(),
-            syncmers: SyncmerVec::U128(Vec::new()),
+            kmers: KmerVec::U128(Vec::new()),
         }
     }
 }
 
-/// Fill syncmers vector and positions vector from sequence
-pub fn fill_syncmers_with_positions(
+/// Fill k-mers vector and positions vector from sequence
+pub fn fill_kmers_with_positions(
     seq: &[u8],
-    hasher: &KmerHasher,
+    hasher: &SmerHasher,
     kmer_length: u8,
     smer_length: u8,
     buffers: &mut Buffers,
@@ -265,12 +270,12 @@ pub fn fill_syncmers_with_positions(
     let Buffers {
         packed_nseq,
         positions,
-        syncmers,
+        kmers,
     } = buffers;
 
     packed_nseq.seq.clear();
     packed_nseq.ambiguous.clear();
-    syncmers.clear();
+    kmers.clear();
     positions.clear();
     positions_out.clear();
 
@@ -281,20 +286,57 @@ pub fn fill_syncmers_with_positions(
     packed_nseq.seq.push_ascii(seq);
     packed_nseq.ambiguous.push_ascii(seq);
 
+    // s = 0 bypasses syncmer selection, taking every canonical k-mer
+    if smer_length == 0 {
+        let k = kmer_length as usize;
+        let PackedNSeq {
+            seq: packed,
+            ambiguous,
+        } = packed_nseq.as_slice();
+        let n = packed.len() + 1 - k;
+        match kmers {
+            KmerVec::U64(vec) => {
+                for pos in 0..n {
+                    if ambiguous.read_kmer(k, pos) == 0 {
+                        vec.push(
+                            packed
+                                .read_kmer(k, pos)
+                                .min(packed.read_revcomp_kmer(k, pos)),
+                        );
+                        positions_out.push(pos);
+                    }
+                }
+            }
+            KmerVec::U128(vec) => {
+                for pos in 0..n {
+                    if ambiguous.read_kmer(k, pos) == 0 {
+                        vec.push(
+                            packed
+                                .read_kmer_u128(k, pos)
+                                .min(packed.read_revcomp_kmer_u128(k, pos)),
+                        );
+                        positions_out.push(pos);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     let s = smer_length as usize;
     let w = kmer_length as usize - s + 1;
     let m = simd_minimizers::canonical_open_syncmers(s, w)
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
-    match syncmers {
-        SyncmerVec::U64(vec) => {
+    match kmers {
+        KmerVec::U64(vec) => {
             for (pos, val) in m.pos_and_values_u64() {
                 vec.push(val);
                 positions_out.push(pos as usize);
             }
         }
-        SyncmerVec::U128(vec) => {
+        KmerVec::U128(vec) => {
             for (pos, val) in m.pos_and_values_u128() {
                 vec.push(val);
                 positions_out.push(pos as usize);
@@ -303,11 +345,11 @@ pub fn fill_syncmers_with_positions(
     }
 }
 
-/// Fill syncmers vector from sequence (without positions)
+/// Fill k-mers vector from sequence (without positions)
 #[inline]
-pub fn fill_syncmers(
+pub fn fill_kmers(
     seq: &[u8],
-    hasher: &KmerHasher,
+    hasher: &SmerHasher,
     kmer_length: u8,
     smer_length: u8,
     buffers: &mut Buffers,
@@ -315,12 +357,12 @@ pub fn fill_syncmers(
     let Buffers {
         packed_nseq,
         positions,
-        syncmers,
+        kmers,
     } = buffers;
 
     packed_nseq.seq.clear();
     packed_nseq.ambiguous.clear();
-    syncmers.clear();
+    kmers.clear();
     positions.clear();
 
     if seq.len() < kmer_length as usize {
@@ -330,19 +372,54 @@ pub fn fill_syncmers(
     packed_nseq.seq.push_ascii(seq);
     packed_nseq.ambiguous.push_ascii(seq);
 
+    // s = 0 bypasses syncmer selection, taking every canonical k-mer
+    if smer_length == 0 {
+        let k = kmer_length as usize;
+        let PackedNSeq {
+            seq: packed,
+            ambiguous,
+        } = packed_nseq.as_slice();
+        let n = packed.len() + 1 - k;
+        match kmers {
+            KmerVec::U64(vec) => {
+                for pos in 0..n {
+                    if ambiguous.read_kmer(k, pos) == 0 {
+                        vec.push(
+                            packed
+                                .read_kmer(k, pos)
+                                .min(packed.read_revcomp_kmer(k, pos)),
+                        );
+                    }
+                }
+            }
+            KmerVec::U128(vec) => {
+                for pos in 0..n {
+                    if ambiguous.read_kmer(k, pos) == 0 {
+                        vec.push(
+                            packed
+                                .read_kmer_u128(k, pos)
+                                .min(packed.read_revcomp_kmer_u128(k, pos)),
+                        );
+                    }
+                }
+            }
+        }
+        return;
+    }
+
     let s = smer_length as usize;
     let w = kmer_length as usize - s + 1;
     let m = simd_minimizers::canonical_open_syncmers(s, w)
         .hasher(hasher)
         .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
 
-    match syncmers {
-        SyncmerVec::U64(vec) => {
+    match kmers {
+        KmerVec::U64(vec) => {
             for (_pos, val) in m.pos_and_values_u64() {
                 vec.push(val);
             }
         }
-        SyncmerVec::U128(vec) => {
+        KmerVec::U128(vec) => {
             for (_pos, val) in m.pos_and_values_u128() {
                 vec.push(val);
             }
@@ -355,37 +432,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_fill_syncmers() {
+    fn test_fill_kmers() {
         let seq = b"ACGTACGTACGT";
         let k = 5;
         let s = 3;
-        let hasher = KmerHasher::new(s as usize);
+        let hasher = SmerHasher::new(s as usize);
         let mut buffers = Buffers::new_u64();
 
-        fill_syncmers(seq, &hasher, k, s, &mut buffers);
+        fill_kmers(seq, &hasher, k, s, &mut buffers);
 
-        // We should have at least one syncmer
-        assert!(!buffers.syncmers.is_empty());
+        // We should have at least one k-mer
+        assert!(!buffers.kmers.is_empty());
 
         // Test with a sequence shorter than k
         let short_seq = b"ACGT";
-        fill_syncmers(short_seq, &hasher, k, s, &mut buffers);
-        assert!(buffers.syncmers.is_empty());
+        fill_kmers(short_seq, &hasher, k, s, &mut buffers);
+        assert!(buffers.kmers.is_empty());
     }
 
     #[test]
-    fn test_fill_syncmers_with_positions() {
+    fn test_fill_kmers_with_positions() {
         let seq = b"ACGTACGTACGTACGT";
         let k = 7;
         let s = 3;
-        let hasher = KmerHasher::new(s as usize);
+        let hasher = SmerHasher::new(s as usize);
         let mut buffers = Buffers::new_u64();
         let mut positions = Vec::new();
 
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions);
+        fill_kmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions);
 
-        // Should have same number of syncmers and positions
-        assert_eq!(buffers.syncmers.len(), positions.len());
+        // Should have same number of k-mers and positions
+        assert_eq!(buffers.kmers.len(), positions.len());
 
         // All positions should be valid
         for &pos in &positions {
@@ -394,30 +471,101 @@ mod tests {
     }
 
     #[test]
-    fn test_syncmers_match_between_apis() {
+    fn test_kmers_match_between_apis() {
         let seq = b"ACGTTGCATGTCGCATGATGCATGAGAGCTACGTTGCATGTCGCATGATGCATGAGAGCT";
         let k = 15;
         let s = 7;
-        let hasher = KmerHasher::new(s as usize);
+        let hasher = SmerHasher::new(s as usize);
 
         let mut values_only_buffers = Buffers::new_u64();
-        fill_syncmers(seq, &hasher, k, s, &mut values_only_buffers);
-        let values_only = match &values_only_buffers.syncmers {
-            SyncmerVec::U64(v) => v.clone(),
-            SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
+        fill_kmers(seq, &hasher, k, s, &mut values_only_buffers);
+        let values_only = match &values_only_buffers.kmers {
+            KmerVec::U64(v) => v.clone(),
+            KmerVec::U128(_) => panic!("Expected u64 k-mers for k <= 32"),
         };
 
         let mut with_pos_buffers = Buffers::new_u64();
         let mut positions = Vec::new();
-        fill_syncmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions);
-        let with_pos_values = match &with_pos_buffers.syncmers {
-            SyncmerVec::U64(v) => v.clone(),
-            SyncmerVec::U128(_) => panic!("Expected u64 syncmers for k <= 32"),
+        fill_kmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions);
+        let with_pos_values = match &with_pos_buffers.kmers {
+            KmerVec::U64(v) => v.clone(),
+            KmerVec::U128(_) => panic!("Expected u64 k-mers for k <= 32"),
         };
 
-        // Give us same syncmers and same order from both APIs
+        // Give us same k-mers and same order from both APIs
         assert_eq!(values_only, with_pos_values);
         assert_eq!(with_pos_values.len(), positions.len());
+    }
+
+    /// Pack ASCII into packed-seq's 2-bit encoding (A=0 C=1 T=2 G=3, base i at bit 2i)
+    fn pack_packed_seq(seq: &[u8]) -> u128 {
+        seq.iter().enumerate().fold(0u128, |acc, (i, &b)| {
+            acc | (((b >> 1) & 3) as u128) << (2 * i)
+        })
+    }
+
+    /// Every canonical k-mer, computed naively from the ASCII sequence
+    fn naive_all_kmers(seq: &[u8], k: usize) -> Vec<u128> {
+        (0..=seq.len() - k)
+            .map(|i| {
+                let w = &seq[i..i + k];
+                pack_packed_seq(w).min(pack_packed_seq(&revcomp(w)))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_all_kmers_matches_naive_u64() {
+        let seq = pseudo_dna(500, 7);
+        let k = 31usize;
+        let mut buffers = Buffers::new_u64();
+        let mut positions = Vec::new();
+        fill_kmers_with_positions(
+            &seq,
+            &make_hasher(0),
+            k as u8,
+            0,
+            &mut buffers,
+            &mut positions,
+        );
+
+        let got = match &buffers.kmers {
+            KmerVec::U64(v) => v.iter().map(|&x| x as u128).collect::<Vec<_>>(),
+            KmerVec::U128(_) => panic!("expected u64"),
+        };
+        assert_eq!(got, naive_all_kmers(&seq, k));
+        assert_eq!(positions, (0..=seq.len() - k).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_all_kmers_matches_naive_u128() {
+        let seq = pseudo_dna(300, 13);
+        let k = 41usize;
+        let mut buffers = Buffers::new_u128();
+        fill_kmers(&seq, &make_hasher(0), k as u8, 0, &mut buffers);
+
+        let got = match &buffers.kmers {
+            KmerVec::U128(v) => v.clone(),
+            KmerVec::U64(_) => panic!("expected u128"),
+        };
+        assert_eq!(got, naive_all_kmers(&seq, k));
+    }
+
+    #[test]
+    fn test_all_kmers_skips_ambiguous() {
+        let k = 31usize;
+        let mut seq = pseudo_dna(200, 11);
+        let clean = kmers_u64(&seq, k as u8, 0, FracMinHash::NONE);
+        assert_eq!(clean.len(), seq.len() - k + 1);
+
+        seq[100] = b'N';
+        let with_n = kmers_u64(&seq, k as u8, 0, FracMinHash::NONE);
+
+        // Exactly the k k-mers spanning the N are dropped, the rest are untouched
+        let mut expected = clean.clone();
+        expected.drain(100 + 1 - k..=100);
+        assert_eq!(with_n.len(), clean.len() - k);
+        assert_eq!(with_n, expected);
     }
 
     /// Deterministic pseudo-random DNA of length `n` (LCG), for stable stats tests
@@ -434,31 +582,28 @@ mod tests {
             .collect()
     }
 
-    fn syncmers_u64(seq: &[u8], k: u8, s: u8, fmh: FracMinHash) -> Vec<u64> {
-        let hasher = KmerHasher::new(s as usize);
+    fn kmers_u64(seq: &[u8], k: u8, s: u8, fmh: FracMinHash) -> Vec<u64> {
+        let hasher = make_hasher(s);
         let mut buffers = Buffers::new_u64();
-        fill_syncmers(seq, &hasher, k, s, &mut buffers);
-        fmh.retain(&mut buffers.syncmers, None);
-        match &buffers.syncmers {
-            SyncmerVec::U64(v) => v.clone(),
-            SyncmerVec::U128(_) => panic!("expected u64"),
+        fill_kmers(seq, &hasher, k, s, &mut buffers);
+        fmh.retain(&mut buffers.kmers, None);
+        match &buffers.kmers {
+            KmerVec::U64(v) => v.clone(),
+            KmerVec::U128(_) => panic!("expected u64"),
         }
     }
 
     #[test]
     fn test_fmh_none_subset_and_fraction() {
         let seq = pseudo_dna(200_000, 42);
-        let all = syncmers_u64(&seq, 31, 9, FracMinHash::NONE);
+        let all = kmers_u64(&seq, 31, 9, FracMinHash::NONE);
         // from_fraction(1.0) is a no-op equal to NONE
-        assert_eq!(
-            all,
-            syncmers_u64(&seq, 31, 9, FracMinHash::from_fraction(1.0))
-        );
-        let kept = syncmers_u64(&seq, 31, 9, FracMinHash::from_fraction(0.1));
+        assert_eq!(all, kmers_u64(&seq, 31, 9, FracMinHash::from_fraction(1.0)));
+        let kept = kmers_u64(&seq, 31, 9, FracMinHash::from_fraction(0.1));
         // Deterministic, a strict subset, and roughly the target fraction
         assert_eq!(
             kept,
-            syncmers_u64(&seq, 31, 9, FracMinHash::from_fraction(0.1))
+            kmers_u64(&seq, 31, 9, FracMinHash::from_fraction(0.1))
         );
         let all_set: std::collections::HashSet<u64> = all.iter().copied().collect();
         assert!(kept.iter().all(|v| all_set.contains(v)));
@@ -469,7 +614,7 @@ mod tests {
         );
     }
 
-    /// Pack ASCII bases as syncmer values are stored
+    /// Pack ASCII bases as k-mer values are stored
     fn pack(seq: &[u8]) -> u128 {
         seq.iter().rev().fold(0u128, |acc, &b| {
             let bits = match b {
@@ -547,34 +692,34 @@ mod tests {
     #[test]
     fn test_kdust_none_is_a_noop() {
         let seq = pseudo_dna(2_000, 11);
-        let all = syncmers_u64(&seq, 31, 9, FracMinHash::NONE);
+        let all = kmers_u64(&seq, 31, 9, FracMinHash::NONE);
         assert!(!all.is_empty());
 
         let kdust = Kdust::from_threshold(0.0, 31);
         assert!(kdust.is_none());
-        let mut vec = SyncmerVec::U64(all.clone());
+        let mut vec = KmerVec::U64(all.clone());
         kdust.retain(&mut vec, None);
         match &vec {
-            SyncmerVec::U64(v) => assert_eq!(*v, all),
-            SyncmerVec::U128(_) => panic!("expected u64"),
+            KmerVec::U64(v) => assert_eq!(*v, all),
+            KmerVec::U128(_) => panic!("expected u64"),
         }
     }
 
     #[test]
     fn test_kdust_retain_drops_below_threshold_and_keeps_positions_aligned() {
-        // Hand-built values pin retain's behaviour, not syncmer selection
+        // Hand-built values pin retain's behaviour, not k-mer selection
         let low = pack(&[b'A'; 31]) as u64;
         let mid = pack(b"ATATATATATATATATATATATATATATATA") as u64;
         let high = pack(&pseudo_dna(31, 5)) as u64;
         assert!(calculate_kdust(high as u128, 31) > 0.9);
 
-        let mut syncmers = SyncmerVec::U64(vec![high, low, high, mid, low]);
+        let mut kmers = KmerVec::U64(vec![high, low, high, mid, low]);
         let mut positions = vec![10usize, 20, 30, 40, 50];
-        Kdust::from_threshold(0.9, 31).retain(&mut syncmers, Some(&mut positions));
+        Kdust::from_threshold(0.9, 31).retain(&mut kmers, Some(&mut positions));
 
-        match &syncmers {
-            SyncmerVec::U64(v) => assert_eq!(*v, vec![high, high]),
-            SyncmerVec::U128(_) => panic!("expected u64"),
+        match &kmers {
+            KmerVec::U64(v) => assert_eq!(*v, vec![high, high]),
+            KmerVec::U128(_) => panic!("expected u64"),
         }
         // Survivors keep their paired positions
         assert_eq!(positions, vec![10, 30]);
