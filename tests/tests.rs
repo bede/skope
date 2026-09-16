@@ -435,10 +435,8 @@ fn classify_to(
     .unwrap();
 }
 
-const SEQ_A: &str =
-    "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
-const SEQ_B: &str =
-    "GTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCA";
+const SEQ_A: &str = "TTTCCTCATGCAATTCAAAACCATGTCCGTAATGTAGGCGAAATAGTAAACCATTTTACGGAGGATACCAAATTCCTCCTTATTCAGGACCTAACCTGAGGTAAACCAGGTCTCTCCGCCCCCTTATAAAAGCTGTTGCACCTAGCCAAGTTCAACGGCAGCTGCAATGGAAATAGGCAATGACGGATATATATTAAAAA";
+const SEQ_B: &str = "GTGTTTTAAGATACATTGAGGCCCGTTCGTGCTCCTCGCCCTGAAGCATTGCTTTGTGAAGAGGGACTTCAGCCAATAGACCTGCATACCGGCTCATTCTTCATGTGCAACCTAGGGAGAATGTGTACATACGCTCTTACTGCGGTCGCGTCTAATAATATACATTTGCTTCGTTGACTAGCAACCCAGGGCTATAGCTA";
 
 #[test]
 fn test_discover_target_groups_mixed_layout() {
@@ -962,9 +960,14 @@ fn test_query_index_matches_fastx() {
     let (i, f) = (dir.path().join("i.tsv"), dir.path().join("f.tsv"));
     query_to_tsv(index, &sample, &i);
     query_to_tsv(target, &sample, &f);
-    assert_eq!(
-        std::fs::read_to_string(i).unwrap(),
-        std::fs::read_to_string(f).unwrap()
+    let from_index = std::fs::read_to_string(i).unwrap();
+    assert_eq!(from_index, std::fs::read_to_string(f).unwrap());
+    // Equality is vacuous unless the target yielded k-mers
+    let tk = from_index.lines().next().unwrap();
+    let tk = tk.split('\t').position(|h| h == "target_kmers").unwrap();
+    assert_ne!(
+        from_index.lines().nth(1).unwrap().split('\t').nth(tk),
+        Some("0")
     );
 }
 
@@ -1736,4 +1739,42 @@ fn test_all_kmers_index_matches_fastx() {
         std::fs::read_to_string(&from_fastx).unwrap(),
         std::fs::read_to_string(&from_index).unwrap()
     );
+}
+
+#[test]
+fn test_query_individual_warns_on_empty_targets() {
+    let dir = TempDir::new().unwrap();
+    let targets = dir.path().join("targets.fa");
+    let sample = dir.path().join("sample.fa");
+    std::fs::write(
+        &targets,
+        format!(">long\n{SEQ_A}\n>tooshort\nACGT\n>short2\nACGT\n>short3\nACGT\n>short4\nACGT\n"),
+    )
+    .unwrap();
+    write_fasta(&sample, "sample", SEQ_A);
+
+    let run = |args: &[&str], out: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_skope"))
+            .args(args)
+            .arg("-o")
+            .arg(dir.path().join(out))
+            .arg(&targets)
+            .arg(&sample)
+            .output()
+            .unwrap()
+    };
+
+    let loud = run(&["query", "-i"], "loud.tsv");
+    assert!(loud.status.success());
+    let stderr = String::from_utf8_lossy(&loud.stderr).to_string();
+    assert!(
+        stderr.contains(
+            "Warning: 4 of 5 targets yielded no k-mers: tooshort, short2, short3 and 1 more"
+        ),
+        "{stderr}"
+    );
+
+    let quiet = run(&["query", "-i", "-q"], "quiet.tsv");
+    assert!(quiet.status.success());
+    assert!(!String::from_utf8_lossy(&quiet.stderr).contains("Warning"));
 }

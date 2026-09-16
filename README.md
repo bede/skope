@@ -132,8 +132,6 @@ skope query --confidence refs.fa reads.fq
 
   - Fewer than 3 k-mers at either the modal nonzero depth or the depth above it
 
-## Dumping k-mers
+## Dumping target k-mers
 
-Passing `--dump-kmers <path>` to `skope query` writes the selected target k-mers to a TSV file with columns `target`, `position`, and `kmer`. The dump reflects whatever selection is in effect, so `--discriminatory` is respected.
-
-One row is emitted per k-mer occurrence, so the row count can exceed `target_kmers` (which counts distinct k-mers) when a *k*-mer recurs within a target. The `kmer` column is the canonical *k*-mer, not necessarily the forward-strand sequence at that position.
+Passing `--dump-kmers <path>` to `skope query` writes the selected _canonical_ target k-mers to a TSV file with columns `target`, `position`, and `kmer`. The dump reflects whatever selection is in effect, so `--discriminatory` is respected. N.B. One row is emitted per k-mer occurrence, so the row count can exceed `target_kmers` (which counts distinct k-mers) when a *k*-mer recurs within a target.

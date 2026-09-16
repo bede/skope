@@ -527,6 +527,34 @@ fn process_target_groups(
     Ok(results)
 }
 
+fn warn_empty_targets(targets: &[TargetInfo]) {
+    let empty: Vec<&str> = targets
+        .iter()
+        .filter(|t| t.kmers.is_empty())
+        .map(|t| t.name.as_str())
+        .collect();
+    if empty.is_empty() {
+        return;
+    }
+
+    const SHOWN: usize = 3;
+    let named = empty
+        .iter()
+        .take(SHOWN)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = match empty.len().saturating_sub(SHOWN) {
+        0 => String::new(),
+        n => format!(" and {n} more"),
+    };
+    eprintln!(
+        "Warning: {} of {} targets yielded no k-mers: {named}{more}",
+        empty.len(),
+        targets.len()
+    );
+}
+
 /// Processor for counting k-mer depths from sequences
 #[derive(Clone)]
 struct SeqsProcessor {
@@ -1931,15 +1959,7 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
             );
         }
 
-        // Records shorter than k vanish silently, the likely mistake when targets are k-mers
-        let empty = targets.iter().filter(|t| t.kmers.is_empty()).count();
-        if empty > 0 {
-            eprintln!(
-                "Note: {empty} of {} targets yielded no k-mers (records shorter than k={}?)",
-                targets.len(),
-                config.kmer_length
-            );
-        }
+        warn_empty_targets(&targets);
     }
 
     // Build set of all unique k-mers across targets
