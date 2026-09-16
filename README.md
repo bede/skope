@@ -40,18 +40,6 @@ uv run plot/query.py query.tsv --mode decay -o query-decay.png
 uv run plot/query.py query.tsv --mode scatter -o query-scatter.png
 uv run plot/query.py query.tsv --mode scatter -o query-scatter.html  # Interactive
 
-# Plot per-group sequence length histograms (e.g. host vs viral)
-skope lenhist groups.sk s1.fq.gz s2.fq.gz > len.tsv
-uv run plot/lenhist.py len.tsv
-
-# Targets can equally be a fastx file (one group), a directory (one group per child),
-# or -i to make each fastx record its own group
-skope lenhist refs.fa s1.fq.gz > len.tsv
-skope lenhist -i refs.fa s1.fq.gz > len.tsv
-
-# Or without group filtering — all reads go to a single "all" bucket
-skope lenhist - s1.fq.gz s2.fq.gz > len.tsv
-
 # Stdin
 zstdcat reads3.fq.zst | skope query refs.fa -
 
@@ -63,25 +51,12 @@ skope query refs.sk reads.fq.gz
 
 # The build commands take targets on stdin too (they have no samples competing for it)
 zstdcat refs.fa.zst | skope index build-query - -o refs.sk
-
-# Build a classification index (.sk) and classify reads against it
-skope index build-classify groups/ -o groups.sk
-skope classify groups.sk reads.fq.gz
-# …or classify straight from fastx, skipping the index
-skope classify groups/ reads.fq.gz
-skope classify refs.fa reads.fq.gz
-
-# View help for any command
-skope query -h
-skope lenhist -h
-skope index build-query -h
 ```
 
 Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically handle dependencies.
 
 **Plotting scripts:**
 - `plot/query.py` - Containment bar charts and scatter plots from `query` TSV output
-- `plot/lenhist.py` - Length distribution histograms from `lenhist` TSV output
 
 ![Example containment plot](data/multi.png)
 
@@ -89,9 +64,7 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
 
 **Main commands**
 ```
-  query     Estimate syncmer containment & abundance in fastx file(s) or directories thereof
-  classify  Classify sequences into groups by their syncmer content (alpha)
-  lenhist   Generate per-group length histograms based on syncmer classification (alpha)
+  query     Estimate syncmer containment & abundance in fastx file(s) or directories 
   index     Build and manage query and classification indexes (alpha)
 ```
 
@@ -127,64 +100,9 @@ Options:
   -h, --help                            Print help
 ```
 
-**Classify** <sup>alpha</sup>
+## Confidence
 
-```bash
-$ skope classify -h
-Classify sequences into groups by syncmer content (alpha)
-
-Usage: skope classify [OPTIONS] <TARGETS> <SAMPLES>...
-
-Arguments:
-  <TARGETS>     Path to fastx file (single group unless -i), directory of fastx files/subdirs (one group per child file/subdir) or classification index (.sk)
-  <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin)
-
-Options:
-  -i, --individual                     Treat each fastx record as a separate group (single fastx file only)
-  -k, --kmer <K>                       K-mer length (1-61, default 31), read from a prebuilt index
-  -s, --smer <S>                       S-mer length (odd, s < k, default 9), read from a prebuilt index
-  -d, --discriminatory                 Consider only syncmers unique to each group
-  -a, --abs-threshold <ABS_THRESHOLD>  Minimum absolute number of syncmer hits for a match [default: 1]
-  -r, --rel-threshold <REL_THRESHOLD>  Minimum relative proportion (0.0-1.0) of syncmer hits for a match [default: 0]
-  -l, --limit <BASES>                  Terminate processing after approximately this many bases (e.g. 50M, 10G)
-  -t, --threads <THREADS>              Number of execution threads (0 = auto) [default: 8]
-  -o, --output <OUTPUT>                Path to output file (- for stdout) [default: -]
-  -n, --names <NAME,...>               Comma-separated sample names (default is file/dir name without extension)
-      --per-seq                        Output per-sequence classifications instead of summary
-  -q, --quiet                          Suppress progress reporting
-  -h, --help                           Print help
-```
-
-**Lenhist** <sup>alpha</sup>
-
-```bash
-$ skope lenhist -h
-Generate per-group length histograms based on syncmer classification (alpha)
-
-Usage: skope lenhist [OPTIONS] <TARGETS> <SAMPLES>...
-
-Arguments:
-  <TARGETS>     Path to fastx file (single group unless -i), directory of fastx files/subdirs (one group per child file/subdir), classification index (.sk), or - to disable group filtering (single "all" bucket)
-  <SAMPLES>...  Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
-
-Options:
-  -i, --individual                     Treat each fastx record as a separate group (single fastx file only)
-  -k, --kmer <K>                       K-mer length (1-61, default 31), read from a prebuilt index
-  -s, --smer <S>                       S-mer length (odd, s < k, default 9), read from a prebuilt index
-  -d, --discriminatory                 Consider only syncmers unique to each group
-  -a, --abs-threshold <ABS_THRESHOLD>  Minimum absolute number of syncmer hits for a match [default: 1]
-  -r, --rel-threshold <REL_THRESHOLD>  Minimum relative proportion (0.0-1.0) of syncmer hits for a match [default: 0]
-  -l, --limit <BASES>                  Terminate processing after approximately this many bases (e.g. 50M, 10G)
-  -t, --threads <THREADS>              Number of execution threads (0 = auto) [default: 8]
-  -o, --output <OUTPUT>                Path to output file (- for stdout) [default: -]
-  -n, --names <NAME,...>               Comma-separated sample names (default is file/dir name without extension)
-  -q, --quiet                          Suppress progress reporting
-  -h, --help                           Print help
-```
-
-## Confidence and diagnostics
-
-Passing `--confidence` (`-c`) to `skope query` adds output columns for confidence, ANI, and coverage 'patchiness'.
+Passing `--confidence` (`-c`) to `skope query` adds output columns for confidence, estimated ANI, and coverage 'patchiness'.
 
 ```bash
 skope query --confidence refs.fa reads.fq
@@ -198,18 +116,18 @@ skope query --confidence refs.fa reads.fq
 
   `ani_est` is shown as `-` (suppressed) for any target with fewer than 50 syncmers, with no contained syncmers, or whose estimate falls below 0.90, since these yield too little signal for a meaningful estimate.
 
-  The Poisson adjustment is skipped under the following conditions:
+  Calculating `ani_est` is skipped under the following conditions:
 
-  - _Median nonzero depth > 2_: the adjustment is designed for *low-coverage* targets
+  - Median nonzero depth > 2
 
-  - _Fewer than 50 target syncmers_: too small a target to estimate `λ` reliably.
+  - Fewer than 50 target syncmers
 
-  - _Fewer than 25 hitting syncmers_: too little signal.
+  - Fewer than 25 hitting syncmers
 
-  - _A too-sparse abundance histogram_: `λ` is recovered from the Poisson relation `λ = (m+1)·count(m+1)/count(m)`, where `m` is the modal nonzero depth. This ratio is stable only when both bins are populated, so if the mode or adjacent bin has fewer than 3 syncmers, we reject the estimate.
+  - Fewer than 3 syncmers at either the modal nonzero depth or the depth above it
 
 ## Dumping syncmers
 
 Passing `--dump-syncmers <path>` to `skope query` writes the selected target syncmers to a TSV file with columns `target`, `position`, and `kmer`. The dump reflects whatever selection is in effect, so `--discriminatory` is respected.
 
-One row is emitted per syncmer occurrence, so the row count can exceed `target_kmers` (which counts distinct syncmers) when a k-mer recurs within a target. The `kmer` column is the canonical *k*-mer, not necessarily the forward-strand sequence at that position.
+One row is emitted per syncmer occurrence, so the row count can exceed `target_kmers` (which counts distinct syncmers) when a *k*-mer recurs within a target. The `kmer` column is the canonical *k*-mer, not necessarily the forward-strand sequence at that position.
