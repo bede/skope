@@ -211,7 +211,6 @@ pub fn decode_u64(kmer: u64, k: u8) -> Vec<u8> {
             let base_bits = ((kmer >> (2 * i)) & 0b11) as u8;
             unpack_base(base_bits)
         })
-        .rev()
         .collect()
 }
 
@@ -222,7 +221,6 @@ pub fn decode_u128(kmer: u128, k: u8) -> Vec<u8> {
             let base_bits = ((kmer >> (2 * i)) & 0b11) as u8;
             unpack_base(base_bits)
         })
-        .rev()
         .collect()
 }
 
@@ -512,6 +510,20 @@ mod tests {
                 pack_packed_seq(w).min(pack_packed_seq(&revcomp(w)))
             })
             .collect()
+    }
+
+    // decode must invert packed-seq's layout (base i at bit 2i), not reverse it
+    #[test]
+    fn test_dumped_kmer_orientation() {
+        let seq = pseudo_dna(64, 23);
+        for k in [1usize, 5, 31, 32] {
+            let w = &seq[..k];
+            assert_eq!(decode_u64(pack_packed_seq(w) as u64, k as u8), w.to_vec());
+        }
+        for k in [33usize, 41, 61] {
+            let w = &seq[..k];
+            assert_eq!(decode_u128(pack_packed_seq(w), k as u8), w.to_vec());
+        }
     }
 
     #[test]
