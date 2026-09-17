@@ -1,11 +1,14 @@
-[![Crates.io version](https://img.shields.io/crates/v/skope?style=flat-square)](https://crates.io/crates/skope)
-[![Conda version](https://img.shields.io/conda/v/bioconda/skope?style=flat-square&label=bioconda&color=blue)](https://anaconda.org/bioconda/skope)
+[![Crates.io version](https://img.shields.io/crates/v/skope?style=flat-square)](https://crates.io/crates/skope) [![Conda version](https://img.shields.io/conda/v/bioconda/skope?style=flat-square&label=bioconda&color=blue)](https://anaconda.org/bioconda/skope)
 
 # Skope
 
-Accelerated streaming containment and abundance estimation using syncmers. Like Mash Screen or Sylph, only much faster for small queries (up to 10 gigabases/second), despite more dense and even *k*-mer sampling. Rapidly estimates coverage at chosen depth thresholds, providing a viable alternative to mapping-based coverage estimation in many contexts. Optimised for screening large datasets for small query sequences (<1 gigabase) such as genes and genomes of viruses and bacteria, scaling to larger query genomes given sufficient memory. No prior sketching is required, and memory use is bounded by the size of query (needle) sequences rather than by the size of subject (haystack) sequences.
+Accelerated abundance-aware containment estimation. Uses syncmers by default for dense and even target *k*-mer sampling, with sparser sampling possible using optional FracMinHash (`--fraction`). Unlike existing tools Sylph, Sourmash and Mash Screen, Skope meaningfully parallelises individual FASTA/Q file processing, sustaining up to 10 Gbp/s single file throughput. Skope is optimised for screening large sequence collections for smaller target sequences such as genes or microbial genomes, storing only target *k*-mers in memory. Skope supports specifying arbitrary abundance thresholds at which to calculate containment, providing a fast alternative to mapping-based coverage-at-depth calculation. Skope's `--discriminatory` mode enables containment calculation using only *k*-mers exclusive to each target, facilitating e.g. strain identification. The `--background` argument similarly removes from consideration any *k*-mers shared between targets and specified background sequences, making it possible to precompute a target *k*-mer index excluding nonspecific background *k*-mers. Skope's set data structure is collision-free by design, and syncmer selection may be bypassed entirely using `--all-kmers` in order to e.g. hunt for specific *k*-mers of interest in large sequence collections .
 
-## Install & update
+Skope is being used in applications such as [metagenomic control validation](https://www.medrxiv.org/content/10.64898/2026.05.18.26353500v1), [wastewater surveillance](https://github.com/nrminor/silly-fast-bfx), and bacterial strain identification. For the time being, please use the following citation for Skope:
+
+>  Stepniak et al. (2026). Library preparation strategy critically impacts RNA virus sensitivity in clinical metagenomics. *medRxiv*. https://doi.org/10.64898/2026.05.18.26353500
+
+## Install
 
 ```bash
 # Bioconda
@@ -26,10 +29,6 @@ skope query refs.fa reads.fastq.gz
 
 # Treat each record in a multi-record fastx as a separate target
 skope query -i refs.fa reads.fastq.gz
-
-# Bypass syncmer selection and take every canonical k-mer
-# (needed when targets are bare k-mers: a 31 bp record survives selection only ~1 time in 23)
-skope query --all-kmers -i kmers31.fa reads.fastq.gz
 
 # Calculate target containment in multiple samples
 skope query refs.fa reads1.fastq.gz reads2/ reads3.fa.zst…
@@ -53,6 +52,9 @@ skope query refs.fa -b background.fa reads.fq.gz
 skope index build-query refs.fa -b background.fa -o refs.sk
 skope query refs.sk reads.fq.gz
 
+# Bypass syncmer selection and consider every (canonical) k-mer
+skope query --all-kmers -i kmers31.fa reads.fastq.gz
+
 # The build commands take targets on stdin too (they have no samples competing for it)
 zstdcat refs.fa.zst | skope index build-query - -o refs.sk
 ```
@@ -68,8 +70,8 @@ Run the plotting scripts with [uv](https://docs.astral.sh/uv/) to automatically 
 
 **Main commands**
 ```
-  query     Estimate k-mer containment & abundance in fastx file(s) or directories
-  index     Build and manage query and classification indexes (alpha)
+query     Estimate k-mer containment & abundance in fastx file(s) or directories
+index     Build and manage query indexes (alpha)
 ```
 
 **Query**
