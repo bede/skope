@@ -4,9 +4,9 @@ use crate::kmers::{
 };
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::{
-    ProcessingStats, RapidHashSet, StdinTargets, TargetSource, check_index_complexity,
-    complexity_info_line, create_spinner, format_bp, format_bp_per_sec, handle_process_result,
-    reader_for_path, reader_with_inferred_batch_size, resolve_targets,
+    FixedRapidHasher, ProcessingStats, RapidHashSet, StdinTargets, TargetSource,
+    check_index_complexity, complexity_info_line, create_spinner, format_bp, format_bp_per_sec,
+    handle_process_result, reader_for_path, reader_with_inferred_batch_size, resolve_targets,
     sample_limit_reached_io_error,
 };
 use anyhow::{Context, Result};
@@ -23,6 +23,8 @@ use std::time::Instant;
 
 /// Alias for abund counts
 type CountDepth = u16;
+
+type CountMap<T> = HashMap<T, CountDepth, FixedRapidHasher>;
 
 /// Sort order for results
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -566,13 +568,13 @@ struct SeqsProcessor {
     // Local buffers
     buffers: Buffers,
     local_stats: ProcessingStats,
-    local_counts_u64: Option<HashMap<u64, CountDepth>>,
-    local_counts_u128: Option<HashMap<u128, CountDepth>>,
+    local_counts_u64: Option<CountMap<u64>>,
+    local_counts_u128: Option<CountMap<u128>>,
 
     // Global state
     global_stats: Arc<Mutex<ProcessingStats>>,
-    global_counts_u64: Arc<Mutex<Option<HashMap<u64, CountDepth>>>>,
-    global_counts_u128: Arc<Mutex<Option<HashMap<u128, CountDepth>>>>,
+    global_counts_u64: Arc<Mutex<Option<CountMap<u64>>>>,
+    global_counts_u128: Arc<Mutex<Option<CountMap<u128>>>>,
     spinner: Option<Arc<Mutex<ProgressBar>>>,
     spinner_label: &'static str,
     start_time: Instant,
@@ -585,8 +587,8 @@ impl SeqsProcessor {
         kmer_length: u8,
         smer_length: u8,
         targets_kmers: Arc<KmerSet>,
-        global_counts_u64: Arc<Mutex<Option<HashMap<u64, CountDepth>>>>,
-        global_counts_u128: Arc<Mutex<Option<HashMap<u128, CountDepth>>>>,
+        global_counts_u64: Arc<Mutex<Option<CountMap<u64>>>>,
+        global_counts_u128: Arc<Mutex<Option<CountMap<u128>>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
         spinner: Option<Arc<Mutex<ProgressBar>>>,
         spinner_label: &'static str,
@@ -600,9 +602,9 @@ impl SeqsProcessor {
         };
 
         let (local_counts_u64, local_counts_u128) = if kmer_length <= 32 {
-            (Some(HashMap::new()), None)
+            (Some(CountMap::default()), None)
         } else {
-            (None, Some(HashMap::new()))
+            (None, Some(CountMap::default()))
         };
 
         Self {
@@ -743,8 +745,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
 
 /// Enum to abstract over u64 and u128 abundance maps
 enum AbundanceMap {
-    U64(HashMap<u64, CountDepth>),
-    U128(HashMap<u128, CountDepth>),
+    U64(CountMap<u64>),
+    U128(CountMap<u128>),
 }
 
 const MIN_TARGET_KMERS_FOR_ANI_ADJUSTMENT: usize = 50;
@@ -890,7 +892,7 @@ fn calculate_patchiness_from_labels(labels: &[bool]) -> Option<PatchinessResult>
 
 fn calculate_patchiness_u64(
     positioned_kmers: &[(u64, usize)],
-    abundances: &HashMap<u64, CountDepth>,
+    abundances: &CountMap<u64>,
     threshold: usize,
 ) -> Option<PatchinessResult> {
     if threshold == 0 {
@@ -913,7 +915,7 @@ fn calculate_patchiness_u64(
 
 fn calculate_patchiness_u128(
     positioned_kmers: &[(u128, usize)],
-    abundances: &HashMap<u128, CountDepth>,
+    abundances: &CountMap<u128>,
     threshold: usize,
 ) -> Option<PatchinessResult> {
     if threshold == 0 {
@@ -979,13 +981,13 @@ fn process_seqs_file(
     let start_time = Instant::now();
     let (global_counts_u64, global_counts_u128) = if kmer_length <= 32 {
         (
-            Arc::new(Mutex::new(Some(HashMap::new()))),
+            Arc::new(Mutex::new(Some(CountMap::default()))),
             Arc::new(Mutex::new(None)),
         )
     } else {
         (
             Arc::new(Mutex::new(None)),
-            Arc::new(Mutex::new(Some(HashMap::new()))),
+            Arc::new(Mutex::new(Some(CountMap::default()))),
         )
     };
     let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
@@ -1173,9 +1175,9 @@ fn process_single_sample(
 
     // Initialise empty abundance map based on k-mer length
     let mut combined_abundance_map = if config.kmer_length <= 32 {
-        AbundanceMap::U64(HashMap::new())
+        AbundanceMap::U64(CountMap::default())
     } else {
-        AbundanceMap::U128(HashMap::new())
+        AbundanceMap::U128(CountMap::default())
     };
     let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
