@@ -1,9 +1,9 @@
-use crate::kmers::{Buffers, Kdust, KmerVec, SmerHasher, fill_kmers, make_hasher};
+use crate::kmers::{Buffers, Kdust, KmerVec, SmerHasher, extend_kmers, fill_kmers, make_hasher};
 use crate::{
-    FixedRapidHasher, IndexKind, ProcessingStats, StdinTargets, TargetGroup, TargetSource,
-    check_index_complexity, complexity_info_line, create_spinner, format_bp, format_bp_per_sec,
-    handle_process_result, reader_for_path, reader_with_inferred_batch_size, resolve_targets,
-    sample_limit_reached_io_error,
+    FixedRapidHasher, IndexKind, ProcessingStats, RapidHashSet, StdinTargets, TargetGroup,
+    TargetSource, check_index_complexity, complexity_info_line, create_spinner, format_bp,
+    format_bp_per_sec, handle_process_result, reader_for_path, reader_with_inferred_batch_size,
+    resolve_targets, sample_limit_reached_io_error,
 };
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
@@ -12,6 +12,7 @@ use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
+use std::hash::Hash;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -744,36 +745,163 @@ pub fn load_classification_index(
     Ok((index, group_names, kmer_length, smer_length, complexity))
 }
 
-/// Classify one sequecne using per-group hit counts
-fn classify_seq(
-    hits: &mut [u64; 128],
-    num_groups: usize,
-    total_kmers: usize,
-    abs_threshold: u64,
-    rel_threshold: f64,
-) -> Classification {
-    if total_kmers == 0 {
-        return Classification::Unclassified;
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Thresholds {
+    pub abs: u64,
+    pub rel: f64,
+}
+
+impl Thresholds {
+    /// Minimum hits, nondecreasing with distinct k-mer count
+    pub(crate) fn required_hits(&self, kmers: usize) -> u64 {
+        // ceil(0.1 * 30) overshoots to 4
+        let kmers = kmers.max(1) as f64;
+        let lower = (self.rel * kmers) as u64;
+        let rel = lower + u64::from((lower as f64) / kmers < self.rel);
+        self.abs.max(rel).max(1)
     }
+}
 
-    let mut matching_mask = 0u128;
-    let mut match_count = 0u32;
-    let mut single_match = 0usize;
+/// Classify pooled k-mers by distinct hits
+#[derive(Clone)]
+pub(crate) struct Classifier {
+    index: Arc<ClassificationIndex>,
+    pub num_groups: usize,
+    kmer_length: u8,
+    smer_length: u8,
+    hasher: SmerHasher,
+    thresholds: Thresholds,
+    /// Count all distinct hits for --per-seq
+    exact: bool,
+    buffers: Buffers,
+    seen_u64: RapidHashSet<u64>,
+    seen_u128: RapidHashSet<u128>,
+    /// Complete and distinct only in exact mode
+    pub hits: [u64; MAX_GROUPS],
+    /// Distinct count in exact mode, otherwise an upper bound
+    pub kmers: usize,
+}
 
-    for (group_idx, &group_hits) in hits[..num_groups].iter().enumerate() {
-        if group_hits >= abs_threshold && (group_hits as f64 / total_kmers as f64) >= rel_threshold
-        {
-            matching_mask |= 1u128 << group_idx;
-            match_count += 1;
-            single_match = group_idx;
+impl Classifier {
+    pub(crate) fn new(
+        index: Arc<ClassificationIndex>,
+        num_groups: usize,
+        kmer_length: u8,
+        smer_length: u8,
+        thresholds: Thresholds,
+        exact: bool,
+    ) -> Self {
+        Self {
+            index,
+            num_groups,
+            kmer_length,
+            smer_length,
+            hasher: make_hasher(smer_length),
+            thresholds,
+            exact,
+            buffers: if kmer_length <= 32 {
+                Buffers::new_u64()
+            } else {
+                Buffers::new_u128()
+            },
+            seen_u64: RapidHashSet::default(),
+            seen_u128: RapidHashSet::default(),
+            hits: [0; MAX_GROUPS],
+            kmers: 0,
         }
     }
 
-    match match_count {
-        0 => Classification::Unclassified,
-        1 => Classification::Classified(single_match),
-        _ => Classification::Ambiguous(matching_mask),
+    pub(crate) fn classify(&mut self, seqs: &[&[u8]]) -> Classification {
+        self.buffers.kmers.clear();
+        for seq in seqs {
+            extend_kmers(
+                seq,
+                &self.hasher,
+                self.kmer_length,
+                self.smer_length,
+                &mut self.buffers,
+            );
+        }
+        if self.exact {
+            self.buffers.kmers.sort_dedup();
+        }
+        let positions = self.buffers.kmers.len();
+        let hits = &mut self.hits[..self.num_groups];
+        hits.fill(0);
+
+        // Positions bound the distinct count from above
+        let pass = self.thresholds.required_hits(positions);
+        // Stop at one match for a single group, two for ambiguity
+        let stop = if self.exact {
+            usize::MAX
+        } else {
+            self.num_groups.min(2)
+        };
+        let dedup = !self.exact && pass > 1;
+        let hit_kmers = match (&self.buffers.kmers, &*self.index) {
+            (KmerVec::U64(kmers), ClassificationIndex::U64(map)) => {
+                count_hits(kmers, map, &mut self.seen_u64, dedup, hits, pass, stop)
+            }
+            (KmerVec::U128(kmers), ClassificationIndex::U128(map)) => {
+                count_hits(kmers, map, &mut self.seen_u128, dedup, hits, pass, stop)
+            }
+            _ => unreachable!("k-mer width does not match index"),
+        };
+
+        // Hit k-mers bound the distinct count from below
+        // Resolve groups between the lower and upper requirements by deduping
+        let undecided = dedup
+            && hit_kmers.is_some_and(|hit_kmers| {
+                let floor = self.thresholds.required_hits(hit_kmers);
+                hits.iter().any(|h| (floor..pass).contains(h))
+            });
+        self.kmers = if undecided {
+            self.buffers.kmers.sort_dedup()
+        } else {
+            positions
+        };
+
+        let required = self.thresholds.required_hits(self.kmers);
+        let groups = hits
+            .iter()
+            .enumerate()
+            .filter(|&(_, &h)| h >= required)
+            .fold(0u128, |groups, (group_idx, _)| groups | 1 << group_idx);
+        match groups.count_ones() {
+            0 => Classification::Unclassified,
+            1 => Classification::Classified(groups.trailing_zeros() as usize),
+            _ => Classification::Ambiguous(groups),
+        }
     }
+}
+
+/// Count hit k-mers, returning None after `stop` groups reach `pass`
+fn count_hits<T: Copy + Eq + Hash>(
+    kmers: &[T],
+    index: &HashMap<T, u128, FixedRapidHasher>,
+    seen: &mut RapidHashSet<T>,
+    dedup: bool,
+    hits: &mut [u64],
+    pass: u64,
+    stop: usize,
+) -> Option<usize> {
+    seen.clear();
+    let (mut hit_kmers, mut passed) = (0, 0);
+    for kmer in kmers {
+        if let Some(&mask) = index.get(kmer)
+            && (!dedup || seen.insert(*kmer))
+        {
+            hit_kmers += 1;
+            for group_idx in set_bits(mask) {
+                hits[group_idx] += 1;
+                passed += usize::from(hits[group_idx] == pass);
+            }
+            if passed >= stop {
+                return None;
+            }
+        }
+    }
+    Some(hit_kmers)
 }
 
 /// Update the classification spinner with current throughput stats
@@ -796,54 +924,6 @@ fn update_classify_spinner(
             format_bp_per_sec(bp_per_sec)
         ));
     }
-}
-
-/// Classify one sequence and populate per-group hit counts
-pub(crate) fn classify_seq_kmers(
-    seq: &[u8],
-    hasher: &SmerHasher,
-    kmer_length: u8,
-    smer_length: u8,
-    buffers: &mut Buffers,
-    hits: &mut [u64; 128],
-    num_groups: usize,
-    index: &ClassificationIndex,
-    abs_threshold: u64,
-    rel_threshold: f64,
-) -> (usize, Classification) {
-    fill_kmers(seq, hasher, kmer_length, smer_length, buffers);
-
-    for h in hits[..num_groups].iter_mut() {
-        *h = 0;
-    }
-
-    let total_kmers = buffers.kmers.len();
-
-    match (&buffers.kmers, index) {
-        (KmerVec::U64(vec), ClassificationIndex::U64(map)) => {
-            for &kmer in vec {
-                if let Some(&bitmask) = map.get(&kmer) {
-                    for group_idx in set_bits(bitmask) {
-                        hits[group_idx] += 1;
-                    }
-                }
-            }
-        }
-        (KmerVec::U128(vec), ClassificationIndex::U128(map)) => {
-            for &kmer in vec {
-                if let Some(&bitmask) = map.get(&kmer) {
-                    for group_idx in set_bits(bitmask) {
-                        hits[group_idx] += 1;
-                    }
-                }
-            }
-        }
-        _ => panic!("Mismatch between KmerVec and ClassificationIndex types"),
-    }
-
-    let classification = classify_seq(hits, num_groups, total_kmers, abs_threshold, rel_threshold);
-
-    (total_kmers, classification)
 }
 
 /// Group indices set in a bitmask, ascending
@@ -876,19 +956,19 @@ impl ClassifyCounts {
             unclassified_bases: 0,
         }
     }
-    fn add(&mut self, classification: Classification, seq_len: u64) {
+    fn add(&mut self, classification: Classification, seqs: u64, bases: u64) {
         match classification {
             Classification::Classified(group_idx) => {
-                self.groups[group_idx].seqs += 1;
-                self.groups[group_idx].bases += seq_len;
+                self.groups[group_idx].seqs += seqs;
+                self.groups[group_idx].bases += bases;
             }
             Classification::Ambiguous(_) => {
-                self.ambiguous_seqs += 1;
-                self.ambiguous_bases += seq_len;
+                self.ambiguous_seqs += seqs;
+                self.ambiguous_bases += bases;
             }
             Classification::Unclassified => {
-                self.unclassified_seqs += 1;
-                self.unclassified_bases += seq_len;
+                self.unclassified_seqs += seqs;
+                self.unclassified_bases += bases;
             }
         }
     }
@@ -924,14 +1004,15 @@ impl ClassifyOutput {
     fn add_record(
         &mut self,
         seq_id: &[u8],
-        seq_len: usize,
+        seqs: u64,
+        seq_len: u64,
         total_kmers: usize,
         classification: Classification,
         hits: &[u64; 128],
     ) {
         let (group_names, sample_name, local) = match self {
             Self::Summary { local, .. } => {
-                local.add(classification, seq_len as u64);
+                local.add(classification, seqs, seq_len);
                 return;
             }
             Self::PerSeq {
@@ -989,15 +1070,7 @@ impl ClassifyOutput {
 
 #[derive(Clone)]
 struct ClassifyProcessor {
-    kmer_length: u8,
-    smer_length: u8,
-    hasher: SmerHasher,
-    index: Arc<ClassificationIndex>,
-    num_groups: usize,
-    abs_threshold: u64,
-    rel_threshold: f64,
-    buffers: Buffers,
-    hits: [u64; 128],
+    classifier: Classifier,
     output: ClassifyOutput,
     local_stats: ProcessingStats,
     global_stats: Arc<Mutex<ProcessingStats>>,
@@ -1007,86 +1080,32 @@ struct ClassifyProcessor {
 }
 
 impl ClassifyProcessor {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        kmer_length: u8,
-        smer_length: u8,
-        index: Arc<ClassificationIndex>,
-        num_groups: usize,
-        abs_threshold: u64,
-        rel_threshold: f64,
-        output: ClassifyOutput,
-        global_stats: Arc<Mutex<ProcessingStats>>,
-        spinner: Option<Arc<Mutex<ProgressBar>>>,
-        start_time: Instant,
-        limit_bp: Option<u64>,
-    ) -> Self {
-        let buffers = if kmer_length <= 32 {
-            Buffers::new_u64()
-        } else {
-            Buffers::new_u128()
-        };
-
-        Self {
-            kmer_length,
-            smer_length,
-            hasher: make_hasher(smer_length),
-            index,
-            num_groups,
-            abs_threshold,
-            rel_threshold,
-            buffers,
-            hits: [0u64; 128],
-            output,
-            local_stats: ProcessingStats::default(),
-            global_stats,
-            spinner,
-            start_time,
-            limit_bp,
-        }
-    }
-}
-
-impl<Rf: Record> ParallelProcessor<Rf> for ClassifyProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
-        if let Some(limit) = self.limit_bp {
-            let global_bp = self.global_stats.lock().total_bp;
-            if global_bp >= limit {
-                ParallelProcessor::<Rf>::on_batch_complete(self)?;
-                return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
-            }
+    fn process(&mut self, seq_id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()> {
+        if self
+            .limit_bp
+            .is_some_and(|limit| self.global_stats.lock().total_bp >= limit)
+        {
+            self.flush()?;
+            return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
         }
 
-        let seq = record.seq();
-        let seq_len = seq.len();
-        self.local_stats.total_seqs += 1;
-        self.local_stats.total_bp += seq_len as u64;
+        let bases = seqs.iter().map(|seq| seq.len() as u64).sum();
+        self.local_stats.total_seqs += seqs.len() as u64;
+        self.local_stats.total_bp += bases;
 
-        let (total_kmers, classification) = classify_seq_kmers(
-            &seq,
-            &self.hasher,
-            self.kmer_length,
-            self.smer_length,
-            &mut self.buffers,
-            &mut self.hits,
-            self.num_groups,
-            &self.index,
-            self.abs_threshold,
-            self.rel_threshold,
-        );
-
+        let classification = self.classifier.classify(seqs);
         self.output.add_record(
-            record.id(),
-            seq_len,
-            total_kmers,
+            seq_id,
+            seqs.len() as u64,
+            bases,
+            self.classifier.kmers,
             classification,
-            &self.hits,
+            &self.classifier.hits,
         );
-
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+    fn flush(&mut self) -> paraseq::Result<()> {
         self.output.flush()?;
         let update_progress = {
             let mut stats = self.global_stats.lock();
@@ -1104,8 +1123,17 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyProcessor {
             update_classify_spinner(&self.spinner, &self.global_stats, self.start_time);
         }
         self.local_stats = ProcessingStats::default();
-
         Ok(())
+    }
+}
+
+impl<Rf: Record> ParallelProcessor<Rf> for ClassifyProcessor {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
+        self.process(record.id(), &[&record.seq()])
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+        self.flush()
     }
 }
 
@@ -1131,7 +1159,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             options.push_str(&format!(", limit_bp={}", limit));
         }
         eprintln!(
-            "Skope v{}; mode: classify (from {}); options: k={}, s={}, threads={}, abs_threshold={}, rel_threshold={:.2}{}",
+            "Skope v{}; mode: classify (from {}); options: k={}, s={}, threads={}, abs_threshold={}, rel_threshold={}{}",
             version,
             if matches!(source, TargetSource::Directory(_)) {
                 "directory"
@@ -1163,7 +1191,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             .limit_bp
             .map_or(String::new(), |v| format!(", limit_bp={}", v));
         eprintln!(
-            "Skope v{}; mode: classify (from index); options: threads={}, abs_threshold={}, rel_threshold={:.2}{}",
+            "Skope v{}; mode: classify (from index); options: threads={}, abs_threshold={}, rel_threshold={}{}",
             version, config.threads, config.abs_threshold, config.rel_threshold, limit_str
         );
 
@@ -1202,9 +1230,19 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         }
     }
 
-    let index = Arc::new(index);
     let group_names = Arc::new(group_names);
     let num_groups = group_names.len();
+    let classifier = Classifier::new(
+        Arc::new(index),
+        num_groups,
+        kmer_length,
+        smer_length,
+        Thresholds {
+            abs: config.abs_threshold,
+            rel: config.rel_threshold,
+        },
+        config.per_seq,
+    );
 
     use rayon::prelude::*;
     if config.per_seq {
@@ -1227,12 +1265,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             process_sample_files(
                 sample_paths,
                 sample_name,
-                kmer_length,
-                smer_length,
-                &index,
-                num_groups,
-                config.abs_threshold,
-                config.rel_threshold,
+                &classifier,
                 config.threads,
                 config.quiet,
                 config.limit_bp,
@@ -1270,12 +1303,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                 let result = process_sample_files(
                     sample_paths,
                     sample_name,
-                    kmer_length,
-                    smer_length,
-                    &index,
-                    num_groups,
-                    config.abs_threshold,
-                    config.rel_threshold,
+                    &classifier,
                     config.threads,
                     config.quiet || is_multisample,
                     config.limit_bp,
@@ -1409,12 +1437,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 fn process_sample_files(
     sample_paths: &[PathBuf],
     sample_name: &str,
-    kmer_length: u8,
-    smer_length: u8,
-    index: &Arc<ClassificationIndex>,
-    num_groups: usize,
-    abs_threshold: u64,
-    rel_threshold: f64,
+    classifier: &Classifier,
     threads: usize,
     quiet: bool,
     limit_bp: Option<u64>,
@@ -1429,19 +1452,15 @@ fn process_sample_files(
         let spinner = create_spinner(quiet)?;
         let file_start = Instant::now();
         let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
-        let mut processor = ClassifyProcessor::new(
-            kmer_length,
-            smer_length,
-            Arc::clone(index),
-            num_groups,
-            abs_threshold,
-            rel_threshold,
-            make_output(),
-            Arc::clone(&global_stats),
-            spinner.clone(),
-            file_start,
-            limit_bp.map(|limit| limit.saturating_sub(totals.total_bp)),
-        );
+        let mut processor = ClassifyProcessor {
+            classifier: classifier.clone(),
+            output: make_output(),
+            local_stats: ProcessingStats::default(),
+            global_stats: Arc::clone(&global_stats),
+            spinner: spinner.clone(),
+            start_time: file_start,
+            limit_bp: limit_bp.map(|limit| limit.saturating_sub(totals.total_bp)),
+        };
 
         let reader = reader_with_inferred_batch_size(in_path)?;
         handle_process_result(reader.process_parallel(&mut processor, threads))?;
@@ -1464,4 +1483,170 @@ fn process_sample_files(
         }
     }
     Ok(totals)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const K: u8 = 15;
+    const S: u8 = 7;
+    const ANY_HIT: Thresholds = Thresholds { abs: 1, rel: 0.0 };
+
+    fn pseudo_dna(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                b"ACGT"[((x >> 33) & 0b11) as usize]
+            })
+            .collect()
+    }
+
+    fn revcomp(seq: &[u8]) -> Vec<u8> {
+        seq.iter()
+            .rev()
+            .map(|&base| match base {
+                b'A' => b'T',
+                b'C' => b'G',
+                b'G' => b'C',
+                _ => b'A',
+            })
+            .collect()
+    }
+
+    fn index_of(groups: &[&[u8]], smer_length: u8) -> Arc<ClassificationIndex> {
+        let mut buffers = Buffers::new_u64();
+        let mut map = HashMap::with_hasher(FixedRapidHasher);
+        for (group_idx, seq) in groups.iter().enumerate() {
+            fill_kmers(seq, &make_hasher(smer_length), K, smer_length, &mut buffers);
+            let KmerVec::U64(kmers) = &buffers.kmers else {
+                unreachable!()
+            };
+            for &kmer in kmers {
+                *map.entry(kmer).or_insert(0) |= 1u128 << group_idx;
+            }
+        }
+        Arc::new(ClassificationIndex::U64(map))
+    }
+
+    #[test]
+    fn test_required_hits_is_fewest_passing_hits() {
+        for abs in [0, 1, 3] {
+            for rel in [0.0, 0.01, 0.1, 0.25, 0.49, 0.5, 0.9, 0.99, 1.0] {
+                let thresholds = Thresholds { abs, rel };
+                let mut previous = 0;
+                for kmers in 0..2000usize {
+                    let n = kmers.max(1) as f64;
+                    let fewest = (0..).find(|&h| h as f64 / n >= rel).unwrap();
+                    let required = thresholds.required_hits(kmers);
+                    assert_eq!(required, abs.max(fewest).max(1), "{abs} {rel} {kmers}");
+                    assert!(required >= previous, "decreased at {abs} {rel} {kmers}");
+                    previous = required;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_rel_threshold_is_not_rounded() {
+        let required = |rel, kmers| Thresholds { abs: 1, rel }.required_hits(kmers);
+        assert_eq!(required(0.49, 5), 3);
+        assert_eq!(required(0.1, 30), 3);
+    }
+
+    #[test]
+    fn test_fast_matches_exact() {
+        let (a, b) = (pseudo_dna(400, 1), pseudo_dna(400, 2));
+        let reads = [
+            a.clone(),
+            b.clone(),
+            pseudo_dna(400, 3),
+            [&a[..], &b[..]].concat(),
+            a[..100].repeat(6),
+            [&a[..60], &pseudo_dna(340, 4)[..]].concat(),
+            a[..10].to_vec(),
+            Vec::new(),
+        ];
+        let (mut substituted, mut stopped) = (false, false);
+        for groups in [vec![&a[..]], vec![&a[..], &b[..]]] {
+            let index = index_of(&groups, S);
+            for abs in [0, 1, 2, 5, 40] {
+                for rel in [0.0, 0.05, 0.2, 0.5, 0.9, 1.0] {
+                    let thresholds = Thresholds { abs, rel };
+                    let classifier = |exact| {
+                        Classifier::new(Arc::clone(&index), groups.len(), K, S, thresholds, exact)
+                    };
+                    let (mut fast, mut exact) = (classifier(false), classifier(true));
+                    for r1 in &reads {
+                        for r2 in &reads {
+                            for seqs in [&[&r1[..]][..], &[&r1[..], &r2[..]]] {
+                                let verdicts = (fast.classify(seqs), exact.classify(seqs));
+                                match verdicts {
+                                    (
+                                        Classification::Classified(f),
+                                        Classification::Classified(e),
+                                    ) if f == e => {}
+                                    (
+                                        Classification::Ambiguous(_),
+                                        Classification::Ambiguous(_),
+                                    )
+                                    | (
+                                        Classification::Unclassified,
+                                        Classification::Unclassified,
+                                    ) => {}
+                                    _ => panic!("{verdicts:?} at abs={abs} rel={rel}"),
+                                }
+                                substituted |= fast.kmers > exact.kmers;
+                                stopped |= (0..groups.len()).any(|g| fast.hits[g] < exact.hits[g]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(substituted, "positions never stood in for distinct k-mers");
+        assert!(stopped, "hit counting never stopped early");
+    }
+
+    #[test]
+    fn test_rel_threshold_uses_distinct_kmers() {
+        let a = pseudo_dna(400, 1);
+        let repeat = b"ACGT".repeat(100);
+        let thresholds = Thresholds { abs: 1, rel: 0.9 };
+        for exact in [false, true] {
+            let mut classifier = Classifier::new(index_of(&[&a], 0), 1, K, 0, thresholds, exact);
+            assert!(matches!(
+                classifier.classify(&[&a, &repeat]),
+                Classification::Classified(0)
+            ));
+            assert!(classifier.kmers < a.len());
+        }
+    }
+
+    #[test]
+    fn test_zero_hits_never_match() {
+        let a = pseudo_dna(400, 1);
+        let thresholds = Thresholds { abs: 0, rel: 0.0 };
+        let mut classifier = Classifier::new(index_of(&[&a], S), 1, K, S, thresholds, false);
+        for seq in [&pseudo_dna(400, 3)[..], &a[..10], b""] {
+            assert!(matches!(
+                classifier.classify(&[seq]),
+                Classification::Unclassified
+            ));
+        }
+    }
+
+    #[test]
+    fn test_pooled_mates_count_distinct_kmers() {
+        let a = pseudo_dna(400, 1);
+        let mut classifier = Classifier::new(index_of(&[&a], S), 1, K, S, ANY_HIT, true);
+        classifier.classify(&[&a]);
+        let counts = (classifier.hits[0], classifier.kmers);
+        assert!(counts.0 > 0);
+        classifier.classify(&[&a, &revcomp(&a)]);
+        assert_eq!((classifier.hits[0], classifier.kmers), counts);
+    }
 }

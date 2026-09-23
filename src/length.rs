@@ -1,8 +1,7 @@
 use crate::classify::{
-    Classification, ClassificationIndex, apply_discriminatory_filter, build_classification_index,
-    classify_seq_kmers, load_classification_index,
+    Classification, ClassificationIndex, Classifier, Thresholds, apply_discriminatory_filter,
+    build_classification_index, load_classification_index,
 };
-use crate::kmers::{Buffers, SmerHasher, make_hasher};
 use crate::{
     IndexKind, ProcessingStats, StdinTargets, TargetSource, check_index_complexity, create_spinner,
     format_bp, format_bp_per_sec, handle_process_result, reader_with_inferred_batch_size,
@@ -74,18 +73,9 @@ struct BucketState {
 /// Worker that bins lengths per classification bucket
 #[derive(Clone)]
 struct LengthHistogramProcessor {
-    kmer_length: u8,
-    smer_length: u8,
-    hasher: SmerHasher,
-    index: Arc<ClassificationIndex>,
-    num_groups: usize,
-    abs_threshold: u64,
-    rel_threshold: f64,
+    classifier: Classifier,
     no_filter: bool,
 
-    // Local buffers
-    buffers: Buffers,
-    hits: [u64; 128],
     local_stats: ProcessingStats,
     local_buckets: Vec<BucketState>,
 
@@ -100,12 +90,7 @@ struct LengthHistogramProcessor {
 impl LengthHistogramProcessor {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        kmer_length: u8,
-        smer_length: u8,
-        index: Arc<ClassificationIndex>,
-        num_groups: usize,
-        abs_threshold: u64,
-        rel_threshold: f64,
+        classifier: Classifier,
         no_filter: bool,
         global_buckets: Arc<Vec<Mutex<BucketState>>>,
         global_stats: Arc<Mutex<ProcessingStats>>,
@@ -113,26 +98,12 @@ impl LengthHistogramProcessor {
         start_time: Instant,
         limit_bp: Option<u64>,
     ) -> Self {
-        let buffers = if kmer_length <= 32 {
-            Buffers::new_u64()
-        } else {
-            Buffers::new_u128()
-        };
-
-        let bucket_count = num_groups + 2;
+        let bucket_count = classifier.num_groups + 2;
         let local_buckets = (0..bucket_count).map(|_| BucketState::default()).collect();
 
         Self {
-            kmer_length,
-            smer_length,
-            hasher: make_hasher(smer_length),
-            index,
-            num_groups,
-            abs_threshold,
-            rel_threshold,
+            classifier,
             no_filter,
-            buffers,
-            hits: [0u64; 128],
             local_stats: ProcessingStats::default(),
             local_buckets,
             global_stats,
@@ -161,52 +132,40 @@ impl LengthHistogramProcessor {
     }
 }
 
-impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
-        if let Some(limit) = self.limit_bp {
-            let global_bp = self.global_stats.lock().total_bp;
-            if global_bp >= limit {
-                ParallelProcessor::<Rf>::on_batch_complete(self)?;
-                return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
-            }
+impl LengthHistogramProcessor {
+    /// Bin mates separately under their pooled classification
+    fn process(&mut self, seqs: &[&[u8]]) -> paraseq::Result<()> {
+        if self
+            .limit_bp
+            .is_some_and(|limit| self.global_stats.lock().total_bp >= limit)
+        {
+            self.flush();
+            return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
         }
-
-        let seq = record.seq();
-        let seq_length = seq.len();
-        self.local_stats.total_seqs += 1;
-        self.local_stats.total_bp += seq_length as u64;
 
         let bucket_idx = if self.no_filter {
             0
         } else {
-            let (_total_kmers, classification) = classify_seq_kmers(
-                &seq,
-                &self.hasher,
-                self.kmer_length,
-                self.smer_length,
-                &mut self.buffers,
-                &mut self.hits,
-                self.num_groups,
-                &self.index,
-                self.abs_threshold,
-                self.rel_threshold,
-            );
-            match classification {
+            let num_groups = self.classifier.num_groups;
+            match self.classifier.classify(seqs) {
                 Classification::Classified(g) => g,
-                Classification::Ambiguous(_) => self.num_groups,
-                Classification::Unclassified => self.num_groups + 1,
+                Classification::Ambiguous(_) => num_groups,
+                Classification::Unclassified => num_groups + 1,
             }
         };
 
         let bucket = &mut self.local_buckets[bucket_idx];
-        *bucket.histogram.entry(seq_length).or_insert(0) += 1;
-        bucket.seqs += 1;
-        bucket.bases += seq_length as u64;
-
+        for seq in seqs {
+            *bucket.histogram.entry(seq.len()).or_insert(0) += 1;
+            bucket.seqs += 1;
+            bucket.bases += seq.len() as u64;
+            self.local_stats.total_seqs += 1;
+            self.local_stats.total_bp += seq.len() as u64;
+        }
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+    fn flush(&mut self) {
         // Merge local buckets into global
         for (i, local) in self.local_buckets.iter_mut().enumerate() {
             if local.seqs == 0 && local.histogram.is_empty() {
@@ -224,35 +183,36 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
         }
 
         // Update global stats
-        {
-            let mut stats = self.global_stats.lock();
-            stats.total_seqs += self.local_stats.total_seqs;
-            stats.total_bp += self.local_stats.total_bp;
+        let mut stats = self.global_stats.lock();
+        stats.total_seqs += self.local_stats.total_seqs;
+        stats.total_bp += self.local_stats.total_bp;
 
-            // Update spinner every 0.1 Gbp
-            let current_progress = stats.total_bp / 100_000_000;
-            if current_progress > stats.last_reported {
-                drop(stats);
-                self.update_spinner();
-                self.global_stats.lock().last_reported = current_progress;
-            }
-
-            self.local_stats = ProcessingStats::default();
+        // Update spinner every 0.1 Gbp
+        let current_progress = stats.total_bp / 100_000_000;
+        if current_progress > stats.last_reported {
+            drop(stats);
+            self.update_spinner();
+            self.global_stats.lock().last_reported = current_progress;
         }
 
+        self.local_stats = ProcessingStats::default();
+    }
+}
+
+impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
+        self.process(&[&record.seq()])
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+        self.flush();
         Ok(())
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn process_seqs_file(
     seq_path: &Path,
-    index: Arc<ClassificationIndex>,
-    num_groups: usize,
-    kmer_length: u8,
-    smer_length: u8,
-    abs_threshold: u64,
-    rel_threshold: f64,
+    classifier: &Classifier,
     threads: usize,
     quiet: bool,
     no_filter: bool,
@@ -270,6 +230,7 @@ fn process_seqs_file(
         pb.lock().set_message("Processing sample: 0 seqs (0bp)");
     }
 
+    let num_groups = classifier.num_groups;
     let bucket_count = num_groups + 2;
     let global_buckets: Arc<Vec<Mutex<BucketState>>> = Arc::new(
         (0..bucket_count)
@@ -280,12 +241,7 @@ fn process_seqs_file(
 
     let start_time = Instant::now();
     let mut processor = LengthHistogramProcessor::new(
-        kmer_length,
-        smer_length,
-        index,
-        num_groups,
-        abs_threshold,
-        rel_threshold,
+        classifier.clone(),
         no_filter,
         Arc::clone(&global_buckets),
         Arc::clone(&global_stats),
@@ -331,16 +287,13 @@ fn process_seqs_file(
 fn process_single_sample(
     sample_paths: &[PathBuf],
     sample_name: &str,
-    index: Arc<ClassificationIndex>,
-    num_groups: usize,
-    kmer_length: u8,
-    smer_length: u8,
+    classifier: &Classifier,
     config: &LengthHistogramConfig,
 ) -> Result<LengthHistogramResult> {
     // Silence per-sample progress for >1 sample
     let quiet_sample = config.quiet || config.sample_paths.len() > 1;
 
-    let bucket_count = num_groups + 2;
+    let bucket_count = classifier.num_groups + 2;
     let mut combined_buckets: Vec<BucketState> = vec![BucketState::default(); bucket_count];
     let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
@@ -348,12 +301,7 @@ fn process_single_sample(
     for seq_path in sample_paths {
         let (file_buckets, file_seqs, file_bp) = process_seqs_file(
             seq_path,
-            Arc::clone(&index),
-            num_groups,
-            kmer_length,
-            smer_length,
-            config.abs_threshold,
-            config.rel_threshold,
+            classifier,
             config.threads,
             quiet_sample,
             config.no_filter,
@@ -409,7 +357,7 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
 
     if !config.no_filter {
         options.push_str(&format!(
-            ", abs_threshold={}, rel_threshold={:.2}",
+            ", abs_threshold={}, rel_threshold={}",
             config.abs_threshold, config.rel_threshold
         ));
         if config.discriminatory {
@@ -501,7 +449,17 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
         }
     }
 
-    let index = Arc::new(index);
+    let classifier = Classifier::new(
+        Arc::new(index),
+        group_names.len(),
+        kmer_length,
+        smer_length,
+        Thresholds {
+            abs: config.abs_threshold,
+            rel: config.rel_threshold,
+        },
+        false,
+    );
 
     // Process each sample in parallel
     use rayon::prelude::*;
@@ -525,15 +483,7 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
         .par_iter()
         .zip(&config.sample_names)
         .map(|(sample_paths, sample_name)| {
-            let result = process_single_sample(
-                sample_paths,
-                sample_name,
-                Arc::clone(&index),
-                group_names.len(),
-                kmer_length,
-                smer_length,
-                config,
-            );
+            let result = process_single_sample(sample_paths, sample_name, &classifier, config);
 
             if let Some(ref counter) = completed {
                 let mut count = counter.lock();

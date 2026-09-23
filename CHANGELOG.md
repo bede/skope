@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `--dump-syncmers` is now `--dump-kmers`.
-- Faster `query` where many target *k*-mers are hit.
+- **Breaking:** `classify` and `lenhist` `-a/--abs-threshold` and `-r/--rel-threshold` count distinct *k*-mers, so repeated *k*-mers no longer inflate hits or dilute the relative threshold. Zero hits never match, even with `-a 0`, and `-r` must lie in `[0, 1]`.
+- `classify --per-seq` reports distinct *k*-mer counts in its `hits` and `seq_kmers` columns.
+- Faster `classify` and `lenhist` for sequences with many hits, which now stop once their classification is certain, and faster `query` where many target *k*-mers are hit.
 - paraseq 0.6, which handles CRLF line endings.
 
 ### Fixed

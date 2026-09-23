@@ -202,6 +202,21 @@ impl KmerVec {
             KmerVec::U128(v) => v.is_empty(),
         }
     }
+
+    /// Dedup in place and return the distinct count
+    pub fn sort_dedup(&mut self) -> usize {
+        match self {
+            KmerVec::U64(v) => {
+                v.sort_unstable();
+                v.dedup();
+            }
+            KmerVec::U128(v) => {
+                v.sort_unstable();
+                v.dedup();
+            }
+        }
+        self.len()
+    }
 }
 
 /// Decode u64 k-mer (2-bit canonical k-mer)
@@ -352,6 +367,19 @@ pub fn fill_kmers(
     smer_length: u8,
     buffers: &mut Buffers,
 ) {
+    buffers.kmers.clear();
+    extend_kmers(seq, hasher, kmer_length, smer_length, buffers);
+}
+
+/// Append k-mers without clearing the buffer
+#[inline]
+pub fn extend_kmers(
+    seq: &[u8],
+    hasher: &SmerHasher,
+    kmer_length: u8,
+    smer_length: u8,
+    buffers: &mut Buffers,
+) {
     let Buffers {
         packed_nseq,
         positions,
@@ -360,7 +388,6 @@ pub fn fill_kmers(
 
     packed_nseq.seq.clear();
     packed_nseq.ambiguous.clear();
-    kmers.clear();
     positions.clear();
 
     if seq.len() < kmer_length as usize {

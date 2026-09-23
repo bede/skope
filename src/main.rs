@@ -18,6 +18,15 @@ fn validate_complexity(complexity: f32) -> Result<()> {
     Ok(())
 }
 
+fn validate_rel_threshold(rel_threshold: f64) -> Result<()> {
+    if !(0.0..=1.0).contains(&rel_threshold) {
+        return Err(anyhow::anyhow!(
+            "Invalid --rel-threshold {rel_threshold}: must be in [0, 1]"
+        ));
+    }
+    Ok(())
+}
+
 /// Validate the FracMinHash fraction is in (0, 1]
 fn validate_fraction(fraction: f64) -> Result<()> {
     if !(fraction > 0.0 && fraction <= 1.0) {
@@ -429,7 +438,7 @@ enum Commands {
         #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
         complexity: f32,
 
-        /// Minimum absolute number of k-mer hits for a match
+        /// Minimum distinct k-mer hits for a match
         #[arg(
             short = 'a',
             long = "abs-threshold",
@@ -438,7 +447,7 @@ enum Commands {
         )]
         abs_threshold: u64,
 
-        /// Minimum relative proportion (0.0-1.0) of k-mer hits for a match
+        /// Minimum proportion [0, 1] of distinct k-mers hit for a match
         #[arg(
             short = 'r',
             long = "rel-threshold",
@@ -513,7 +522,7 @@ enum Commands {
         #[arg(long = "complexity", value_name = "FLOAT", default_value_t = 0.0)]
         complexity: f32,
 
-        /// Minimum absolute number of k-mer hits for a match
+        /// Minimum distinct k-mer hits for a match
         #[arg(
             short = 'a',
             long = "abs-threshold",
@@ -522,7 +531,7 @@ enum Commands {
         )]
         abs_threshold: u64,
 
-        /// Minimum relative proportion (0.0-1.0) of k-mer hits for a match
+        /// Minimum proportion [0, 1] of distinct k-mers hit for a match
         #[arg(
             short = 'r',
             long = "rel-threshold",
@@ -660,10 +669,10 @@ fn main() -> Result<()> {
             kmer_length,
             smer_length,
             all_kmers,
-            abs_threshold,
-            rel_threshold,
             discriminatory,
             complexity,
+            abs_threshold,
+            rel_threshold,
             threads,
             limit,
             output,
@@ -672,6 +681,7 @@ fn main() -> Result<()> {
         } => {
             let prepared = prepare_samples(samples, sample_names.as_deref())?;
             validate_complexity(*complexity)?;
+            validate_rel_threshold(*rel_threshold)?;
             let (kmer_length, smer_length) = resolve_k_s(
                 targets,
                 *kmer_length,
@@ -777,10 +787,10 @@ fn main() -> Result<()> {
             kmer_length,
             smer_length,
             all_kmers,
-            abs_threshold,
-            rel_threshold,
             discriminatory,
             complexity,
+            abs_threshold,
+            rel_threshold,
             threads,
             output,
             quiet,
@@ -788,6 +798,7 @@ fn main() -> Result<()> {
         } => {
             let prepared = prepare_samples(samples, sample_names.as_deref())?;
             validate_complexity(*complexity)?;
+            validate_rel_threshold(*rel_threshold)?;
             let (kmer_length, smer_length) = resolve_k_s(
                 targets,
                 *kmer_length,
