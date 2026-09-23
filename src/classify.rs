@@ -187,18 +187,16 @@ impl GroupKmerProcessor {
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
         let group_bit = match &self.individual_names {
             Some(names) => {
                 let mut names = names.lock();
                 if names.len() >= MAX_GROUPS {
-                    return Err(paraseq::parallel::ProcessError::IoError(
-                        std::io::Error::other(format!(
-                            "{TOO_MANY_RECORDS_MSG}: {} has more than {MAX_GROUPS} records, \
+                    return Err(paraseq::Error::Io(std::io::Error::other(format!(
+                        "{TOO_MANY_RECORDS_MSG}: {} has more than {MAX_GROUPS} records, \
                              the maximum number of groups",
-                            self.source
-                        )),
-                    ));
+                        self.source
+                    ))));
                 }
                 names.push(String::from_utf8_lossy(record.id()).to_string());
                 1u128 << (names.len() - 1)
@@ -237,7 +235,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
         if let Some(local) = &mut self.local_map_u64 {
             let mut global = self.global_map_u64.lock();
             let global_map = global.as_mut().unwrap();
@@ -473,9 +471,7 @@ fn build_individual_groups(
     // Surface the group-cap error on its own rather than wrapped as an I/O failure
     if let Err(err) = reader.process_parallel(&mut processor, 1) {
         return Err(match &err {
-            paraseq::parallel::ProcessError::IoError(io_err)
-                if io_err.to_string().starts_with(TOO_MANY_RECORDS_MSG) =>
-            {
+            paraseq::Error::Io(io_err) if io_err.to_string().starts_with(TOO_MANY_RECORDS_MSG) => {
                 anyhow::anyhow!("{io_err}")
             }
             _ => err.into(),
@@ -978,14 +974,11 @@ impl ClassifyOutput {
         }
     }
 
-    fn flush(&mut self) -> paraseq::parallel::Result<()> {
+    fn flush(&mut self) -> paraseq::Result<()> {
         match self {
             Self::Summary { local, global } => global.lock().merge(local),
             Self::PerSeq { local, writer, .. } if !local.is_empty() => {
-                writer
-                    .lock()
-                    .write_all(local)
-                    .map_err(paraseq::parallel::ProcessError::IoError)?;
+                writer.lock().write_all(local).map_err(paraseq::Error::Io)?;
                 local.clear();
             }
             Self::PerSeq { .. } => {}
@@ -1055,14 +1048,12 @@ impl ClassifyProcessor {
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for ClassifyProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
         if let Some(limit) = self.limit_bp {
             let global_bp = self.global_stats.lock().total_bp;
             if global_bp >= limit {
                 ParallelProcessor::<Rf>::on_batch_complete(self)?;
-                return Err(paraseq::parallel::ProcessError::IoError(
-                    sample_limit_reached_io_error(),
-                ));
+                return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
             }
         }
 
@@ -1095,7 +1086,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
         self.output.flush()?;
         let update_progress = {
             let mut stats = self.global_stats.lock();

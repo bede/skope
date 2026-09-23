@@ -1778,3 +1778,24 @@ fn test_query_individual_warns_on_empty_targets() {
     assert!(quiet.status.success());
     assert!(!String::from_utf8_lossy(&quiet.stderr).contains("Warning"));
 }
+
+#[test]
+fn test_crlf_matches_lf() {
+    let dir = TempDir::new().unwrap();
+    let (target, lf, crlf) = (
+        dir.path().join("t.fa"),
+        dir.path().join("lf.fa"),
+        dir.path().join("crlf.fa"),
+    );
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    std::fs::write(&lf, format!(">s\n{}\n{}\n", &seq[..250], &seq[250..])).unwrap();
+    std::fs::write(&crlf, format!(">s\r\n{}\r\n{}", &seq[..250], &seq[250..])).unwrap();
+
+    let (lf_out, crlf_out) = (dir.path().join("lf.tsv"), dir.path().join("crlf.tsv"));
+    query_to_tsv(target.clone(), &lf, &lf_out);
+    query_to_tsv(target, &crlf, &crlf_out);
+    let lf_tsv = std::fs::read_to_string(lf_out).unwrap();
+    assert!(lf_tsv.contains("\t1.000\t"), "{lf_tsv}");
+    assert_eq!(lf_tsv, std::fs::read_to_string(crlf_out).unwrap());
+}

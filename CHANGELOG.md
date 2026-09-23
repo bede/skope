@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `--dump-syncmers` is now `--dump-kmers`.
+- paraseq 0.6, which handles CRLF line endings.
 
 ## [0.5.0] - 2026-09-14
 

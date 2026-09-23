@@ -311,7 +311,7 @@ impl TargetsProcessor {
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
         let sequence = record.seq();
         let target_name = String::from_utf8_lossy(record.id()).to_string();
 
@@ -391,7 +391,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
         // Update global stats
         {
             let mut stats = self.global_stats.lock();
@@ -644,14 +644,12 @@ impl SeqsProcessor {
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
         if let Some(limit) = self.limit_bp {
             let global_bp = self.global_stats.lock().total_bp;
             if global_bp >= limit {
                 ParallelProcessor::<Rf>::on_batch_complete(self)?;
-                return Err(paraseq::parallel::ProcessError::IoError(
-                    sample_limit_reached_io_error(),
-                ));
+                return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
             }
         }
 
@@ -697,7 +695,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
         // Merge local into global counts
         if let Some(local) = &mut self.local_counts_u64 {
             let mut global = self.global_counts_u64.lock();

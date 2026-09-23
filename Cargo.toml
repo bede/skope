@@ -33,12 +33,12 @@ csv = "1.4"
 rapidhash = "4.4.1"
 parking_lot = "0.12"
 indicatif = "0.18"
-wincode = "0.5.5"
+wincode = "0.6.1"
 
-packed-seq = "4.4.2"
-simd-minimizers = "2.3.1"
+packed-seq = "5.0.0"
+simd-minimizers = "3.0.0"
 
-paraseq = { version = "0.4.13", default-features = false, features = ["anyhow", "niffler"] }
+paraseq = { version = "0.6.0", default-features = false, features = ["anyhow", "niffler"] }
 niffler = { version = "3", default-features = false }
 
 flate2 = { version = "1.1", features = ["zlib-rs"], optional = true }

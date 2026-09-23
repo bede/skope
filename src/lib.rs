@@ -163,9 +163,9 @@ pub fn sample_limit_reached_io_error() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Interrupted, SAMPLE_LIMIT_REACHED_MSG)
 }
 
-fn is_sample_limit_error(err: &paraseq::parallel::ProcessError) -> bool {
+fn is_sample_limit_error(err: &paraseq::Error) -> bool {
     match err {
-        paraseq::parallel::ProcessError::IoError(io_err) => {
+        paraseq::Error::Io(io_err) => {
             io_err.kind() == std::io::ErrorKind::Interrupted
                 && io_err.to_string() == SAMPLE_LIMIT_REACHED_MSG
         }
@@ -176,7 +176,7 @@ fn is_sample_limit_error(err: &paraseq::parallel::ProcessError) -> bool {
 pub fn reader_with_inferred_batch_size(
     in_path: Option<&Path>,
 ) -> Result<paraseq::fastx::Reader<Box<dyn std::io::Read + Send>>> {
-    let mut reader = paraseq::fastx::Reader::from_optional_path(in_path)?;
+    let mut reader = paraseq::ReaderBuilder::optional_path(in_path).build()?;
     reader.update_batch_size_in_bp(256 * 1024)?;
     Ok(reader)
 }
@@ -235,9 +235,7 @@ pub fn create_spinner(quiet: bool) -> Result<Option<Arc<Mutex<indicatif::Progres
 }
 
 /// Treat sample-limit interruptions as normal completion
-pub fn handle_process_result(
-    result: std::result::Result<(), paraseq::parallel::ProcessError>,
-) -> Result<()> {
+pub fn handle_process_result(result: std::result::Result<(), paraseq::Error>) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
         Err(e) if is_sample_limit_error(&e) => Ok(()),

@@ -162,14 +162,12 @@ impl LengthHistogramProcessor {
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::parallel::Result<()> {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
         if let Some(limit) = self.limit_bp {
             let global_bp = self.global_stats.lock().total_bp;
             if global_bp >= limit {
                 ParallelProcessor::<Rf>::on_batch_complete(self)?;
-                return Err(paraseq::parallel::ProcessError::IoError(
-                    sample_limit_reached_io_error(),
-                ));
+                return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
             }
         }
 
@@ -208,7 +206,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
         // Merge local buckets into global
         for (i, local) in self.local_buckets.iter_mut().enumerate() {
             if local.seqs == 0 && local.histogram.is_empty() {
