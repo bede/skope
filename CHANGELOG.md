@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--dump-syncmers` is now `--dump-kmers`.
 - paraseq 0.6, which handles CRLF line endings.
 
+### Fixed
+
+- `query` TOTAL rows could undercount `containmentN_hits` (and so `containmentN`) by one per target, through float truncation.
+
 ## [0.5.0] - 2026-09-14
 
 ### Added

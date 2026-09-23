@@ -187,7 +187,7 @@ struct TotalStats {
     total_containment1: f64,
     total_seqs_processed: u64,
     total_bp_processed: u64,
-    total_containment_at_threshold: HashMap<usize, f64>, // threshold -> overall containment
+    total_hits_at_threshold: HashMap<usize, usize>,
 }
 
 /// Results for a single sample in multi-sample mode
@@ -1250,23 +1250,17 @@ fn process_single_sample(
         0.0
     };
 
-    // Calculate overall containment at each threshold
-    let mut total_containment_at_threshold = HashMap::new();
-    for &threshold in abundance_thresholds {
-        let total_at_threshold: usize = containment_results
-            .iter()
-            .map(|r| {
-                let containment = r.containment_at_threshold.get(&threshold).unwrap_or(&0.0);
-                (containment * r.target_kmers as f64) as usize
-            })
-            .sum();
-        let overall_containment_value = if target_kmers > 0 {
-            total_at_threshold as f64 / target_kmers as f64
-        } else {
-            0.0
-        };
-        total_containment_at_threshold.insert(threshold, overall_containment_value);
-    }
+    // Sum integer hits to avoid float truncation
+    let total_hits_at_threshold = abundance_thresholds
+        .iter()
+        .map(|&threshold| {
+            let hits = containment_results
+                .iter()
+                .map(|r| r.hits_at_threshold[&threshold])
+                .sum();
+            (threshold, hits)
+        })
+        .collect();
 
     Ok(SampleResults {
         sample_name: sample_name.to_string(),
@@ -1277,7 +1271,7 @@ fn process_single_sample(
             total_containment1,
             total_seqs_processed: total_seqs,
             total_bp_processed: total_bp,
-            total_containment_at_threshold,
+            total_hits_at_threshold,
         },
     })
 }
@@ -2240,12 +2234,13 @@ fn output_tsv(
                 total_row.push_str("\t-");
             }
             for threshold in thresholds {
-                let containment = sample
-                    .total_stats
-                    .total_containment_at_threshold
-                    .get(threshold)
-                    .unwrap_or(&0.0);
-                let hits = (containment * sample.total_stats.target_kmers as f64).round() as usize;
+                let target_kmers = sample.total_stats.target_kmers;
+                let hits = sample.total_stats.total_hits_at_threshold[threshold];
+                let containment = if target_kmers > 0 {
+                    hits as f64 / target_kmers as f64
+                } else {
+                    0.0
+                };
                 total_row.push_str(&format!("\t{:.3}\t{}", containment, hits));
                 if confidence {
                     total_row.push_str(&format!(

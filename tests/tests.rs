@@ -1779,6 +1779,14 @@ fn test_query_individual_warns_on_empty_targets() {
     assert!(!String::from_utf8_lossy(&quiet.stderr).contains("Warning"));
 }
 
+fn write_records(path: &std::path::Path, records: &[(&str, &str)]) {
+    let fasta: String = records
+        .iter()
+        .map(|(id, seq)| format!(">{id}\n{seq}\n"))
+        .collect();
+    std::fs::write(path, fasta).unwrap();
+}
+
 #[test]
 fn test_crlf_matches_lf() {
     let dir = TempDir::new().unwrap();
@@ -1798,4 +1806,58 @@ fn test_crlf_matches_lf() {
     let lf_tsv = std::fs::read_to_string(lf_out).unwrap();
     assert!(lf_tsv.contains("\t1.000\t"), "{lf_tsv}");
     assert_eq!(lf_tsv, std::fs::read_to_string(crlf_out).unwrap());
+}
+
+#[test]
+fn test_total_row_sums_hits_exactly() {
+    // 15 / 22 * 22 truncates to 14
+    let dir = TempDir::new().unwrap();
+    let (target, sample, out) = (
+        dir.path().join("t.fa"),
+        dir.path().join("s.fa"),
+        dir.path().join("o.tsv"),
+    );
+    let seq = pseudo_dna_string(36, 7);
+    write_fasta(&target, "t", &seq);
+    let reads: Vec<(String, &str)> = (0..10).map(|i| (format!("r{i}"), &seq[..29])).collect();
+    let reads: Vec<(&str, &str)> = reads.iter().map(|(id, s)| (id.as_str(), *s)).collect();
+    write_records(&sample, &reads);
+
+    skope::run_query(&ContainmentConfig {
+        background_paths: Vec::new(),
+        targets_path: target,
+        sample_paths: vec![vec![sample]],
+        sample_names: vec!["s".to_string()],
+        kmer_length: 15,
+        smer_length: 0,
+        complexity: 0.0,
+        threads: 1,
+        output_path: Some(out.clone()),
+        quiet: true,
+        abundance_thresholds: vec![10],
+        discriminatory: false,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_kmers_path: None,
+        confidence: false,
+        fraction: 1.0,
+        no_total: false,
+        individual: false,
+    })
+    .unwrap();
+
+    let content = std::fs::read_to_string(out).unwrap();
+    let hits: Vec<(&str, &str, &str)> = content
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            (fields[0], fields[5], fields[7])
+        })
+        .collect();
+    assert_eq!(
+        hits,
+        [("t", "15", "22"), ("TOTAL", "15", "22")],
+        "{content}"
+    );
 }
