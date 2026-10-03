@@ -4,13 +4,11 @@ use crate::classify::{
 };
 use crate::{
     IndexKind, Layout, Progress, SeqProcessor, StdinTargets, TargetSource, check_index_complexity,
-    format_bp, format_bp_per_sec, process_input, resolve_targets, sample_inputs,
+    format_bp, format_bp_per_sec, output_writer, process_input, resolve_targets, sample_inputs,
 };
 use anyhow::Result;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -403,11 +401,7 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
     }
 
     // Output TSV
-    let writer: Box<dyn Write> = if let Some(path) = &config.output_path {
-        Box::new(BufWriter::new(File::create(path)?))
-    } else {
-        Box::new(BufWriter::new(io::stdout()))
-    };
+    let writer = output_writer(config.output_path.as_deref())?;
 
     let mut csv_writer = csv::WriterBuilder::new()
         .delimiter(b'\t')

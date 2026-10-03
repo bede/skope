@@ -749,6 +749,20 @@ fn test_classify_too_many_groups_errors() {
 }
 
 #[test]
+fn test_index_streams_to_piped_stdout() {
+    let dir = TempDir::new().unwrap();
+    let targets = dir.path().join("t.fa");
+    write_fasta(&targets, "t", &pseudo_dna_string(500, 11));
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_skope"))
+        .args(["index", "build-classify", "-q"])
+        .arg(&targets)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.starts_with(skope::INDEX_MAGIC));
+}
+
+#[test]
 fn test_query_cli_omits_noop_options() {
     let query_help = std::process::Command::new(env!("CARGO_BIN_EXE_skope"))
         .args(["query", "--help"])

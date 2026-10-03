@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use skope::{
@@ -65,10 +66,51 @@ fn validate_sample_names(names: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Sample arguments shared by query, classify and lenhist
+#[derive(Args)]
+struct SampleArgs {
+    /// Samples as fastx files/dirs (- for stdin), or R1,R2 with --paired
+    #[arg(required = true)]
+    samples: Vec<PathBuf>,
+
+    /// Comma-separated sample names (default is file/dir name without extension)
+    #[arg(
+        short = 'n',
+        long = "names",
+        value_name = "NAME,...",
+        value_delimiter = ','
+    )]
+    names: Option<Vec<String>>,
+
+    /// Samples are interleaved pairs
+    #[arg(
+        long = "interleaved",
+        default_value_t = false,
+        conflicts_with = "paired"
+    )]
+    interleaved: bool,
+
+    /// Samples are comma-separated mate files (R1,R2)
+    #[arg(long = "paired", default_value_t = false)]
+    paired: bool,
+}
+
+impl SampleArgs {
+    fn prepare(&self) -> Result<PreparedSamples> {
+        let layout = match (self.interleaved, self.paired) {
+            (true, _) => Layout::Interleaved,
+            (_, true) => Layout::Paired,
+            _ => Layout::Single,
+        };
+        prepare_samples(&self.samples, self.names.as_deref(), layout)
+    }
+}
+
 #[derive(Debug)]
 struct PreparedSamples {
     paths: Vec<Vec<PathBuf>>,
     names: Vec<String>,
+    layout: Layout,
 }
 
 fn split_mates(input: &Path) -> Result<Vec<PathBuf>> {
@@ -86,14 +128,6 @@ fn split_mates(input: &Path) -> Result<Vec<PathBuf>> {
         return Err(anyhow::anyhow!("Mate is not a file: {}", mate.display()));
     }
     Ok(mates)
-}
-
-fn layout(interleaved: bool, paired: bool) -> Layout {
-    match (interleaved, paired) {
-        (true, _) => Layout::Interleaved,
-        (_, true) => Layout::Paired,
-        _ => Layout::Single,
-    }
 }
 
 fn prepare_samples(
@@ -146,6 +180,7 @@ fn prepare_samples(
     Ok(PreparedSamples {
         paths,
         names: prepared_names,
+        layout,
     })
 }
 
@@ -161,6 +196,14 @@ fn initialise_thread_pool(threads: usize) -> Result<()> {
 
 fn output_path(output: &str) -> Option<PathBuf> {
     (output != "-").then(|| PathBuf::from(output))
+}
+
+/// Index output path, refusing to write binary to a terminal
+fn index_output_path(output: &str) -> Result<Option<PathBuf>> {
+    if output == "-" && std::io::stdout().is_terminal() {
+        anyhow::bail!("Refusing to write a binary index to a terminal: use -o or redirect stdout");
+    }
+    Ok(output_path(output))
 }
 
 fn parse_limit(limit: Option<&str>) -> Result<Option<u64>> {
@@ -337,9 +380,8 @@ enum Commands {
         /// Path to fastx file (single target unless -i), directory of fastx files/subdirs (one target per child file/subdir) or query index (.sk)
         targets: PathBuf,
 
-        /// Samples as fastx files/dirs (- for stdin), or R1,R2 with --paired
-        #[arg(required = true)]
-        samples: Vec<PathBuf>,
+        #[command(flatten)]
+        samples: SampleArgs,
 
         #[arg(short = 'k', long = "kmer", value_name = "K", value_parser = clap::value_parser!(u8).range(1..=61), help = k_help())]
         kmer_length: Option<u8>,
@@ -406,27 +448,6 @@ enum Commands {
         #[arg(short = 'o', long = "output", default_value = "-")]
         output: String,
 
-        /// Comma-separated sample names (default is file/dir name without extension)
-        #[arg(
-            short = 'n',
-            long = "names",
-            value_name = "NAME,...",
-            value_delimiter = ','
-        )]
-        sample_names: Option<Vec<String>>,
-
-        /// Samples are interleaved pairs
-        #[arg(
-            long = "interleaved",
-            default_value_t = false,
-            conflicts_with = "paired"
-        )]
-        interleaved: bool,
-
-        /// Samples are comma-separated mate files (R1,R2)
-        #[arg(long = "paired", default_value_t = false)]
-        paired: bool,
-
         /// Sort results
         #[arg(long = "sort", default_value = "containment", value_parser = ["containment", "target", "input"])]
         sort: String,
@@ -453,9 +474,8 @@ enum Commands {
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
-        /// Samples as fastx files/dirs (- for stdin), or R1,R2 with --paired
-        #[arg(required = true)]
-        samples: Vec<PathBuf>,
+        #[command(flatten)]
+        samples: SampleArgs,
 
         #[arg(short = 'k', long = "kmer", value_name = "K", value_parser = clap::value_parser!(u8).range(1..=61), help = k_help())]
         kmer_length: Option<u8>,
@@ -509,27 +529,6 @@ enum Commands {
         #[arg(short = 'o', long = "output", default_value = "-")]
         output: String,
 
-        /// Comma-separated sample names (default is file/dir name without extension)
-        #[arg(
-            short = 'n',
-            long = "names",
-            value_name = "NAME,...",
-            value_delimiter = ','
-        )]
-        sample_names: Option<Vec<String>>,
-
-        /// Samples are interleaved pairs
-        #[arg(
-            long = "interleaved",
-            default_value_t = false,
-            conflicts_with = "paired"
-        )]
-        interleaved: bool,
-
-        /// Samples are comma-separated mate files (R1,R2)
-        #[arg(long = "paired", default_value_t = false)]
-        paired: bool,
-
         /// Output per-sequence classifications instead of summary
         #[arg(long = "per-seq", default_value_t = false)]
         per_seq: bool,
@@ -548,9 +547,8 @@ enum Commands {
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
-        /// Samples as fastx files/dirs (- for stdin), or R1,R2 with --paired
-        #[arg(required = true)]
-        samples: Vec<PathBuf>,
+        #[command(flatten)]
+        samples: SampleArgs,
 
         // Algorithm parameters
         #[arg(short = 'k', long = "kmer", value_name = "K", value_parser = clap::value_parser!(u8).range(1..=61), help = k_help())]
@@ -607,27 +605,6 @@ enum Commands {
         #[arg(short = 'o', long = "output", default_value = "-")]
         output: String,
 
-        /// Comma-separated sample names (default is file/dir name without extension)
-        #[arg(
-            short = 'n',
-            long = "names",
-            value_name = "NAME,...",
-            value_delimiter = ','
-        )]
-        sample_names: Option<Vec<String>>,
-
-        /// Samples are interleaved pairs
-        #[arg(
-            long = "interleaved",
-            default_value_t = false,
-            conflicts_with = "paired"
-        )]
-        interleaved: bool,
-
-        /// Samples are comma-separated mate files (R1,R2)
-        #[arg(long = "paired", default_value_t = false)]
-        paired: bool,
-
         /// Suppress progress reporting
         #[arg(short = 'q', long = "quiet", default_value_t = false)]
         quiet: bool,
@@ -675,7 +652,7 @@ fn main() -> Result<()> {
                     smer_length,
                     complexity: *complexity,
                     threads: *threads,
-                    output_path: output_path(output),
+                    output_path: index_output_path(output)?,
                     quiet: *quiet,
                 };
 
@@ -712,7 +689,7 @@ fn main() -> Result<()> {
                     individual: *individual,
                     positions: *positions,
                     threads: *threads,
-                    output_path: output_path(output),
+                    output_path: index_output_path(output)?,
                     quiet: *quiet,
                     fraction: *fraction,
                     complexity: *complexity,
@@ -730,9 +707,6 @@ fn main() -> Result<()> {
             targets,
             individual,
             samples,
-            sample_names,
-            interleaved,
-            paired,
             kmer_length,
             smer_length,
             all_kmers,
@@ -746,8 +720,7 @@ fn main() -> Result<()> {
             per_seq,
             quiet,
         } => {
-            let layout = layout(*interleaved, *paired);
-            let prepared = prepare_samples(samples, sample_names.as_deref(), layout)?;
+            let prepared = samples.prepare()?;
             validate_complexity(*complexity)?;
             validate_rel_threshold(*rel_threshold)?;
             let (kmer_length, smer_length) = resolve_k_s(
@@ -763,7 +736,7 @@ fn main() -> Result<()> {
                 individual: *individual,
                 sample_paths: prepared.paths,
                 sample_names: prepared.names,
-                layout,
+                layout: prepared.layout,
                 kmer_length,
                 smer_length,
                 complexity: *complexity,
@@ -783,9 +756,6 @@ fn main() -> Result<()> {
         Commands::Query {
             targets,
             samples,
-            sample_names,
-            interleaved,
-            paired,
             kmer_length,
             smer_length,
             all_kmers,
@@ -804,8 +774,7 @@ fn main() -> Result<()> {
             fraction,
             complexity,
         } => {
-            let layout = layout(*interleaved, *paired);
-            let prepared = prepare_samples(samples, sample_names.as_deref(), layout)?;
+            let prepared = samples.prepare()?;
             let background_paths = expand_background_inputs(background)?;
             validate_fraction(*fraction)?;
             validate_complexity(*complexity)?;
@@ -830,7 +799,7 @@ fn main() -> Result<()> {
                 background_paths,
                 sample_paths: prepared.paths,
                 sample_names: prepared.names,
-                layout,
+                layout: prepared.layout,
                 kmer_length,
                 smer_length,
                 threads: *threads,
@@ -856,9 +825,6 @@ fn main() -> Result<()> {
             targets,
             individual,
             samples,
-            sample_names,
-            interleaved,
-            paired,
             kmer_length,
             smer_length,
             all_kmers,
@@ -871,8 +837,7 @@ fn main() -> Result<()> {
             quiet,
             limit,
         } => {
-            let layout = layout(*interleaved, *paired);
-            let prepared = prepare_samples(samples, sample_names.as_deref(), layout)?;
+            let prepared = samples.prepare()?;
             validate_complexity(*complexity)?;
             validate_rel_threshold(*rel_threshold)?;
             let (kmer_length, smer_length) = resolve_k_s(
@@ -891,7 +856,7 @@ fn main() -> Result<()> {
                 individual: *individual,
                 sample_paths: prepared.paths,
                 sample_names: prepared.names,
-                layout,
+                layout: prepared.layout,
                 kmer_length,
                 smer_length,
                 complexity: *complexity,

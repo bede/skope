@@ -2,7 +2,8 @@ use crate::kmers::{Kdust, KmerVec, Kmers};
 use crate::{
     FixedRapidHasher, IndexKind, Layout, ProcessingStats, Progress, RapidHashSet, SeqProcessor,
     StdinTargets, TargetGroup, TargetSource, check_index_complexity, complexity_info_line,
-    format_bp, format_bp_per_sec, process_input, reader_for_path, resolve_targets, sample_inputs,
+    format_bp, format_bp_per_sec, output_writer, process_input, reader_for_path, resolve_targets,
+    sample_inputs,
 };
 use anyhow::{Context, Result};
 use paraseq::Record;
@@ -11,7 +12,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::hash::Hash;
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -505,7 +506,7 @@ pub fn run_build_classify(config: &BuildClassifyConfig) -> Result<()> {
         config.kmer_length,
         config.smer_length,
         config.complexity,
-        config.output_path.as_ref(),
+        config.output_path.as_deref(),
     )?;
 
     if !config.quiet {
@@ -523,14 +524,9 @@ fn save_index(
     kmer_length: u8,
     smer_length: u8,
     complexity: f32,
-    output_path: Option<&PathBuf>,
+    output_path: Option<&Path>,
 ) -> Result<()> {
-    let writer: Box<dyn Write> = if let Some(path) = output_path {
-        Box::new(BufWriter::new(File::create(path)?))
-    } else {
-        Box::new(BufWriter::new(io::stdout()))
-    };
-    let mut writer = writer;
+    let mut writer = output_writer(output_path)?;
 
     let header: ClassificationIndexHeader = (
         *INDEX_MAGIC,
@@ -924,7 +920,7 @@ enum ClassifyOutput {
         group_names: Arc<Vec<String>>,
         sample_name: String,
         local: Vec<u8>,
-        writer: Arc<Mutex<BufWriter<Box<dyn Write + Send>>>>,
+        writer: Arc<Mutex<Box<dyn Write + Send>>>,
     },
 }
 
@@ -1136,12 +1132,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 
     use rayon::prelude::*;
     if config.per_seq {
-        let writer: Box<dyn Write + Send> = if let Some(path) = &config.output_path {
-            Box::new(BufWriter::new(File::create(path)?))
-        } else {
-            Box::new(BufWriter::new(io::stdout()))
-        };
-        let writer = Arc::new(Mutex::new(BufWriter::new(writer)));
+        let writer = Arc::new(Mutex::new(output_writer(config.output_path.as_deref())?));
 
         {
             let mut w = writer.lock();
@@ -1228,12 +1219,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             eprintln!();
         }
 
-        let writer: Box<dyn Write> = if let Some(path) = &config.output_path {
-            Box::new(BufWriter::new(File::create(path)?))
-        } else {
-            Box::new(BufWriter::new(io::stdout()))
-        };
-        let mut writer = writer;
+        let mut writer = output_writer(config.output_path.as_deref())?;
 
         writeln!(writer, "sample\tgroup\tseqs_pct\tseqs\tbases_pct\tbases")?;
 

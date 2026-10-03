@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--dump-syncmers` is now `--dump-kmers`.
 - `classify --per-seq` reports distinct *k*-mer counts in its `hits` and `seq_kmers` columns.
 - Correct handling of Windows line endings in FASTX via paraseq 0.6
+- `-l/--limit` no longer slows processing, having cost `query` around 40% of its throughput.
+- `index build-classify` and `index build-query` refuse to write a binary index to a terminal. Pass `-o` or redirect stdout.
 
 ### Fixed
 

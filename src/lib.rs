@@ -10,7 +10,9 @@ use paraseq::Record;
 use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashSet;
+use std::fs::File;
 use std::hash::BuildHasher;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -189,6 +191,14 @@ pub fn reader_for_path(path: &Path) -> Result<FastxReader> {
     let mut reader = open_reader(path)?;
     reader.update_batch_size_in_bp(256 * 1024)?;
     Ok(reader)
+}
+
+/// Buffered writer to a file, or stdout if `None`
+pub fn output_writer(path: Option<&Path>) -> Result<Box<dyn Write + Send>> {
+    Ok(match path {
+        Some(path) => Box::new(BufWriter::new(File::create(path)?)),
+        None => Box::new(BufWriter::new(std::io::stdout())),
+    })
 }
 
 pub fn format_bp(bp: usize) -> String {

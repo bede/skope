@@ -2,8 +2,8 @@ use crate::kmers::{FracMinHash, Kdust, KmerVec, Kmers, decode_u64, decode_u128};
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::{
     FixedRapidHasher, Layout, Progress, RapidHashSet, SeqProcessor, StdinTargets, TargetSource,
-    check_index_complexity, complexity_info_line, format_bp, format_bp_per_sec, process_input,
-    reader_for_path, resolve_targets, sample_inputs,
+    check_index_complexity, complexity_info_line, format_bp, format_bp_per_sec, output_writer,
+    process_input, reader_for_path, resolve_targets, sample_inputs,
 };
 use anyhow::{Context, Result};
 use paraseq::Record;
@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::hash::Hash;
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -1248,10 +1248,7 @@ fn save_query_index(
         ));
     }
 
-    let mut writer: Box<dyn Write> = match output_path {
-        Some(p) => Box::new(BufWriter::new(File::create(p)?)),
-        None => Box::new(BufWriter::new(io::stdout())),
-    };
+    let mut writer = output_writer(output_path)?;
 
     let meta: QueryIndexMeta = targets
         .iter()
@@ -1833,7 +1830,7 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
     // Output results
     output_results(
         &sample_results,
-        config.output_path.as_ref(),
+        config.output_path.as_deref(),
         &abundance_thresholds,
         config.confidence,
         config.no_total,
@@ -1864,18 +1861,12 @@ fn sort_results(results: &mut [ContainmentResult], sort_order: SortOrder) {
 
 fn output_results(
     samples: &[SampleResults],
-    output_path: Option<&PathBuf>,
+    output_path: Option<&Path>,
     abundance_thresholds: &[usize],
     confidence: bool,
     no_total: bool,
 ) -> Result<()> {
-    let writer: Box<dyn Write> = if let Some(path) = output_path {
-        Box::new(BufWriter::new(File::create(path)?))
-    } else {
-        Box::new(BufWriter::new(io::stdout()))
-    };
-
-    let mut writer = writer;
+    let mut writer = output_writer(output_path)?;
     output_tsv(
         &mut writer,
         samples,
