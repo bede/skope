@@ -1842,6 +1842,7 @@ fn classify_summary(
     targets: &std::path::Path,
     sample_paths: Vec<PathBuf>,
     layout: Layout,
+    threads: usize,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let out = NamedTempFile::new().unwrap();
     skope::run_classification(&ClassifyConfig {
@@ -1855,7 +1856,7 @@ fn classify_summary(
         complexity: 0.0,
         abs_threshold: 1,
         rel_threshold: 0.0,
-        threads: 1,
+        threads,
         limit_bp: None,
         output_path: Some(out.path().to_path_buf()),
         per_seq: false,
@@ -1898,11 +1899,11 @@ fn test_classify_pools_mates() {
     ]
     .map(|(g, n)| (g.to_string(), n.to_string()));
     assert_eq!(
-        classify_summary(&targets, vec![r1, r2], Layout::Paired).unwrap(),
+        classify_summary(&targets, vec![r1, r2], Layout::Paired, 1).unwrap(),
         pooled
     );
     assert_eq!(
-        classify_summary(&targets, vec![il.clone()], Layout::Interleaved).unwrap(),
+        classify_summary(&targets, vec![il.clone()], Layout::Interleaved, 1).unwrap(),
         pooled
     );
 
@@ -1914,7 +1915,7 @@ fn test_classify_pools_mates() {
     ]
     .map(|(g, n)| (g.to_string(), n.to_string()));
     assert_eq!(
-        classify_summary(&targets, vec![il], Layout::Single).unwrap(),
+        classify_summary(&targets, vec![il], Layout::Single, 1).unwrap(),
         single
     );
 }
@@ -1928,10 +1929,48 @@ fn test_paired_mate_count_mismatch_errors() {
     let (r1, r2) = (dir.path().join("r1.fa"), dir.path().join("r2.fa"));
     write_records(&r1, &[("p0", &seq), ("p1", &seq)]);
     write_records(&r2, &[("p0", &seq)]);
-    assert!(classify_summary(&targets, vec![r1.clone(), r2], Layout::Paired).is_err());
-    assert!(classify_summary(&targets, vec![dir.path().join("r1.fa")], Layout::Single).is_ok());
+    assert!(classify_summary(&targets, vec![r1.clone(), r2], Layout::Paired, 1).is_err());
+    assert!(classify_summary(&targets, vec![dir.path().join("r1.fa")], Layout::Single, 1).is_ok());
     write_records(&r1, &[("p0", &seq), ("p0", &seq), ("p1", &seq)]);
-    assert!(classify_summary(&targets, vec![r1], Layout::Interleaved).is_err());
+    assert!(classify_summary(&targets, vec![r1], Layout::Interleaved, 1).is_err());
+}
+
+#[test]
+fn test_mates_span_batches_with_unequal_lengths() {
+    // Sized alone by bp, 151 bp R1s batch an odd 1737 records and 150 bp R2s 1748
+    let dir = TempDir::new().unwrap();
+    let targets = dir.path().join("t.fa");
+    let seq = pseudo_dna_string(2000, 11);
+    write_fasta(&targets, "t", &seq);
+    let r2s: Vec<String> = (0..2000).map(|i| pseudo_dna_string(150, i + 100)).collect();
+    let pairs: Vec<(&str, &str)> = r2s
+        .iter()
+        .enumerate()
+        .map(|(i, r2)| (&seq[i % 1849..i % 1849 + 151], r2.as_str()))
+        .collect();
+    let (r1, r2, il) = write_mates(dir.path(), &pairs);
+
+    for threads in [1, 8] {
+        for (paths, layout) in [
+            (vec![r1.clone(), r2.clone()], Layout::Paired),
+            (vec![il.clone()], Layout::Interleaved),
+        ] {
+            let rows = classify_summary(&targets, paths, layout, threads).unwrap();
+            assert!(rows.contains(&("t".into(), "4000".into())), "{rows:?}");
+        }
+    }
+}
+
+#[test]
+fn test_paired_input_needs_two_files() {
+    let dir = TempDir::new().unwrap();
+    let targets = dir.path().join("t.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&targets, "t", &seq);
+    let r1 = dir.path().join("r1.fa");
+    write_records(&r1, &[("p0", &seq)]);
+    let error = classify_summary(&targets, vec![r1], Layout::Paired, 1).unwrap_err();
+    assert!(error.to_string().contains("R1,R2"), "{error}");
 }
 
 fn median_abundance(target: &std::path::Path, sample_paths: Vec<PathBuf>, layout: Layout) -> f64 {

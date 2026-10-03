@@ -175,24 +175,19 @@ fn is_sample_limit_error(err: &paraseq::Error) -> bool {
     }
 }
 
-pub fn reader_with_inferred_batch_size(
-    in_path: Option<&Path>,
-) -> Result<paraseq::fastx::Reader<Box<dyn std::io::Read + Send>>> {
-    let mut reader = paraseq::ReaderBuilder::optional_path(in_path).build()?;
-    reader.update_batch_size_in_bp(256 * 1024)?;
-    Ok(reader)
+type FastxReader = paraseq::fastx::Reader<Box<dyn std::io::Read + Send>>;
+
+/// Read a path, treating `-` as stdin, in paraseq's default batches of 1024 records
+fn open_reader(path: &Path) -> Result<FastxReader> {
+    let in_path = (path != Path::new("-")).then_some(path);
+    Ok(paraseq::ReaderBuilder::optional_path(in_path).build()?)
 }
 
-/// Read one target path, treating `-` as stdin
-pub fn reader_for_path(
-    path: &Path,
-) -> Result<paraseq::fastx::Reader<Box<dyn std::io::Read + Send>>> {
-    let in_path = if path.to_string_lossy() == "-" {
-        None
-    } else {
-        Some(path)
-    };
-    reader_with_inferred_batch_size(in_path)
+/// Read a path in batches of about 256 KiB, sized by the first record
+pub fn reader_for_path(path: &Path) -> Result<FastxReader> {
+    let mut reader = open_reader(path)?;
+    reader.update_batch_size_in_bp(256 * 1024)?;
+    Ok(reader)
 }
 
 pub fn format_bp(bp: usize) -> String {
@@ -272,13 +267,24 @@ pub fn process_input<P>(
 where
     P: for<'a> ParallelProcessor<RefRecord<'a>> + for<'a> PairedParallelProcessor<RefRecord<'a>>,
 {
-    let reader = reader_for_path(&input[0])?;
-    handle_process_result(match layout {
-        Layout::Single => reader.process_parallel(processor, threads),
-        Layout::Interleaved => reader.process_parallel_interleaved(processor, threads),
-        Layout::Paired => {
-            reader.process_parallel_paired(reader_for_path(&input[1])?, processor, threads)
+    // Mates keep fixed batches, since sizing by first record length can split pairs
+    handle_process_result(match (layout, input) {
+        (Layout::Single, [path]) => reader_for_path(path)?.process_parallel(processor, threads),
+        (Layout::Interleaved, [path]) => {
+            open_reader(path)?.process_parallel_interleaved(processor, threads)
         }
+        (Layout::Paired, [r1, r2]) => {
+            open_reader(r1)?.process_parallel_paired(open_reader(r2)?, processor, threads)
+        }
+        _ => anyhow::bail!(
+            "{layout:?} input needs {}, got {} file(s)",
+            if layout == Layout::Paired {
+                "two files (R1,R2)"
+            } else {
+                "one file"
+            },
+            input.len()
+        ),
     })
 }
 
