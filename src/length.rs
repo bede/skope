@@ -3,14 +3,10 @@ use crate::classify::{
     build_classification_index, load_classification_index,
 };
 use crate::{
-    IndexKind, Layout, ProcessingStats, StdinTargets, TargetSource, check_index_complexity,
-    create_spinner, format_bp, format_bp_per_sec, process_input, resolve_targets, sample_inputs,
-    sample_limit_reached_io_error,
+    IndexKind, Layout, Progress, SeqProcessor, StdinTargets, TargetSource, check_index_complexity,
+    format_bp, format_bp_per_sec, process_input, resolve_targets, sample_inputs,
 };
 use anyhow::Result;
-use indicatif::ProgressBar;
-use paraseq::Record;
-use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::File;
@@ -76,74 +72,29 @@ struct BucketState {
 struct LengthHistogramProcessor {
     classifier: Classifier,
     no_filter: bool,
-
-    local_stats: ProcessingStats,
     local_buckets: Vec<BucketState>,
-
-    // Global state
-    global_stats: Arc<Mutex<ProcessingStats>>,
     global_buckets: Arc<Vec<Mutex<BucketState>>>,
-    spinner: Option<Arc<Mutex<ProgressBar>>>,
-    start_time: Instant,
-    limit_bp: Option<u64>,
 }
 
 impl LengthHistogramProcessor {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         classifier: Classifier,
         no_filter: bool,
         global_buckets: Arc<Vec<Mutex<BucketState>>>,
-        global_stats: Arc<Mutex<ProcessingStats>>,
-        spinner: Option<Arc<Mutex<ProgressBar>>>,
-        start_time: Instant,
-        limit_bp: Option<u64>,
     ) -> Self {
         let bucket_count = classifier.num_groups + 2;
-        let local_buckets = (0..bucket_count).map(|_| BucketState::default()).collect();
-
         Self {
             classifier,
             no_filter,
-            local_stats: ProcessingStats::default(),
-            local_buckets,
-            global_stats,
+            local_buckets: vec![BucketState::default(); bucket_count],
             global_buckets,
-            spinner,
-            start_time,
-            limit_bp,
-        }
-    }
-
-    fn update_spinner(&self) {
-        if let Some(ref spinner) = self.spinner {
-            let stats = self.global_stats.lock();
-            let elapsed = self.start_time.elapsed();
-            let seqs_per_sec = stats.total_seqs as f64 / elapsed.as_secs_f64();
-            let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
-
-            spinner.lock().set_message(format!(
-                "Processing sample: {} seqs ({}). {:.0} seqs/s ({})",
-                stats.total_seqs,
-                format_bp(stats.total_bp as usize),
-                seqs_per_sec,
-                format_bp_per_sec(bp_per_sec)
-            ));
         }
     }
 }
 
-impl LengthHistogramProcessor {
+impl SeqProcessor for LengthHistogramProcessor {
     /// Bin mates separately under their pooled classification
-    fn process(&mut self, seqs: &[&[u8]]) -> paraseq::Result<()> {
-        if self
-            .limit_bp
-            .is_some_and(|limit| self.global_stats.lock().total_bp >= limit)
-        {
-            self.flush();
-            return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
-        }
-
+    fn process(&mut self, _id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()> {
         let bucket_idx = if self.no_filter {
             0
         } else {
@@ -160,13 +111,11 @@ impl LengthHistogramProcessor {
             *bucket.histogram.entry(seq.len()).or_insert(0) += 1;
             bucket.seqs += 1;
             bucket.bases += seq.len() as u64;
-            self.local_stats.total_seqs += 1;
-            self.local_stats.total_bp += seq.len() as u64;
         }
         Ok(())
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> paraseq::Result<()> {
         // Merge local buckets into global
         for (i, local) in self.local_buckets.iter_mut().enumerate() {
             if local.seqs == 0 && local.histogram.is_empty() {
@@ -182,42 +131,6 @@ impl LengthHistogramProcessor {
             local.seqs = 0;
             local.bases = 0;
         }
-
-        // Update global stats
-        let mut stats = self.global_stats.lock();
-        stats.total_seqs += self.local_stats.total_seqs;
-        stats.total_bp += self.local_stats.total_bp;
-
-        // Update spinner every 0.1 Gbp
-        let current_progress = stats.total_bp / 100_000_000;
-        if current_progress > stats.last_reported {
-            drop(stats);
-            self.update_spinner();
-            self.global_stats.lock().last_reported = current_progress;
-        }
-
-        self.local_stats = ProcessingStats::default();
-    }
-}
-
-impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
-        self.process(&[&record.seq()])
-    }
-
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
-        self.flush();
-        Ok(())
-    }
-}
-
-impl<Rf: Record> PairedParallelProcessor<Rf> for LengthHistogramProcessor {
-    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::Result<()> {
-        self.process(&[&record1.seq(), &record2.seq()])
-    }
-
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
-        self.flush();
         Ok(())
     }
 }
@@ -231,38 +144,17 @@ fn process_seqs_input(
     no_filter: bool,
     limit_bp: Option<u64>,
 ) -> Result<(Vec<BucketState>, u64, u64)> {
-    let spinner = create_spinner(quiet)?;
-    if let Some(ref pb) = spinner {
-        pb.lock().set_message("Processing sample: 0 seqs (0bp)");
-    }
-
+    let start_time = Instant::now();
     let num_groups = classifier.num_groups;
-    let bucket_count = num_groups + 2;
     let global_buckets: Arc<Vec<Mutex<BucketState>>> = Arc::new(
-        (0..bucket_count)
+        (0..num_groups + 2)
             .map(|_| Mutex::new(BucketState::default()))
             .collect(),
     );
-    let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
-
-    let start_time = Instant::now();
-    let mut processor = LengthHistogramProcessor::new(
-        classifier.clone(),
-        no_filter,
-        Arc::clone(&global_buckets),
-        Arc::clone(&global_stats),
-        spinner.clone(),
-        start_time,
-        limit_bp,
-    );
-
-    process_input(input, layout, &mut processor, threads)?;
-
-    if let Some(ref pb) = spinner {
-        pb.lock().finish_with_message("");
-    }
-
-    let stats = global_stats.lock().clone();
+    let processor =
+        LengthHistogramProcessor::new(classifier.clone(), no_filter, Arc::clone(&global_buckets));
+    let progress = Progress::new("Processing sample", quiet, limit_bp)?;
+    let stats = process_input(input, layout, processor, progress, threads)?;
     let buckets: Vec<BucketState> = global_buckets
         .iter()
         .map(|m| std::mem::take(&mut *m.lock()))

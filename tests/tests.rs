@@ -1962,6 +1962,61 @@ fn test_mates_span_batches_with_unequal_lengths() {
 }
 
 #[test]
+fn test_limit_stops_paired_query_early() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("t.fa");
+    let seq = pseudo_dna_string(2000, 11);
+    write_fasta(&target, "t", &seq);
+    let r2s: Vec<String> = (0..8000).map(|i| pseudo_dna_string(150, i + 100)).collect();
+    let pairs: Vec<(&str, &str)> = r2s
+        .iter()
+        .enumerate()
+        .map(|(i, r2)| (&seq[i % 1850..i % 1850 + 150], r2.as_str()))
+        .collect();
+    let (r1, r2, _) = write_mates(dir.path(), &pairs);
+
+    for threads in [1, 4] {
+        let out = NamedTempFile::new().unwrap();
+        skope::run_query(&ContainmentConfig {
+            background_paths: Vec::new(),
+            targets_path: target.clone(),
+            sample_paths: vec![vec![r1.clone(), r2.clone()]],
+            sample_names: vec!["s".to_string()],
+            layout: Layout::Paired,
+            kmer_length: 15,
+            smer_length: 7,
+            complexity: 0.0,
+            threads,
+            output_path: Some(out.path().to_path_buf()),
+            quiet: true,
+            abundance_thresholds: vec![],
+            discriminatory: false,
+            limit_bp: Some(100_000),
+            sort_order: SortOrder::Original,
+            dump_kmers_path: None,
+            confidence: false,
+            fraction: 1.0,
+            no_total: true,
+            individual: false,
+        })
+        .unwrap();
+        let content = std::fs::read_to_string(out.path()).unwrap();
+        let mut lines = content
+            .lines()
+            .map(|line| line.split('\t').collect::<Vec<_>>());
+        let header = lines.next().unwrap();
+        let row = lines.next().unwrap();
+        let column = |name| row[header.iter().position(|h| *h == name).unwrap()];
+        let (seqs, bases): (u64, u64) = (
+            column("sample_seqs").parse().unwrap(),
+            column("sample_bases").parse().unwrap(),
+        );
+        assert!(seqs % 2 == 0, "{content}");
+        assert!((100_000..2_400_000).contains(&bases), "{content}");
+    }
+}
+
+#[test]
 fn test_paired_input_needs_two_files() {
     let dir = TempDir::new().unwrap();
     let targets = dir.path().join("t.fa");

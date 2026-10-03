@@ -5,12 +5,7 @@ use std::hash::BuildHasher;
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
 pub const DEFAULT_SMER_LENGTH: u8 = 9;
 
-pub type SmerHasher = simd_minimizers::seq_hash::NtHasher<true, 1>;
-
-/// Hasher for syncmer selection. Unused when s is 0, but NtHasher::new(0) underflows
-pub fn make_hasher(smer_length: u8) -> SmerHasher {
-    SmerHasher::new(smer_length.max(1) as usize)
-}
+type SmerHasher = simd_minimizers::seq_hash::NtHasher<true, 1>;
 
 /// FracMinHash: keep k-mer if mix(hash(kmer)) lte [0,1] threshold
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,217 +234,140 @@ pub fn decode_u128(kmer: u128, k: u8) -> Vec<u8> {
         .collect()
 }
 
-/// Reusable buffers for k-mer computation
+/// Canonical k-mers for fixed k and s, with reusable buffers
 #[derive(Clone)]
-pub struct Buffers {
-    pub packed_nseq: PackedNSeqVec,
-    pub positions: Vec<u32>,
-    pub kmers: KmerVec,
-}
-
-impl Buffers {
-    pub fn new_u64() -> Self {
-        Self {
-            packed_nseq: PackedNSeqVec {
-                seq: Default::default(),
-                ambiguous: Default::default(),
-            },
-            positions: Default::default(),
-            kmers: KmerVec::U64(Vec::new()),
-        }
-    }
-
-    pub fn new_u128() -> Self {
-        Self {
-            packed_nseq: PackedNSeqVec {
-                seq: Default::default(),
-                ambiguous: Default::default(),
-            },
-            positions: Default::default(),
-            kmers: KmerVec::U128(Vec::new()),
-        }
-    }
-}
-
-/// Fill k-mers vector and positions vector from sequence
-pub fn fill_kmers_with_positions(
-    seq: &[u8],
-    hasher: &SmerHasher,
+pub struct Kmers {
     kmer_length: u8,
     smer_length: u8,
-    buffers: &mut Buffers,
-    positions_out: &mut Vec<usize>,
-) {
-    let Buffers {
-        packed_nseq,
-        positions,
-        kmers,
-    } = buffers;
+    hasher: SmerHasher,
+    packed_nseq: PackedNSeqVec,
+    positions: Vec<u32>,
+    values: KmerVec,
+}
 
-    packed_nseq.seq.clear();
-    packed_nseq.ambiguous.clear();
-    kmers.clear();
-    positions.clear();
-    positions_out.clear();
-
-    if seq.len() < kmer_length as usize {
-        return;
+impl Kmers {
+    /// Values are u64 for k <= 32, else u128
+    pub fn new(kmer_length: u8, smer_length: u8) -> Self {
+        Self {
+            kmer_length,
+            smer_length,
+            // NtHasher::new(0) underflows, and s = 0 never hashes
+            hasher: SmerHasher::new(smer_length.max(1) as usize),
+            packed_nseq: PackedNSeqVec {
+                seq: Default::default(),
+                ambiguous: Default::default(),
+            },
+            positions: Vec::new(),
+            values: if kmer_length <= 32 {
+                KmerVec::U64(Vec::new())
+            } else {
+                KmerVec::U128(Vec::new())
+            },
+        }
     }
 
-    packed_nseq.seq.push_ascii(seq);
-    packed_nseq.ambiguous.push_ascii(seq);
+    /// K-mers of a sequence, in sequence order
+    pub fn fill(&mut self, seq: &[u8]) -> &mut KmerVec {
+        self.pool(&[seq])
+    }
 
-    // s = 0 bypasses syncmer selection, taking every canonical k-mer
-    if smer_length == 0 {
-        let k = kmer_length as usize;
-        let PackedNSeq {
-            seq: packed,
-            ambiguous,
-        } = packed_nseq.as_slice();
-        let n = packed.len() + 1 - k;
-        match kmers {
-            KmerVec::U64(vec) => {
-                for pos in 0..n {
-                    if ambiguous.read_kmer(k, pos) == 0 {
+    /// K-mers of several sequences such as mates, none spanning two
+    pub fn pool(&mut self, seqs: &[&[u8]]) -> &mut KmerVec {
+        self.values.clear();
+        for seq in seqs {
+            self.extend::<false>(seq, &mut Vec::new());
+        }
+        &mut self.values
+    }
+
+    /// K-mers of a sequence, with their start positions in `positions`
+    pub fn fill_with_positions(&mut self, seq: &[u8], positions: &mut Vec<usize>) -> &mut KmerVec {
+        self.values.clear();
+        positions.clear();
+        self.extend::<true>(seq, positions);
+        &mut self.values
+    }
+
+    /// Append k-mers, and their positions if `POS`
+    #[inline]
+    fn extend<const POS: bool>(&mut self, seq: &[u8], positions_out: &mut Vec<usize>) {
+        let k = self.kmer_length as usize;
+        if seq.len() < k {
+            return;
+        }
+        let Self {
+            smer_length,
+            hasher,
+            packed_nseq,
+            positions,
+            values,
+            ..
+        } = self;
+        packed_nseq.seq.clear();
+        packed_nseq.ambiguous.clear();
+        packed_nseq.seq.push_ascii(seq);
+        packed_nseq.ambiguous.push_ascii(seq);
+
+        // s = 0 bypasses syncmer selection, taking every canonical k-mer
+        if *smer_length == 0 {
+            let PackedNSeq {
+                seq: packed,
+                ambiguous,
+            } = packed_nseq.as_slice();
+            let clean = (0..packed.len() + 1 - k).filter(|&pos| ambiguous.read_kmer(k, pos) == 0);
+            match values {
+                KmerVec::U64(vec) => {
+                    for pos in clean {
                         vec.push(
                             packed
                                 .read_kmer(k, pos)
                                 .min(packed.read_revcomp_kmer(k, pos)),
                         );
-                        positions_out.push(pos);
+                        if POS {
+                            positions_out.push(pos);
+                        }
                     }
                 }
-            }
-            KmerVec::U128(vec) => {
-                for pos in 0..n {
-                    if ambiguous.read_kmer(k, pos) == 0 {
+                KmerVec::U128(vec) => {
+                    for pos in clean {
                         vec.push(
                             packed
                                 .read_kmer_u128(k, pos)
                                 .min(packed.read_revcomp_kmer_u128(k, pos)),
                         );
-                        positions_out.push(pos);
+                        if POS {
+                            positions_out.push(pos);
+                        }
                     }
                 }
             }
+            return;
         }
-        return;
-    }
 
-    let s = smer_length as usize;
-    let w = kmer_length as usize - s + 1;
-    let m = simd_minimizers::canonical_open_syncmers(s, w)
-        .hasher(hasher)
-        .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
-
-    match kmers {
-        KmerVec::U64(vec) => {
-            for (pos, val) in m.pos_and_values_u64() {
-                vec.push(val);
-                positions_out.push(pos as usize);
-            }
-        }
-        KmerVec::U128(vec) => {
-            for (pos, val) in m.pos_and_values_u128() {
-                vec.push(val);
-                positions_out.push(pos as usize);
-            }
-        }
-    }
-}
-
-/// Fill k-mers vector from sequence (without positions)
-#[inline]
-pub fn fill_kmers(
-    seq: &[u8],
-    hasher: &SmerHasher,
-    kmer_length: u8,
-    smer_length: u8,
-    buffers: &mut Buffers,
-) {
-    buffers.kmers.clear();
-    extend_kmers(seq, hasher, kmer_length, smer_length, buffers);
-}
-
-/// Append k-mers without clearing the buffer
-#[inline]
-pub fn extend_kmers(
-    seq: &[u8],
-    hasher: &SmerHasher,
-    kmer_length: u8,
-    smer_length: u8,
-    buffers: &mut Buffers,
-) {
-    let Buffers {
-        packed_nseq,
-        positions,
-        kmers,
-    } = buffers;
-
-    packed_nseq.seq.clear();
-    packed_nseq.ambiguous.clear();
-    positions.clear();
-
-    if seq.len() < kmer_length as usize {
-        return;
-    }
-
-    packed_nseq.seq.push_ascii(seq);
-    packed_nseq.ambiguous.push_ascii(seq);
-
-    // s = 0 bypasses syncmer selection, taking every canonical k-mer
-    if smer_length == 0 {
-        let k = kmer_length as usize;
-        let PackedNSeq {
-            seq: packed,
-            ambiguous,
-        } = packed_nseq.as_slice();
-        let n = packed.len() + 1 - k;
-        match kmers {
+        let s = *smer_length as usize;
+        positions.clear();
+        let m = simd_minimizers::canonical_open_syncmers(s, k - s + 1)
+            .hasher(hasher)
+            .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
+        match values {
             KmerVec::U64(vec) => {
-                for pos in 0..n {
-                    if ambiguous.read_kmer(k, pos) == 0 {
-                        vec.push(
-                            packed
-                                .read_kmer(k, pos)
-                                .min(packed.read_revcomp_kmer(k, pos)),
-                        );
+                for (pos, val) in m.pos_and_values_u64() {
+                    vec.push(val);
+                    if POS {
+                        positions_out.push(pos as usize);
                     }
                 }
             }
             KmerVec::U128(vec) => {
-                for pos in 0..n {
-                    if ambiguous.read_kmer(k, pos) == 0 {
-                        vec.push(
-                            packed
-                                .read_kmer_u128(k, pos)
-                                .min(packed.read_revcomp_kmer_u128(k, pos)),
-                        );
+                for (pos, val) in m.pos_and_values_u128() {
+                    vec.push(val);
+                    if POS {
+                        positions_out.push(pos as usize);
                     }
                 }
             }
         }
-        return;
     }
-
-    let s = smer_length as usize;
-    let w = kmer_length as usize - s + 1;
-    let m = simd_minimizers::canonical_open_syncmers(s, w)
-        .hasher(hasher)
-        .run_skip_ambiguous_windows(packed_nseq.as_slice(), positions);
-
-    match kmers {
-        KmerVec::U64(vec) => {
-            for (_pos, val) in m.pos_and_values_u64() {
-                vec.push(val);
-            }
-        }
-        KmerVec::U128(vec) => {
-            for (_pos, val) in m.pos_and_values_u128() {
-                vec.push(val);
-            }
-        }
-    };
 }
 
 #[cfg(test)]
@@ -458,36 +376,26 @@ mod tests {
 
     #[test]
     fn test_fill_kmers() {
-        let seq = b"ACGTACGTACGT";
-        let k = 5;
-        let s = 3;
-        let hasher = SmerHasher::new(s as usize);
-        let mut buffers = Buffers::new_u64();
-
-        fill_kmers(seq, &hasher, k, s, &mut buffers);
+        let mut kmers = Kmers::new(5, 3);
 
         // We should have at least one k-mer
-        assert!(!buffers.kmers.is_empty());
+        assert!(!kmers.fill(b"ACGTACGTACGT").is_empty());
 
         // Test with a sequence shorter than k
-        let short_seq = b"ACGT";
-        fill_kmers(short_seq, &hasher, k, s, &mut buffers);
-        assert!(buffers.kmers.is_empty());
+        assert!(kmers.fill(b"ACGT").is_empty());
     }
 
     #[test]
     fn test_fill_kmers_with_positions() {
         let seq = b"ACGTACGTACGTACGT";
         let k = 7;
-        let s = 3;
-        let hasher = SmerHasher::new(s as usize);
-        let mut buffers = Buffers::new_u64();
         let mut positions = Vec::new();
-
-        fill_kmers_with_positions(seq, &hasher, k, s, &mut buffers, &mut positions);
+        let len = Kmers::new(k, 3)
+            .fill_with_positions(seq, &mut positions)
+            .len();
 
         // Should have same number of k-mers and positions
-        assert_eq!(buffers.kmers.len(), positions.len());
+        assert_eq!(len, positions.len());
 
         // All positions should be valid
         for &pos in &positions {
@@ -498,28 +406,37 @@ mod tests {
     #[test]
     fn test_kmers_match_between_apis() {
         let seq = b"ACGTTGCATGTCGCATGATGCATGAGAGCTACGTTGCATGTCGCATGATGCATGAGAGCT";
-        let k = 15;
-        let s = 7;
-        let hasher = SmerHasher::new(s as usize);
-
-        let mut values_only_buffers = Buffers::new_u64();
-        fill_kmers(seq, &hasher, k, s, &mut values_only_buffers);
-        let values_only = match &values_only_buffers.kmers {
-            KmerVec::U64(v) => v.clone(),
-            KmerVec::U128(_) => panic!("Expected u64 k-mers for k <= 32"),
-        };
-
-        let mut with_pos_buffers = Buffers::new_u64();
+        let mut kmers = Kmers::new(15, 7);
+        let values_only = kmers.fill(seq).clone();
         let mut positions = Vec::new();
-        fill_kmers_with_positions(seq, &hasher, k, s, &mut with_pos_buffers, &mut positions);
-        let with_pos_values = match &with_pos_buffers.kmers {
-            KmerVec::U64(v) => v.clone(),
-            KmerVec::U128(_) => panic!("Expected u64 k-mers for k <= 32"),
-        };
+        let with_pos = kmers.fill_with_positions(seq, &mut positions).clone();
 
         // Give us same k-mers and same order from both APIs
-        assert_eq!(values_only, with_pos_values);
-        assert_eq!(with_pos_values.len(), positions.len());
+        match (values_only, with_pos) {
+            (KmerVec::U64(a), KmerVec::U64(b)) => assert_eq!(a, b),
+            _ => panic!("Expected u64 k-mers for k <= 32"),
+        }
+        assert_eq!(kmers.fill(seq).len(), positions.len());
+    }
+
+    #[test]
+    fn test_pool_concatenates_without_spanning() {
+        let (a, b) = (pseudo_dna(100, 3), pseudo_dna(100, 5));
+        let joined = [a.as_slice(), b.as_slice()].concat();
+        for s in [0, 9] {
+            let mut kmers = Kmers::new(31, s);
+            let (KmerVec::U64(mut both), KmerVec::U64(b_only)) =
+                (kmers.fill(&a).clone(), kmers.fill(&b).clone())
+            else {
+                panic!("expected u64")
+            };
+            both.extend(b_only);
+            let KmerVec::U64(pooled) = kmers.pool(&[&a, &b]).clone() else {
+                panic!("expected u64")
+            };
+            assert_eq!(pooled, both);
+            assert!(kmers.fill(&joined).len() > pooled.len());
+        }
     }
 
     /// Pack ASCII into packed-seq's 2-bit encoding (A=0 C=1 T=2 G=3, base i at bit 2i)
@@ -557,18 +474,10 @@ mod tests {
     fn test_all_kmers_matches_naive_u64() {
         let seq = pseudo_dna(500, 7);
         let k = 31usize;
-        let mut buffers = Buffers::new_u64();
+        let mut kmers = Kmers::new(k as u8, 0);
         let mut positions = Vec::new();
-        fill_kmers_with_positions(
-            &seq,
-            &make_hasher(0),
-            k as u8,
-            0,
-            &mut buffers,
-            &mut positions,
-        );
 
-        let got = match &buffers.kmers {
+        let got = match kmers.fill_with_positions(&seq, &mut positions) {
             KmerVec::U64(v) => v.iter().map(|&x| x as u128).collect::<Vec<_>>(),
             KmerVec::U128(_) => panic!("expected u64"),
         };
@@ -580,10 +489,7 @@ mod tests {
     fn test_all_kmers_matches_naive_u128() {
         let seq = pseudo_dna(300, 13);
         let k = 41usize;
-        let mut buffers = Buffers::new_u128();
-        fill_kmers(&seq, &make_hasher(0), k as u8, 0, &mut buffers);
-
-        let got = match &buffers.kmers {
+        let got = match Kmers::new(k as u8, 0).fill(&seq) {
             KmerVec::U128(v) => v.clone(),
             KmerVec::U64(_) => panic!("expected u128"),
         };
@@ -622,11 +528,10 @@ mod tests {
     }
 
     fn kmers_u64(seq: &[u8], k: u8, s: u8, fmh: FracMinHash) -> Vec<u64> {
-        let hasher = make_hasher(s);
-        let mut buffers = Buffers::new_u64();
-        fill_kmers(seq, &hasher, k, s, &mut buffers);
-        fmh.retain(&mut buffers.kmers, None);
-        match &buffers.kmers {
+        let mut extractor = Kmers::new(k, s);
+        let kmers = extractor.fill(seq);
+        fmh.retain(kmers, None);
+        match kmers {
             KmerVec::U64(v) => v.clone(),
             KmerVec::U128(_) => panic!("expected u64"),
         }

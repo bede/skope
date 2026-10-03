@@ -6,13 +6,14 @@ pub mod query;
 pub mod stats;
 
 use anyhow::Result;
-use paraseq::fastx::RefRecord;
+use paraseq::Record;
 use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 // Re-export the main functionality
 pub use query::{
@@ -25,8 +26,8 @@ pub use length::{LengthHistogramConfig, run_lenhist};
 pub use classify::{BuildClassifyConfig, ClassifyConfig, run_build_classify, run_classification};
 
 pub use kmers::{
-    Buffers, DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, FracMinHash, Kdust, KmerVec, SmerHasher,
-    calculate_kdust, decode_u64, decode_u128, fill_kmers, fill_kmers_with_positions, make_hasher,
+    DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, FracMinHash, Kdust, KmerVec, Kmers, calculate_kdust,
+    decode_u64, decode_u128,
 };
 
 // ── Shared types ──────────────────────────────────────────────────────────────
@@ -159,9 +160,9 @@ pub struct ProcessingStats {
     pub last_reported: u64,
 }
 
-pub const SAMPLE_LIMIT_REACHED_MSG: &str = "sample base limit reached";
+const SAMPLE_LIMIT_REACHED_MSG: &str = "sample base limit reached";
 
-pub fn sample_limit_reached_io_error() -> std::io::Error {
+fn sample_limit_reached_io_error() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Interrupted, SAMPLE_LIMIT_REACHED_MSG)
 }
 
@@ -215,7 +216,7 @@ pub fn format_bp_per_sec(bp_per_sec: f64) -> String {
 }
 
 /// Create a spinner progress bar for status display, or None if quiet
-pub fn create_spinner(quiet: bool) -> Result<Option<Arc<Mutex<indicatif::ProgressBar>>>> {
+fn create_spinner(quiet: bool) -> Result<Option<Arc<Mutex<indicatif::ProgressBar>>>> {
     use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
     if quiet {
@@ -257,24 +258,147 @@ pub fn sample_inputs(paths: &[PathBuf], layout: Layout) -> std::slice::Chunks<'_
     paths.chunks(if layout == Layout::Paired { 2 } else { 1 })
 }
 
-/// Dispatch by read layout
-pub fn process_input<P>(
+/// Per-thread progress, merged into shared totals once per batch
+#[derive(Clone)]
+pub struct Progress {
+    local: ProcessingStats,
+    global: Arc<Mutex<ProcessingStats>>,
+    spinner: Option<Arc<Mutex<indicatif::ProgressBar>>>,
+    label: &'static str,
+    start: Instant,
+    limit_bp: Option<u64>,
+    limit_reached: bool,
+}
+
+impl Progress {
+    /// Progress under `label`, with a spinner unless quiet, stopping near `limit_bp`
+    pub fn new(label: &'static str, quiet: bool, limit_bp: Option<u64>) -> Result<Self> {
+        let spinner = create_spinner(quiet)?;
+        if let Some(spinner) = &spinner {
+            spinner.lock().set_message(format!("{label}: 0 seqs (0bp)"));
+        }
+        Ok(Self {
+            local: ProcessingStats::default(),
+            global: Arc::default(),
+            spinner,
+            label,
+            start: Instant::now(),
+            limit_bp,
+            limit_reached: limit_bp == Some(0),
+        })
+    }
+
+    /// Count records, failing once a flush has seen the base limit reached
+    pub fn add(&mut self, seqs: u64, bp: u64) -> paraseq::Result<()> {
+        if self.limit_reached {
+            return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
+        }
+        self.local.total_seqs += seqs;
+        self.local.total_bp += bp;
+        Ok(())
+    }
+
+    /// Merge into the shared totals, refreshing the spinner every 0.1 Gbp
+    pub fn flush(&mut self) {
+        let mut stats = self.global.lock();
+        stats.total_seqs += std::mem::take(&mut self.local.total_seqs);
+        stats.total_bp += std::mem::take(&mut self.local.total_bp);
+        self.limit_reached = self.limit_bp.is_some_and(|limit| stats.total_bp >= limit);
+        let reported = stats.total_bp / 100_000_000;
+        if let Some(spinner) = &self.spinner
+            && reported > stats.last_reported
+        {
+            stats.last_reported = reported;
+            let secs = self.start.elapsed().as_secs_f64();
+            spinner.lock().set_message(format!(
+                "{}: {} seqs ({}). {:.0} seqs/s ({})",
+                self.label,
+                stats.total_seqs,
+                format_bp(stats.total_bp as usize),
+                stats.total_seqs as f64 / secs,
+                format_bp_per_sec(stats.total_bp as f64 / secs)
+            ));
+        }
+    }
+
+    /// Clear the spinner and return the shared totals
+    pub fn finish(&self) -> ProcessingStats {
+        if let Some(spinner) = &self.spinner {
+            spinner.lock().finish_and_clear();
+        }
+        self.global.lock().clone()
+    }
+}
+
+/// A sample processor fed one record, or a pair's mates together
+pub trait SeqProcessor: Clone + Send {
+    fn process(&mut self, id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()>;
+
+    /// Merge thread-local state, once per batch
+    fn flush(&mut self) -> paraseq::Result<()>;
+}
+
+/// Feeds a `SeqProcessor` from paraseq's single and paired readers, tracking progress
+#[derive(Clone)]
+struct Seqs<P> {
+    processor: P,
+    progress: Progress,
+}
+
+impl<P: SeqProcessor> Seqs<P> {
+    fn process(&mut self, id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()> {
+        let bp = seqs.iter().map(|seq| seq.len() as u64).sum();
+        self.progress.add(seqs.len() as u64, bp)?;
+        self.processor.process(id, seqs)
+    }
+
+    fn flush(&mut self) -> paraseq::Result<()> {
+        self.processor.flush()?;
+        self.progress.flush();
+        Ok(())
+    }
+}
+
+impl<Rf: Record, P: SeqProcessor> ParallelProcessor<Rf> for Seqs<P> {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
+        self.process(record.id(), &[&record.seq()])
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+        self.flush()
+    }
+}
+
+impl<Rf: Record, P: SeqProcessor> PairedParallelProcessor<Rf> for Seqs<P> {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::Result<()> {
+        self.process(record1.id(), &[&record1.seq(), &record2.seq()])
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+        self.flush()
+    }
+}
+
+/// Dispatch by read layout, returning totals
+pub fn process_input<P: SeqProcessor>(
     input: &[PathBuf],
     layout: Layout,
-    processor: &mut P,
+    processor: P,
+    progress: Progress,
     threads: usize,
-) -> Result<()>
-where
-    P: for<'a> ParallelProcessor<RefRecord<'a>> + for<'a> PairedParallelProcessor<RefRecord<'a>>,
-{
+) -> Result<ProcessingStats> {
+    let mut seqs = Seqs {
+        processor,
+        progress,
+    };
     // Mates keep fixed batches, since sizing by first record length can split pairs
-    handle_process_result(match (layout, input) {
-        (Layout::Single, [path]) => reader_for_path(path)?.process_parallel(processor, threads),
+    let result = handle_process_result(match (layout, input) {
+        (Layout::Single, [path]) => reader_for_path(path)?.process_parallel(&mut seqs, threads),
         (Layout::Interleaved, [path]) => {
-            open_reader(path)?.process_parallel_interleaved(processor, threads)
+            open_reader(path)?.process_parallel_interleaved(&mut seqs, threads)
         }
         (Layout::Paired, [r1, r2]) => {
-            open_reader(r1)?.process_parallel_paired(open_reader(r2)?, processor, threads)
+            open_reader(r1)?.process_parallel_paired(open_reader(r2)?, &mut seqs, threads)
         }
         _ => anyhow::bail!(
             "{layout:?} input needs {}, got {} file(s)",
@@ -285,11 +409,13 @@ where
             },
             input.len()
         ),
-    })
+    });
+    let stats = seqs.progress.finish();
+    result.map(|()| stats)
 }
 
 /// Treat sample-limit interruptions as normal completion
-pub fn handle_process_result(result: std::result::Result<(), paraseq::Error>) -> Result<()> {
+fn handle_process_result(result: std::result::Result<(), paraseq::Error>) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
         Err(e) if is_sample_limit_error(&e) => Ok(()),

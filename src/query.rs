@@ -1,17 +1,13 @@
-use crate::kmers::{
-    Buffers, FracMinHash, Kdust, KmerVec, SmerHasher, decode_u64, decode_u128, extend_kmers,
-    fill_kmers, fill_kmers_with_positions, make_hasher,
-};
+use crate::kmers::{FracMinHash, Kdust, KmerVec, Kmers, decode_u64, decode_u128};
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::{
-    FixedRapidHasher, Layout, ProcessingStats, RapidHashSet, StdinTargets, TargetSource,
-    check_index_complexity, complexity_info_line, create_spinner, format_bp, format_bp_per_sec,
-    process_input, reader_for_path, resolve_targets, sample_inputs, sample_limit_reached_io_error,
+    FixedRapidHasher, Layout, Progress, RapidHashSet, SeqProcessor, StdinTargets, TargetSource,
+    check_index_complexity, complexity_info_line, format_bp, format_bp_per_sec, process_input,
+    reader_for_path, resolve_targets, sample_inputs,
 };
 use anyhow::{Context, Result};
-use indicatif::ProgressBar;
 use paraseq::Record;
-use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
+use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -243,21 +239,13 @@ fn normalize_abundance_thresholds(thresholds: &[usize]) -> Vec<usize> {
 /// Processor for collecting target sequence records with k-mers
 #[derive(Clone)]
 struct TargetsProcessor {
-    kmer_length: u8,
-    smer_length: u8,
-    hasher: SmerHasher,
+    kmers: Kmers,
     fmh: FracMinHash,
     kdust: Kdust,
-    buffers: Buffers,
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
     collect_positions: bool,
-
-    // Progress tracking
-    local_stats: ProcessingStats,
-    global_stats: Arc<Mutex<ProcessingStats>>,
-    spinner: Option<Arc<Mutex<ProgressBar>>>,
-    start_time: std::time::Instant,
+    progress: Progress,
 }
 
 impl TargetsProcessor {
@@ -267,48 +255,17 @@ impl TargetsProcessor {
         fmh: FracMinHash,
         kdust: Kdust,
         targets: Arc<Mutex<Vec<TargetInfo>>>,
-        global_stats: Arc<Mutex<ProcessingStats>>,
-        spinner: Option<Arc<Mutex<ProgressBar>>>,
-        start_time: std::time::Instant,
+        progress: Progress,
         collect_positions: bool,
     ) -> Self {
-        let buffers = if kmer_length <= 32 {
-            Buffers::new_u64()
-        } else {
-            Buffers::new_u128()
-        };
-
         Self {
-            kmer_length,
-            smer_length,
-            hasher: make_hasher(smer_length),
+            kmers: Kmers::new(kmer_length, smer_length),
             fmh,
             kdust,
-            buffers,
             positions: Vec::new(),
             targets,
             collect_positions,
-            local_stats: ProcessingStats::default(),
-            global_stats,
-            spinner,
-            start_time,
-        }
-    }
-
-    fn update_spinner(&self) {
-        if let Some(ref spinner) = self.spinner {
-            let stats = self.global_stats.lock();
-            let elapsed = self.start_time.elapsed();
-            let seqs_per_sec = stats.total_seqs as f64 / elapsed.as_secs_f64();
-            let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
-
-            spinner.lock().set_message(format!(
-                "Collecting target k-mers: {} seqs ({}). {:.0} seqs/s ({})",
-                stats.total_seqs,
-                format_bp(stats.total_bp as usize),
-                seqs_per_sec,
-                format_bp_per_sec(bp_per_sec)
-            ));
+            progress,
         }
     }
 }
@@ -317,37 +274,18 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
     fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
         let sequence = record.seq();
         let target_name = String::from_utf8_lossy(record.id()).to_string();
+        self.progress.add(1, sequence.len() as u64)?;
 
-        self.local_stats.total_seqs += 1;
-        self.local_stats.total_bp += sequence.len() as u64;
-
-        if self.collect_positions {
-            fill_kmers_with_positions(
-                &sequence,
-                &self.hasher,
-                self.kmer_length,
-                self.smer_length,
-                &mut self.buffers,
-                &mut self.positions,
-            );
-            self.fmh
-                .retain(&mut self.buffers.kmers, Some(&mut self.positions));
-            self.kdust
-                .retain(&mut self.buffers.kmers, Some(&mut self.positions));
-        } else {
-            fill_kmers(
-                &sequence,
-                &self.hasher,
-                self.kmer_length,
-                self.smer_length,
-                &mut self.buffers,
-            );
-            self.fmh.retain(&mut self.buffers.kmers, None);
-            self.kdust.retain(&mut self.buffers.kmers, None);
-        }
+        let mut positions = self.collect_positions.then_some(&mut self.positions);
+        let values = match positions.as_deref_mut() {
+            Some(positions) => self.kmers.fill_with_positions(&sequence, positions),
+            None => self.kmers.fill(&sequence),
+        };
+        self.fmh.retain(values, positions.as_deref_mut());
+        self.kdust.retain(values, positions);
 
         // Build unique k-mer set for this target
-        let kmers = match &self.buffers.kmers {
+        let kmers = match &*values {
             KmerVec::U64(vec) => {
                 let set: RapidHashSet<u64> = vec.iter().copied().collect();
                 KmerSet::U64(set)
@@ -359,7 +297,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         };
 
         let positioned_kmers = if self.collect_positions {
-            match &self.buffers.kmers {
+            match &*values {
                 KmerVec::U64(vec) => PositionedKmers::U64(
                     vec.iter()
                         .copied()
@@ -395,23 +333,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
     }
 
     fn on_batch_complete(&mut self) -> paraseq::Result<()> {
-        // Update global stats
-        {
-            let mut stats = self.global_stats.lock();
-            stats.total_seqs += self.local_stats.total_seqs;
-            stats.total_bp += self.local_stats.total_bp;
-
-            // Update spinner every 0.1 Gbp
-            let current_progress = stats.total_bp / 100_000_000; // 0.1 Gbp increments
-            if current_progress > stats.last_reported {
-                drop(stats); // Release lock before updating spinner
-                self.update_spinner();
-                self.global_stats.lock().last_reported = current_progress;
-            }
-
-            self.local_stats = ProcessingStats::default();
-        }
-
+        self.progress.flush();
         Ok(())
     }
 }
@@ -426,32 +348,20 @@ fn process_targets_file(
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
     let reader = reader_for_path(targets_path)?;
-
-    let spinner = create_spinner(quiet)?;
-
-    let start_time = std::time::Instant::now();
     let targets: Arc<Mutex<Vec<TargetInfo>>> = Arc::new(Mutex::new(Vec::new()));
-    let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
-
     let mut processor = TargetsProcessor::new(
         kmer_length,
         smer_length,
         fmh,
         kdust,
         Arc::clone(&targets),
-        Arc::clone(&global_stats),
-        spinner.clone(),
-        start_time,
+        Progress::new("Collecting target k-mers", quiet, None)?,
         collect_positions,
     );
 
     // Single thread to preserve order
     reader.process_parallel(&mut processor, 1)?;
-
-    // Finish spinner and clear
-    if let Some(ref pb) = spinner {
-        pb.lock().finish_and_clear();
-    }
+    processor.progress.finish();
 
     // Drop processor so its Arc clones are released
     drop(processor);
@@ -561,174 +471,64 @@ fn warn_empty_targets(targets: &[TargetInfo]) {
 /// Processor for counting k-mer depths from sequences
 #[derive(Clone)]
 struct SeqsProcessor {
-    kmer_length: u8,
-    smer_length: u8,
-    hasher: SmerHasher,
+    kmers: Kmers,
     targets_kmers: Arc<KmerSet>,
-
-    // Local buffers
-    buffers: Buffers,
-    local_stats: ProcessingStats,
-    local_counts_u64: Option<CountMap<u64>>,
-    local_counts_u128: Option<CountMap<u128>>,
-
-    // Global state
-    global_stats: Arc<Mutex<ProcessingStats>>,
-    global_counts_u64: Arc<Mutex<Option<CountMap<u64>>>>,
-    global_counts_u128: Arc<Mutex<Option<CountMap<u128>>>>,
-    spinner: Option<Arc<Mutex<ProgressBar>>>,
-    spinner_label: &'static str,
-    start_time: Instant,
-    limit_bp: Option<u64>,
+    local_counts: AbundanceMap,
+    global_counts: Arc<Mutex<AbundanceMap>>,
 }
 
 impl SeqsProcessor {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         kmer_length: u8,
         smer_length: u8,
         targets_kmers: Arc<KmerSet>,
-        global_counts_u64: Arc<Mutex<Option<CountMap<u64>>>>,
-        global_counts_u128: Arc<Mutex<Option<CountMap<u128>>>>,
-        global_stats: Arc<Mutex<ProcessingStats>>,
-        spinner: Option<Arc<Mutex<ProgressBar>>>,
-        spinner_label: &'static str,
-        start_time: Instant,
-        limit_bp: Option<u64>,
+        global_counts: Arc<Mutex<AbundanceMap>>,
     ) -> Self {
-        let buffers = if kmer_length <= 32 {
-            Buffers::new_u64()
-        } else {
-            Buffers::new_u128()
-        };
-
-        let (local_counts_u64, local_counts_u128) = if kmer_length <= 32 {
-            (Some(CountMap::default()), None)
-        } else {
-            (None, Some(CountMap::default()))
-        };
-
         Self {
-            kmer_length,
-            smer_length,
-            hasher: make_hasher(smer_length),
+            kmers: Kmers::new(kmer_length, smer_length),
             targets_kmers,
-            buffers,
-            local_stats: ProcessingStats::default(),
-            local_counts_u64,
-            local_counts_u128,
-            global_stats,
-            global_counts_u64,
-            global_counts_u128,
-            spinner,
-            spinner_label,
-            start_time,
-            limit_bp,
-        }
-    }
-
-    fn update_spinner(&self) {
-        if let Some(ref spinner) = self.spinner {
-            let stats = self.global_stats.lock();
-            let elapsed = self.start_time.elapsed();
-            let seqs_per_sec = stats.total_seqs as f64 / elapsed.as_secs_f64();
-            let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
-
-            spinner.lock().set_message(format!(
-                "{}: {} seqs ({}). {:.0} seqs/s ({})",
-                self.spinner_label,
-                stats.total_seqs,
-                format_bp(stats.total_bp as usize),
-                seqs_per_sec,
-                format_bp_per_sec(bp_per_sec)
-            ));
+            local_counts: AbundanceMap::new(kmer_length),
+            global_counts,
         }
     }
 }
 
-impl SeqsProcessor {
-    fn process(&mut self, seqs: &[&[u8]]) -> paraseq::Result<()> {
-        if self
-            .limit_bp
-            .is_some_and(|limit| self.global_stats.lock().total_bp >= limit)
-        {
-            self.flush();
-            return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
-        }
-
-        self.local_stats.total_seqs += seqs.len() as u64;
-        self.buffers.kmers.clear();
-        for seq in seqs {
-            self.local_stats.total_bp += seq.len() as u64;
-            extend_kmers(
-                seq,
-                &self.hasher,
-                self.kmer_length,
-                self.smer_length,
-                &mut self.buffers,
-            );
-        }
-
+impl SeqProcessor for SeqsProcessor {
+    fn process(&mut self, _id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()> {
         let distinct = seqs.len() > 1;
-        match (&mut self.buffers.kmers, &*self.targets_kmers) {
-            (KmerVec::U64(kmers), KmerSet::U64(targets)) => count_target_kmers(
-                kmers,
-                targets,
-                self.local_counts_u64.as_mut().unwrap(),
-                distinct,
-            ),
-            (KmerVec::U128(kmers), KmerSet::U128(targets)) => count_target_kmers(
-                kmers,
-                targets,
-                self.local_counts_u128.as_mut().unwrap(),
-                distinct,
-            ),
-            _ => panic!("Mismatch between KmerVec and KmerSet types"),
+        match (
+            self.kmers.pool(seqs),
+            &*self.targets_kmers,
+            &mut self.local_counts,
+        ) {
+            (KmerVec::U64(kmers), KmerSet::U64(targets), AbundanceMap::U64(counts)) => {
+                count_target_kmers(kmers, targets, counts, distinct)
+            }
+            (KmerVec::U128(kmers), KmerSet::U128(targets), AbundanceMap::U128(counts)) => {
+                count_target_kmers(kmers, targets, counts, distinct)
+            }
+            _ => unreachable!("k-mer width does not match targets"),
         }
         Ok(())
     }
 
-    fn flush(&mut self) {
-        // Merge local into global counts
-        if let Some(local) = &mut self.local_counts_u64 {
-            let mut global = self.global_counts_u64.lock();
-            let global_map = global.as_mut().unwrap();
-            for (&kmer, &count) in local.iter() {
-                global_map
-                    .entry(kmer)
-                    .and_modify(|e| *e = e.saturating_add(count))
-                    .or_insert(count);
-            }
-            local.clear();
-        } else {
-            let mut global = self.global_counts_u128.lock();
-            let global_map = global.as_mut().unwrap();
-            let local = self.local_counts_u128.as_mut().unwrap();
-            for (&kmer, &count) in local.iter() {
-                global_map
-                    .entry(kmer)
-                    .and_modify(|e| *e = e.saturating_add(count))
-                    .or_insert(count);
-            }
-            local.clear();
+    fn flush(&mut self) -> paraseq::Result<()> {
+        match (&mut self.local_counts, &mut *self.global_counts.lock()) {
+            (AbundanceMap::U64(local), AbundanceMap::U64(global)) => merge_counts(local, global),
+            (AbundanceMap::U128(local), AbundanceMap::U128(global)) => merge_counts(local, global),
+            _ => unreachable!("k-mer width does not match targets"),
         }
+        Ok(())
+    }
+}
 
-        // Update global stats
-        {
-            let mut stats = self.global_stats.lock();
-            stats.total_seqs += self.local_stats.total_seqs;
-            stats.total_bp += self.local_stats.total_bp;
-
-            // Update spinner every 0.1 Gbp
-            let current_progress = stats.total_bp / 100_000_000; // 0.1 Gbp increments
-            if current_progress > stats.last_reported {
-                drop(stats); // Release lock before updating spinner
-                self.update_spinner();
-                self.global_stats.lock().last_reported = current_progress;
-            }
-
-            self.local_stats = ProcessingStats::default();
-        }
+/// Move thread-local counts into the shared counts
+fn merge_counts<T: Eq + Hash>(local: &mut CountMap<T>, global: &mut CountMap<T>) {
+    for (kmer, count) in local.drain() {
+        global
+            .entry(kmer)
+            .and_modify(|e| *e = e.saturating_add(count))
+            .or_insert(count);
     }
 }
 
@@ -752,32 +552,28 @@ fn count_target_kmers<T: Copy + Ord + Hash>(
     }
 }
 
-impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
-        self.process(&[&record.seq()])
-    }
-
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
-        self.flush();
-        Ok(())
-    }
-}
-
-impl<Rf: Record> PairedParallelProcessor<Rf> for SeqsProcessor {
-    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::Result<()> {
-        self.process(&[&record1.seq(), &record2.seq()])
-    }
-
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
-        self.flush();
-        Ok(())
-    }
-}
-
 /// Enum to abstract over u64 and u128 abundance maps
+#[derive(Clone)]
 enum AbundanceMap {
     U64(CountMap<u64>),
     U128(CountMap<u128>),
+}
+
+impl AbundanceMap {
+    fn new(kmer_length: u8) -> Self {
+        if kmer_length <= 32 {
+            Self::U64(CountMap::default())
+        } else {
+            Self::U128(CountMap::default())
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::U64(map) => map.len(),
+            Self::U128(map) => map.len(),
+        }
+    }
 }
 
 const MIN_TARGET_KMERS_FOR_ANI_ADJUSTMENT: usize = 50;
@@ -997,75 +793,26 @@ fn process_seqs_input(
     label: &'static str,
     summary_label: &'static str,
 ) -> Result<(AbundanceMap, u64, u64)> {
-    let spinner = create_spinner(quiet)?;
-    if let Some(ref pb) = spinner {
-        pb.lock().set_message(format!("{label}: 0 seqs (0bp)"));
-    }
-
-    let total_target_kmers = targets_kmers.len();
-
     let start_time = Instant::now();
-    let (global_counts_u64, global_counts_u128) = if kmer_length <= 32 {
-        (
-            Arc::new(Mutex::new(Some(CountMap::default()))),
-            Arc::new(Mutex::new(None)),
-        )
-    } else {
-        (
-            Arc::new(Mutex::new(None)),
-            Arc::new(Mutex::new(Some(CountMap::default()))),
-        )
-    };
-    let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
-
-    let mut processor = SeqsProcessor::new(
+    let total_target_kmers = targets_kmers.len();
+    let global_counts = Arc::new(Mutex::new(AbundanceMap::new(kmer_length)));
+    let processor = SeqsProcessor::new(
         kmer_length,
         smer_length,
         targets_kmers,
-        Arc::clone(&global_counts_u64),
-        Arc::clone(&global_counts_u128),
-        Arc::clone(&global_stats),
-        spinner.clone(),
-        label,
-        start_time,
-        limit_bp,
+        Arc::clone(&global_counts),
     );
-
-    process_input(input, layout, &mut processor, threads)?;
-
-    if let Some(ref pb) = spinner {
-        pb.lock().finish_with_message("");
-    }
-
-    // Drop processor so its Arc clones are released
-    drop(processor);
-    let stats = global_stats.lock().clone();
-    let abundance_map = if kmer_length <= 32 {
-        let map = Arc::try_unwrap(global_counts_u64)
-            .unwrap()
-            .into_inner()
-            .unwrap();
-        AbundanceMap::U64(map)
-    } else {
-        let map = Arc::try_unwrap(global_counts_u128)
-            .unwrap()
-            .into_inner()
-            .unwrap();
-        AbundanceMap::U128(map)
-    };
+    let progress = Progress::new(label, quiet, limit_bp)?;
+    let stats = process_input(input, layout, processor, progress, threads)?;
+    let abundance_map = Arc::into_inner(global_counts).unwrap().into_inner();
 
     if !quiet {
-        let elapsed = start_time.elapsed();
-        let unique_kmers = match &abundance_map {
-            AbundanceMap::U64(m) => m.len(),
-            AbundanceMap::U128(m) => m.len(),
-        };
-        let bp_per_sec = stats.total_bp as f64 / elapsed.as_secs_f64();
+        let bp_per_sec = stats.total_bp as f64 / start_time.elapsed().as_secs_f64();
         eprintln!(
             "{summary_label}: {} records ({}), found {} of {} distinct target k-mers ({})",
             stats.total_seqs,
             format_bp(stats.total_bp as usize),
-            unique_kmers,
+            abundance_map.len(),
             total_target_kmers,
             format_bp_per_sec(bp_per_sec)
         );
