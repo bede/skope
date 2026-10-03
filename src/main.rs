@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use skope::{
-    DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, derive_sample_name, find_fastx_files,
-    find_fastx_files_recursive, is_special_input_path, resolve_k_s, validate_k_s,
+    DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, Layout, derive_mates_name, derive_sample_name,
+    find_fastx_files, find_fastx_files_recursive, is_special_input_path, resolve_k_s, validate_k_s,
 };
 
 /// Check the kdust threshold is in [0, 1], rejecting NaN and inf
@@ -71,7 +71,36 @@ struct PreparedSamples {
     names: Vec<String>,
 }
 
-fn prepare_samples(inputs: &[PathBuf], names: Option<&[String]>) -> Result<PreparedSamples> {
+fn split_mates(input: &Path) -> Result<Vec<PathBuf>> {
+    let input = input.to_string_lossy();
+    let mates: Vec<PathBuf> = input.split(',').map(PathBuf::from).collect();
+    if mates.len() != 2 {
+        return Err(anyhow::anyhow!(
+            "--paired samples must be comma-separated mate files (R1,R2), got {input}"
+        ));
+    }
+    if let Some(mate) = mates
+        .iter()
+        .find(|mate| !(mate.is_file() || is_special_input_path(mate)))
+    {
+        return Err(anyhow::anyhow!("Mate is not a file: {}", mate.display()));
+    }
+    Ok(mates)
+}
+
+fn layout(interleaved: bool, paired: bool) -> Layout {
+    match (interleaved, paired) {
+        (true, _) => Layout::Interleaved,
+        (_, true) => Layout::Paired,
+        _ => Layout::Single,
+    }
+}
+
+fn prepare_samples(
+    inputs: &[PathBuf],
+    names: Option<&[String]>,
+    layout: Layout,
+) -> Result<PreparedSamples> {
     if let Some(names) = names
         && names.len() != inputs.len()
     {
@@ -86,31 +115,31 @@ fn prepare_samples(inputs: &[PathBuf], names: Option<&[String]>) -> Result<Prepa
     let mut prepared_names = Vec::with_capacity(inputs.len());
 
     for (i, input) in inputs.iter().enumerate() {
-        let (sample_paths, is_directory) =
-            if input.to_string_lossy() == "-" || is_special_input_path(input) {
-                (vec![input.clone()], false)
+        let (sample_paths, name) = if layout == Layout::Paired {
+            let mates = split_mates(input)?;
+            let name = derive_mates_name(&mates[0]);
+            (mates, name)
+        } else if input.to_string_lossy() == "-" || is_special_input_path(input) {
+            (vec![input.clone()], derive_sample_name(input, false))
+        } else {
+            if !input.exists() {
+                return Err(anyhow::anyhow!("Path does not exist: {}", input.display()));
+            }
+            let metadata = std::fs::metadata(input)
+                .with_context(|| format!("Failed to access path: {}", input.display()))?;
+            if metadata.is_file() {
+                (vec![input.clone()], derive_sample_name(input, false))
+            } else if metadata.is_dir() {
+                (find_fastx_files(input)?, derive_sample_name(input, true))
             } else {
-                if !input.exists() {
-                    return Err(anyhow::anyhow!("Path does not exist: {}", input.display()));
-                }
-                let metadata = std::fs::metadata(input)
-                    .with_context(|| format!("Failed to access path: {}", input.display()))?;
-                if metadata.is_file() {
-                    (vec![input.clone()], false)
-                } else if metadata.is_dir() {
-                    (find_fastx_files(input)?, true)
-                } else {
-                    return Err(anyhow::anyhow!(
-                        "Path is neither a regular file nor directory: {}",
-                        input.display()
-                    ));
-                }
-            };
+                return Err(anyhow::anyhow!(
+                    "Path is neither a regular file nor directory: {}",
+                    input.display()
+                ));
+            }
+        };
         paths.push(sample_paths);
-        prepared_names.push(names.map_or_else(
-            || derive_sample_name(input, is_directory),
-            |names| names[i].clone(),
-        ));
+        prepared_names.push(names.map_or(name, |names| names[i].clone()));
     }
 
     validate_sample_names(&prepared_names)?;
@@ -308,7 +337,7 @@ enum Commands {
         /// Path to fastx file (single target unless -i), directory of fastx files/subdirs (one target per child file/subdir) or query index (.sk)
         targets: PathBuf,
 
-        /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
+        /// Samples as fastx files/dirs (- for stdin), or R1,R2 with --paired
         #[arg(required = true)]
         samples: Vec<PathBuf>,
 
@@ -386,6 +415,18 @@ enum Commands {
         )]
         sample_names: Option<Vec<String>>,
 
+        /// Samples are interleaved pairs
+        #[arg(
+            long = "interleaved",
+            default_value_t = false,
+            conflicts_with = "paired"
+        )]
+        interleaved: bool,
+
+        /// Samples are comma-separated mate files (R1,R2)
+        #[arg(long = "paired", default_value_t = false)]
+        paired: bool,
+
         /// Sort results
         #[arg(long = "sort", default_value = "containment", value_parser = ["containment", "target", "input"])]
         sort: String,
@@ -412,7 +453,7 @@ enum Commands {
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
-        /// Path(s) to fastx files/dirs (- for stdin)
+        /// Samples as fastx files/dirs (- for stdin), or R1,R2 with --paired
         #[arg(required = true)]
         samples: Vec<PathBuf>,
 
@@ -477,6 +518,18 @@ enum Commands {
         )]
         sample_names: Option<Vec<String>>,
 
+        /// Samples are interleaved pairs
+        #[arg(
+            long = "interleaved",
+            default_value_t = false,
+            conflicts_with = "paired"
+        )]
+        interleaved: bool,
+
+        /// Samples are comma-separated mate files (R1,R2)
+        #[arg(long = "paired", default_value_t = false)]
+        paired: bool,
+
         /// Output per-sequence classifications instead of summary
         #[arg(long = "per-seq", default_value_t = false)]
         per_seq: bool,
@@ -495,7 +548,7 @@ enum Commands {
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
-        /// Path(s) to fastx files/dirs (- for stdin). Each file/dir is treated as a separate sample
+        /// Samples as fastx files/dirs (- for stdin), or R1,R2 with --paired
         #[arg(required = true)]
         samples: Vec<PathBuf>,
 
@@ -562,6 +615,18 @@ enum Commands {
             value_delimiter = ','
         )]
         sample_names: Option<Vec<String>>,
+
+        /// Samples are interleaved pairs
+        #[arg(
+            long = "interleaved",
+            default_value_t = false,
+            conflicts_with = "paired"
+        )]
+        interleaved: bool,
+
+        /// Samples are comma-separated mate files (R1,R2)
+        #[arg(long = "paired", default_value_t = false)]
+        paired: bool,
 
         /// Suppress progress reporting
         #[arg(short = 'q', long = "quiet", default_value_t = false)]
@@ -666,6 +731,8 @@ fn main() -> Result<()> {
             individual,
             samples,
             sample_names,
+            interleaved,
+            paired,
             kmer_length,
             smer_length,
             all_kmers,
@@ -679,7 +746,8 @@ fn main() -> Result<()> {
             per_seq,
             quiet,
         } => {
-            let prepared = prepare_samples(samples, sample_names.as_deref())?;
+            let layout = layout(*interleaved, *paired);
+            let prepared = prepare_samples(samples, sample_names.as_deref(), layout)?;
             validate_complexity(*complexity)?;
             validate_rel_threshold(*rel_threshold)?;
             let (kmer_length, smer_length) = resolve_k_s(
@@ -695,6 +763,7 @@ fn main() -> Result<()> {
                 individual: *individual,
                 sample_paths: prepared.paths,
                 sample_names: prepared.names,
+                layout,
                 kmer_length,
                 smer_length,
                 complexity: *complexity,
@@ -715,6 +784,8 @@ fn main() -> Result<()> {
             targets,
             samples,
             sample_names,
+            interleaved,
+            paired,
             kmer_length,
             smer_length,
             all_kmers,
@@ -733,7 +804,8 @@ fn main() -> Result<()> {
             fraction,
             complexity,
         } => {
-            let prepared = prepare_samples(samples, sample_names.as_deref())?;
+            let layout = layout(*interleaved, *paired);
+            let prepared = prepare_samples(samples, sample_names.as_deref(), layout)?;
             let background_paths = expand_background_inputs(background)?;
             validate_fraction(*fraction)?;
             validate_complexity(*complexity)?;
@@ -758,6 +830,7 @@ fn main() -> Result<()> {
                 background_paths,
                 sample_paths: prepared.paths,
                 sample_names: prepared.names,
+                layout,
                 kmer_length,
                 smer_length,
                 threads: *threads,
@@ -784,6 +857,8 @@ fn main() -> Result<()> {
             individual,
             samples,
             sample_names,
+            interleaved,
+            paired,
             kmer_length,
             smer_length,
             all_kmers,
@@ -796,7 +871,8 @@ fn main() -> Result<()> {
             quiet,
             limit,
         } => {
-            let prepared = prepare_samples(samples, sample_names.as_deref())?;
+            let layout = layout(*interleaved, *paired);
+            let prepared = prepare_samples(samples, sample_names.as_deref(), layout)?;
             validate_complexity(*complexity)?;
             validate_rel_threshold(*rel_threshold)?;
             let (kmer_length, smer_length) = resolve_k_s(
@@ -815,6 +891,7 @@ fn main() -> Result<()> {
                 individual: *individual,
                 sample_paths: prepared.paths,
                 sample_names: prepared.names,
+                layout,
                 kmer_length,
                 smer_length,
                 complexity: *complexity,
@@ -851,7 +928,8 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         std::fs::write(directory.join("part.fa"), b">r\nACGT\n").unwrap();
 
-        let prepared = prepare_samples(&[file.clone(), directory.clone()], None).unwrap();
+        let prepared =
+            prepare_samples(&[file.clone(), directory.clone()], None, Layout::Single).unwrap();
         assert_eq!(prepared.names, ["single", "reads"]);
         assert_eq!(
             prepared.paths,
@@ -860,13 +938,40 @@ mod tests {
     }
 
     #[test]
+    fn prepare_samples_splits_paired_mates() {
+        let temp = TempDir::new().unwrap();
+        let (r1, r2) = (temp.path().join("s_R1.fq"), temp.path().join("s_R2.fq"));
+        std::fs::write(&r1, b"@r\nACGT\n+\nIIII\n").unwrap();
+        std::fs::write(&r2, b"@r\nACGT\n+\nIIII\n").unwrap();
+        let mates = PathBuf::from(format!("{},{}", r1.display(), r2.display()));
+
+        let prepared = prepare_samples(&[mates], None, Layout::Paired).unwrap();
+        assert_eq!(prepared.names, ["s"]);
+        assert_eq!(prepared.paths, [vec![r1.clone(), r2]]);
+
+        let error = prepare_samples(std::slice::from_ref(&r1), None, Layout::Paired).unwrap_err();
+        assert!(error.to_string().contains("R1,R2"));
+        let missing = PathBuf::from(format!(
+            "{},{}",
+            r1.display(),
+            temp.path().join("x").display()
+        ));
+        let error = prepare_samples(&[missing], None, Layout::Paired).unwrap_err();
+        assert!(error.to_string().contains("Mate is not a file"));
+    }
+
+    #[test]
     fn prepare_samples_validates_supplied_names() {
-        let error = prepare_samples(&[PathBuf::from("-")], Some(&[])).unwrap_err();
+        let error = prepare_samples(&[PathBuf::from("-")], Some(&[]), Layout::Single).unwrap_err();
         assert!(error.to_string().contains("must match number of samples"));
 
         let names = ["same".to_string(), "same".to_string()];
-        let error =
-            prepare_samples(&[PathBuf::from("-"), PathBuf::from("-")], Some(&names)).unwrap_err();
+        let error = prepare_samples(
+            &[PathBuf::from("-"), PathBuf::from("-")],
+            Some(&names),
+            Layout::Single,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("Duplicate sample names"));
     }
 }

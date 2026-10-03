@@ -10,14 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--all-kmers` disables syncmer selection and instead selects and evaluates all (canonical) *k*-mers. Underneath this simply fixes `s=0`. Use this to hunt for individual k-mers. This (unsurprisingly!) uses more memory.
+- Paired read support in `query`, `classify` and `lenhist` via comma-separated mate files (`--paired a_R1.fq,a_R2.fq`) or  `--interleaved` files . `query` counts each distinct target *k*-mer once per pair. `classify` and `lenhist` apply thresholds to pooled distinct *k*-mers.
 
 ### Changed
 
 - `--dump-syncmers` is now `--dump-kmers`.
-- **Breaking:** `classify` and `lenhist` `-a/--abs-threshold` and `-r/--rel-threshold` count distinct *k*-mers, so repeated *k*-mers no longer inflate hits or dilute the relative threshold. Zero hits never match, even with `-a 0`, and `-r` must lie in `[0, 1]`.
 - `classify --per-seq` reports distinct *k*-mer counts in its `hits` and `seq_kmers` columns.
-- Faster `classify` and `lenhist` for sequences with many hits, which now stop once their classification is certain, and faster `query` where many target *k*-mers are hit.
-- paraseq 0.6, which handles CRLF line endings.
+- Correct handling of Windows line endings in FASTX via paraseq 0.6
 
 ### Fixed
 

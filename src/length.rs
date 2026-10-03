@@ -3,19 +3,19 @@ use crate::classify::{
     build_classification_index, load_classification_index,
 };
 use crate::{
-    IndexKind, ProcessingStats, StdinTargets, TargetSource, check_index_complexity, create_spinner,
-    format_bp, format_bp_per_sec, handle_process_result, reader_with_inferred_batch_size,
-    resolve_targets, sample_limit_reached_io_error,
+    IndexKind, Layout, ProcessingStats, StdinTargets, TargetSource, check_index_complexity,
+    create_spinner, format_bp, format_bp_per_sec, process_input, resolve_targets, sample_inputs,
+    sample_limit_reached_io_error,
 };
 use anyhow::Result;
 use indicatif::ProgressBar;
 use paraseq::Record;
-use paraseq::parallel::{ParallelProcessor, ParallelReader};
+use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -42,6 +42,7 @@ pub struct LengthHistogramConfig {
     pub individual: bool,
     pub sample_paths: Vec<Vec<PathBuf>>,
     pub sample_names: Vec<String>,
+    pub layout: Layout,
     pub kmer_length: u8,
     pub smer_length: u8,
     pub complexity: f32,
@@ -210,21 +211,26 @@ impl<Rf: Record> ParallelProcessor<Rf> for LengthHistogramProcessor {
     }
 }
 
-fn process_seqs_file(
-    seq_path: &Path,
+impl<Rf: Record> PairedParallelProcessor<Rf> for LengthHistogramProcessor {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::Result<()> {
+        self.process(&[&record1.seq(), &record2.seq()])
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+        self.flush();
+        Ok(())
+    }
+}
+
+fn process_seqs_input(
+    input: &[PathBuf],
+    layout: Layout,
     classifier: &Classifier,
     threads: usize,
     quiet: bool,
     no_filter: bool,
     limit_bp: Option<u64>,
 ) -> Result<(Vec<BucketState>, u64, u64)> {
-    let in_path = if seq_path.to_string_lossy() == "-" {
-        None
-    } else {
-        Some(seq_path)
-    };
-    let reader = reader_with_inferred_batch_size(in_path)?;
-
     let spinner = create_spinner(quiet)?;
     if let Some(ref pb) = spinner {
         pb.lock().set_message("Processing sample: 0 seqs (0bp)");
@@ -250,8 +256,7 @@ fn process_seqs_file(
         limit_bp,
     );
 
-    let process_result = reader.process_parallel(&mut processor, threads);
-    handle_process_result(process_result)?;
+    process_input(input, layout, &mut processor, threads)?;
 
     if let Some(ref pb) = spinner {
         pb.lock().finish_with_message("");
@@ -298,9 +303,10 @@ fn process_single_sample(
     let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
 
-    for seq_path in sample_paths {
-        let (file_buckets, file_seqs, file_bp) = process_seqs_file(
-            seq_path,
+    for input in sample_inputs(sample_paths, config.layout) {
+        let (file_buckets, file_seqs, file_bp) = process_seqs_input(
+            input,
+            config.layout,
             classifier,
             config.threads,
             quiet_sample,
@@ -364,6 +370,7 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
             options.push_str(", discriminatory");
         }
     }
+    options.push_str(config.layout.option_label());
 
     if config.sample_paths.len() > 1 {
         options.push_str(&format!(", samples={}", config.sample_paths.len()));

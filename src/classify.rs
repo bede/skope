@@ -1,14 +1,14 @@
 use crate::kmers::{Buffers, Kdust, KmerVec, SmerHasher, extend_kmers, fill_kmers, make_hasher};
 use crate::{
-    FixedRapidHasher, IndexKind, ProcessingStats, RapidHashSet, StdinTargets, TargetGroup,
+    FixedRapidHasher, IndexKind, Layout, ProcessingStats, RapidHashSet, StdinTargets, TargetGroup,
     TargetSource, check_index_complexity, complexity_info_line, create_spinner, format_bp,
-    format_bp_per_sec, handle_process_result, reader_for_path, reader_with_inferred_batch_size,
-    resolve_targets, sample_limit_reached_io_error,
+    format_bp_per_sec, process_input, reader_for_path, resolve_targets, sample_inputs,
+    sample_limit_reached_io_error,
 };
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
 use paraseq::Record;
-use paraseq::parallel::{ParallelProcessor, ParallelReader};
+use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -103,6 +103,7 @@ pub struct ClassifyConfig {
     pub individual: bool,
     pub sample_paths: Vec<Vec<PathBuf>>,
     pub sample_names: Vec<String>,
+    pub layout: Layout,
     pub kmer_length: u8,
     pub smer_length: u8,
     pub complexity: f32,
@@ -1137,6 +1138,16 @@ impl<Rf: Record> ParallelProcessor<Rf> for ClassifyProcessor {
     }
 }
 
+impl<Rf: Record> PairedParallelProcessor<Rf> for ClassifyProcessor {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::Result<()> {
+        self.process(record1.id(), &[&record1.seq(), &record2.seq()])
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+        self.flush()
+    }
+}
+
 pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
@@ -1151,7 +1162,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         source,
         TargetSource::Index(_)
     ) {
-        let mut options = String::new();
+        let mut options = config.layout.option_label().to_string();
         if config.complexity > 0.0 {
             options.push_str(&format!(", complexity={}", config.complexity));
         }
@@ -1191,8 +1202,13 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             .limit_bp
             .map_or(String::new(), |v| format!(", limit_bp={}", v));
         eprintln!(
-            "Skope v{}; mode: classify (from index); options: threads={}, abs_threshold={}, rel_threshold={}{}",
-            version, config.threads, config.abs_threshold, config.rel_threshold, limit_str
+            "Skope v{}; mode: classify (from index); options: threads={}, abs_threshold={}, rel_threshold={}{}{}",
+            version,
+            config.threads,
+            config.abs_threshold,
+            config.rel_threshold,
+            config.layout.option_label(),
+            limit_str
         );
 
         let load_start = Instant::now();
@@ -1264,6 +1280,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         for (sample_paths, sample_name) in config.sample_paths.iter().zip(&config.sample_names) {
             process_sample_files(
                 sample_paths,
+                config.layout,
                 sample_name,
                 &classifier,
                 config.threads,
@@ -1302,6 +1319,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                 let counts = Arc::new(Mutex::new(ClassifyCounts::new(num_groups)));
                 let result = process_sample_files(
                     sample_paths,
+                    config.layout,
                     sample_name,
                     &classifier,
                     config.threads,
@@ -1436,6 +1454,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn process_sample_files(
     sample_paths: &[PathBuf],
+    layout: Layout,
     sample_name: &str,
     classifier: &Classifier,
     threads: usize,
@@ -1444,11 +1463,10 @@ fn process_sample_files(
     mut make_output: impl FnMut() -> ClassifyOutput,
 ) -> Result<ProcessingStats> {
     let mut totals = ProcessingStats::default();
-    for seq_path in sample_paths {
+    for input in sample_inputs(sample_paths, layout) {
         if limit_bp.is_some_and(|limit| totals.total_bp >= limit) {
             break;
         }
-        let in_path = (seq_path.to_string_lossy() != "-").then_some(seq_path.as_path());
         let spinner = create_spinner(quiet)?;
         let file_start = Instant::now();
         let global_stats = Arc::new(Mutex::new(ProcessingStats::default()));
@@ -1462,8 +1480,7 @@ fn process_sample_files(
             limit_bp: limit_bp.map(|limit| limit.saturating_sub(totals.total_bp)),
         };
 
-        let reader = reader_with_inferred_batch_size(in_path)?;
-        handle_process_result(reader.process_parallel(&mut processor, threads))?;
+        process_input(input, layout, &mut processor, threads)?;
         if let Some(ref pb) = spinner {
             pb.lock().finish_and_clear();
         }

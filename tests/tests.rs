@@ -1,6 +1,6 @@
 use skope::{
-    BuildClassifyConfig, ClassifyConfig, ContainmentConfig, LengthHistogramConfig, SortOrder,
-    discover_target_groups,
+    BuildClassifyConfig, ClassifyConfig, ContainmentConfig, Layout, LengthHistogramConfig,
+    SortOrder, discover_target_groups,
 };
 use std::path::PathBuf;
 use tempfile::{NamedTempFile, TempDir};
@@ -15,6 +15,7 @@ fn test_multisample_processing() {
             vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")],
         ],
         sample_names: vec!["sample1".to_string(), "sample2".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -48,6 +49,7 @@ fn test_multisample_tsv_structure() {
             vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")],
         ],
         sample_names: vec!["sample_a".to_string(), "sample_b".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -155,6 +157,7 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["sample".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -209,6 +212,7 @@ fn test_sort_target() {
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -257,6 +261,7 @@ fn test_sort_containment() {
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -335,6 +340,7 @@ fn test_length_histogram() {
         targets_path: targets_path.path().to_path_buf(),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -375,6 +381,7 @@ fn test_length_histogram_all_seqs() {
         targets_path: PathBuf::from("-"),
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["test".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -420,6 +427,7 @@ fn classify_to(
         individual: false,
         sample_paths,
         sample_names: sample_names.iter().map(|name| name.to_string()).collect(),
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -525,6 +533,7 @@ fn test_query_directory_mixed_layout() {
         targets_path: root.to_path_buf(),
         sample_paths: vec![vec![sample.path().to_path_buf()]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -606,6 +615,7 @@ fn test_dump_kmers_respects_discriminatory() {
         targets_path: root.to_path_buf(),
         sample_paths: vec![vec![sample.path().to_path_buf()]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -694,6 +704,7 @@ fn test_classify_build_mixed_layout() {
         targets_path: idx_out.path().to_path_buf(),
         sample_paths: vec![vec![sample.path().to_path_buf()]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -922,6 +933,7 @@ fn query_to_tsv(targets_path: PathBuf, sample: &std::path::Path, out: &std::path
         targets_path,
         sample_paths: vec![vec![sample.to_path_buf()]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1006,6 +1018,7 @@ fn test_query_index_positions_required_only_when_consumed() {
             background_paths: vec![],
             sample_paths: vec![vec![sample.clone()]],
             sample_names: vec!["s".to_string()],
+            layout: Layout::Single,
             kmer_length: 15,
             smer_length: 7,
             complexity: 0.0,
@@ -1071,6 +1084,7 @@ fn query_frac(
         targets_path,
         sample_paths: vec![vec![sample.to_path_buf()]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1153,6 +1167,7 @@ fn lenhist_groups(
         individual,
         sample_paths: vec![vec![sample.to_path_buf()]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1239,6 +1254,7 @@ fn test_classify_accepts_bare_fastx_file() {
         individual: false,
         sample_paths: vec![vec![sample]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1557,6 +1573,7 @@ fn query_complexity(
         targets_path,
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 9,
         complexity,
@@ -1657,6 +1674,7 @@ fn query_all_kmers(
         targets_path,
         sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 31,
         smer_length,
         complexity: 0.0,
@@ -1779,12 +1797,247 @@ fn test_query_individual_warns_on_empty_targets() {
     assert!(!String::from_utf8_lossy(&quiet.stderr).contains("Warning"));
 }
 
+fn revcomp(seq: &str) -> String {
+    seq.bytes()
+        .rev()
+        .map(|b| match b {
+            b'A' => 'T',
+            b'C' => 'G',
+            b'G' => 'C',
+            _ => 'A',
+        })
+        .collect()
+}
+
 fn write_records(path: &std::path::Path, records: &[(&str, &str)]) {
     let fasta: String = records
         .iter()
         .map(|(id, seq)| format!(">{id}\n{seq}\n"))
         .collect();
     std::fs::write(path, fasta).unwrap();
+}
+
+/// Write separate and interleaved mate files
+fn write_mates(dir: &std::path::Path, pairs: &[(&str, &str)]) -> (PathBuf, PathBuf, PathBuf) {
+    let paths = (dir.join("r1.fa"), dir.join("r2.fa"), dir.join("il.fa"));
+    let ids: Vec<String> = (0..pairs.len()).map(|i| format!("p{i}")).collect();
+    let r1: Vec<_> = ids
+        .iter()
+        .zip(pairs)
+        .map(|(id, p)| (id.as_str(), p.0))
+        .collect();
+    let r2: Vec<_> = ids
+        .iter()
+        .zip(pairs)
+        .map(|(id, p)| (id.as_str(), p.1))
+        .collect();
+    let il: Vec<_> = r1.iter().zip(&r2).flat_map(|(a, b)| [*a, *b]).collect();
+    write_records(&paths.0, &r1);
+    write_records(&paths.1, &r2);
+    write_records(&paths.2, &il);
+    paths
+}
+
+fn classify_summary(
+    targets: &std::path::Path,
+    sample_paths: Vec<PathBuf>,
+    layout: Layout,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let out = NamedTempFile::new().unwrap();
+    skope::run_classification(&ClassifyConfig {
+        targets_path: targets.to_path_buf(),
+        individual: false,
+        sample_paths: vec![sample_paths],
+        sample_names: vec!["s".to_string()],
+        layout,
+        kmer_length: 15,
+        smer_length: 7,
+        complexity: 0.0,
+        abs_threshold: 1,
+        rel_threshold: 0.0,
+        threads: 1,
+        limit_bp: None,
+        output_path: Some(out.path().to_path_buf()),
+        per_seq: false,
+        discriminatory: false,
+        quiet: true,
+    })?;
+    let mut rows: Vec<(String, String)> = std::fs::read_to_string(out.path())
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            (fields[1].to_string(), fields[3].to_string())
+        })
+        .collect();
+    rows.sort();
+    Ok(rows)
+}
+
+#[test]
+fn test_classify_pools_mates() {
+    let dir = TempDir::new().unwrap();
+    let targets = dir.path().join("targets");
+    std::fs::create_dir(&targets).unwrap();
+    let (seq_a, seq_b) = (pseudo_dna_string(500, 11), pseudo_dna_string(500, 29));
+    let (other1, other2) = (pseudo_dna_string(300, 47), pseudo_dna_string(300, 53));
+    write_fasta(&targets.join("a.fa"), "a", &seq_a);
+    write_fasta(&targets.join("b.fa"), "b", &seq_b);
+    let (r1, r2, il) = write_mates(
+        dir.path(),
+        &[(&seq_a, &other1), (&other2, &seq_b), (&seq_a, &seq_b)],
+    );
+
+    // At one hit, either mate can match a group
+    let pooled = [
+        ("a", "2"),
+        ("ambiguous", "2"),
+        ("b", "2"),
+        ("unclassified", "0"),
+    ]
+    .map(|(g, n)| (g.to_string(), n.to_string()));
+    assert_eq!(
+        classify_summary(&targets, vec![r1, r2], Layout::Paired).unwrap(),
+        pooled
+    );
+    assert_eq!(
+        classify_summary(&targets, vec![il.clone()], Layout::Interleaved).unwrap(),
+        pooled
+    );
+
+    let single = [
+        ("a", "2"),
+        ("ambiguous", "0"),
+        ("b", "2"),
+        ("unclassified", "2"),
+    ]
+    .map(|(g, n)| (g.to_string(), n.to_string()));
+    assert_eq!(
+        classify_summary(&targets, vec![il], Layout::Single).unwrap(),
+        single
+    );
+}
+
+#[test]
+fn test_paired_mate_count_mismatch_errors() {
+    let dir = TempDir::new().unwrap();
+    let targets = dir.path().join("t.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&targets, "t", &seq);
+    let (r1, r2) = (dir.path().join("r1.fa"), dir.path().join("r2.fa"));
+    write_records(&r1, &[("p0", &seq), ("p1", &seq)]);
+    write_records(&r2, &[("p0", &seq)]);
+    assert!(classify_summary(&targets, vec![r1.clone(), r2], Layout::Paired).is_err());
+    assert!(classify_summary(&targets, vec![dir.path().join("r1.fa")], Layout::Single).is_ok());
+    write_records(&r1, &[("p0", &seq), ("p0", &seq), ("p1", &seq)]);
+    assert!(classify_summary(&targets, vec![r1], Layout::Interleaved).is_err());
+}
+
+fn median_abundance(target: &std::path::Path, sample_paths: Vec<PathBuf>, layout: Layout) -> f64 {
+    let out = NamedTempFile::new().unwrap();
+    skope::run_query(&ContainmentConfig {
+        background_paths: Vec::new(),
+        targets_path: target.to_path_buf(),
+        sample_paths: vec![sample_paths],
+        sample_names: vec!["s".to_string()],
+        layout,
+        kmer_length: 15,
+        smer_length: 7,
+        complexity: 0.0,
+        threads: 1,
+        output_path: Some(out.path().to_path_buf()),
+        quiet: true,
+        abundance_thresholds: vec![],
+        discriminatory: false,
+        limit_bp: None,
+        sort_order: SortOrder::Original,
+        dump_kmers_path: None,
+        confidence: false,
+        fraction: 1.0,
+        no_total: true,
+        individual: false,
+    })
+    .unwrap();
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let mut lines = content.lines();
+    let column = lines
+        .next()
+        .unwrap()
+        .split('\t')
+        .position(|name| name == "median_nz_abundance")
+        .unwrap();
+    lines
+        .next()
+        .unwrap()
+        .split('\t')
+        .nth(column)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn test_query_counts_each_kmer_once_per_pair() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("t.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    let rc = revcomp(&seq);
+    let (r1, r2, il) = write_mates(dir.path(), &[(&seq, &rc)]);
+
+    assert_eq!(
+        median_abundance(&target, vec![il.clone()], Layout::Single),
+        2.0
+    );
+    assert_eq!(
+        median_abundance(&target, vec![il], Layout::Interleaved),
+        1.0
+    );
+    assert_eq!(median_abundance(&target, vec![r1, r2], Layout::Paired), 1.0);
+}
+
+#[test]
+fn test_lenhist_bins_mates_under_pair_classification() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("t.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    let other = pseudo_dna_string(300, 47);
+    let (r1, r2, _) = write_mates(dir.path(), &[(&other, &seq)]);
+
+    let out = NamedTempFile::new().unwrap();
+    skope::run_lenhist(&LengthHistogramConfig {
+        targets_path: target,
+        individual: false,
+        sample_paths: vec![vec![r1, r2]],
+        sample_names: vec!["s".to_string()],
+        layout: Layout::Paired,
+        kmer_length: 15,
+        smer_length: 7,
+        complexity: 0.0,
+        abs_threshold: 1,
+        rel_threshold: 0.0,
+        discriminatory: false,
+        threads: 1,
+        output_path: Some(out.path().to_path_buf()),
+        quiet: true,
+        limit_bp: None,
+        no_filter: false,
+    })
+    .unwrap();
+
+    let content = std::fs::read_to_string(out.path()).unwrap();
+    let mut bins: Vec<(&str, &str, &str)> = content
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            (fields[1], fields[2], fields[3])
+        })
+        .collect();
+    bins.sort();
+    assert_eq!(bins, [("t", "300", "1"), ("t", "500", "1")]);
 }
 
 #[test]
@@ -1828,6 +2081,7 @@ fn test_total_row_sums_hits_exactly() {
         targets_path: target,
         sample_paths: vec![vec![sample]],
         sample_names: vec!["s".to_string()],
+        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 0,
         complexity: 0.0,

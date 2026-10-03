@@ -6,6 +6,8 @@ pub mod query;
 pub mod stats;
 
 use anyhow::Result;
+use paraseq::fastx::RefRecord;
+use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::hash::BuildHasher;
@@ -232,6 +234,52 @@ pub fn create_spinner(quiet: bool) -> Result<Option<Arc<Mutex<indicatif::Progres
         );
         Ok(Some(Arc::new(Mutex::new(pb))))
     }
+}
+
+/// Sample read layout
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Layout {
+    #[default]
+    Single,
+    /// Consecutive mates
+    Interleaved,
+    /// Separate mate files
+    Paired,
+}
+
+impl Layout {
+    pub fn option_label(self) -> &'static str {
+        match self {
+            Layout::Single => "",
+            Layout::Interleaved => ", interleaved",
+            Layout::Paired => ", paired",
+        }
+    }
+}
+
+/// Single files or mate pairs
+pub fn sample_inputs(paths: &[PathBuf], layout: Layout) -> std::slice::Chunks<'_, PathBuf> {
+    paths.chunks(if layout == Layout::Paired { 2 } else { 1 })
+}
+
+/// Dispatch by read layout
+pub fn process_input<P>(
+    input: &[PathBuf],
+    layout: Layout,
+    processor: &mut P,
+    threads: usize,
+) -> Result<()>
+where
+    P: for<'a> ParallelProcessor<RefRecord<'a>> + for<'a> PairedParallelProcessor<RefRecord<'a>>,
+{
+    let reader = reader_for_path(&input[0])?;
+    handle_process_result(match layout {
+        Layout::Single => reader.process_parallel(processor, threads),
+        Layout::Interleaved => reader.process_parallel_interleaved(processor, threads),
+        Layout::Paired => {
+            reader.process_parallel_paired(reader_for_path(&input[1])?, processor, threads)
+        }
+    })
 }
 
 /// Treat sample-limit interruptions as normal completion
@@ -685,6 +733,18 @@ pub fn derive_sample_name(path: &Path, is_directory: bool) -> String {
     }
 }
 
+/// Strip R1 mate tags (_1, _R1, .r1, _R1_001) from the sample name
+pub fn derive_mates_name(r1: &Path) -> String {
+    let name = derive_sample_name(r1, false);
+    let tagless = name.strip_suffix("_001").unwrap_or(&name);
+    tagless
+        .strip_suffix('1')
+        .map(|s| s.strip_suffix(['R', 'r']).unwrap_or(s))
+        .and_then(|s| s.strip_suffix(['_', '.']))
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| name.clone(), str::to_string)
+}
+
 /// Validate k-mer and s-mer size constraints (s = 0 selects every k-mer)
 pub fn validate_k_s(kmer_length: u8, smer_length: u8) -> Result<()> {
     let k = kmer_length as usize;
@@ -712,6 +772,21 @@ mod tests {
         assert_eq!(format_bp(1500), "1.5Kbp");
         assert_eq!(format_bp(1500000), "1.5Mbp");
         assert_eq!(format_bp(1500000000), "1.5Gbp");
+    }
+
+    #[test]
+    fn test_derive_mates_name_drops_mate_tag() {
+        for (r1, name) in [
+            ("dir/sample_1.fq.gz", "sample"),
+            ("sample_R1.fastq", "sample"),
+            ("sample_R1_001.fastq.gz", "sample"),
+            ("rsviruses17900.r1.fastq", "rsviruses17900"),
+            ("liver1.fq", "liver1"),
+            ("reads_001.fq", "reads_001"),
+            ("_1.fq", "_1"),
+        ] {
+            assert_eq!(derive_mates_name(Path::new(r1)), name, "{r1}");
+        }
     }
 
     #[test]

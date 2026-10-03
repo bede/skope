@@ -1,21 +1,21 @@
 use crate::kmers::{
-    Buffers, FracMinHash, Kdust, KmerVec, SmerHasher, decode_u64, decode_u128, fill_kmers,
-    fill_kmers_with_positions, make_hasher,
+    Buffers, FracMinHash, Kdust, KmerVec, SmerHasher, decode_u64, decode_u128, extend_kmers,
+    fill_kmers, fill_kmers_with_positions, make_hasher,
 };
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::{
-    FixedRapidHasher, ProcessingStats, RapidHashSet, StdinTargets, TargetSource,
+    FixedRapidHasher, Layout, ProcessingStats, RapidHashSet, StdinTargets, TargetSource,
     check_index_complexity, complexity_info_line, create_spinner, format_bp, format_bp_per_sec,
-    handle_process_result, reader_for_path, reader_with_inferred_batch_size, resolve_targets,
-    sample_limit_reached_io_error,
+    process_input, reader_for_path, resolve_targets, sample_inputs, sample_limit_reached_io_error,
 };
 use anyhow::{Context, Result};
 use indicatif::ProgressBar;
 use paraseq::Record;
-use paraseq::parallel::{ParallelProcessor, ParallelReader};
+use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
+use std::hash::Hash;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -205,6 +205,7 @@ pub struct ContainmentConfig {
     pub background_paths: Vec<PathBuf>, // Off-target sequences to mask (empty = none)
     pub sample_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
     pub sample_names: Vec<String>,
+    pub layout: Layout,
     pub kmer_length: u8,
     pub smer_length: u8,
     pub threads: usize,
@@ -645,59 +646,49 @@ impl SeqsProcessor {
     }
 }
 
-impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
-        if let Some(limit) = self.limit_bp {
-            let global_bp = self.global_stats.lock().total_bp;
-            if global_bp >= limit {
-                ParallelProcessor::<Rf>::on_batch_complete(self)?;
-                return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
-            }
+impl SeqsProcessor {
+    fn process(&mut self, seqs: &[&[u8]]) -> paraseq::Result<()> {
+        if self
+            .limit_bp
+            .is_some_and(|limit| self.global_stats.lock().total_bp >= limit)
+        {
+            self.flush();
+            return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
         }
 
-        let seq = record.seq();
-        self.local_stats.total_seqs += 1;
-        self.local_stats.total_bp += seq.len() as u64;
+        self.local_stats.total_seqs += seqs.len() as u64;
+        self.buffers.kmers.clear();
+        for seq in seqs {
+            self.local_stats.total_bp += seq.len() as u64;
+            extend_kmers(
+                seq,
+                &self.hasher,
+                self.kmer_length,
+                self.smer_length,
+                &mut self.buffers,
+            );
+        }
 
-        fill_kmers(
-            &seq,
-            &self.hasher,
-            self.kmer_length,
-            self.smer_length,
-            &mut self.buffers,
-        );
-
-        // Count k-mers present in targets
-        match (&self.buffers.kmers, &*self.targets_kmers) {
-            (KmerVec::U64(vec), KmerSet::U64(targets_set)) => {
-                let local_counts = self.local_counts_u64.as_mut().unwrap();
-                for &kmer in vec {
-                    if targets_set.contains(&kmer) {
-                        local_counts
-                            .entry(kmer)
-                            .and_modify(|e| *e = e.saturating_add(1))
-                            .or_insert(1);
-                    }
-                }
-            }
-            (KmerVec::U128(vec), KmerSet::U128(targets_set)) => {
-                let local_counts = self.local_counts_u128.as_mut().unwrap();
-                for &kmer in vec {
-                    if targets_set.contains(&kmer) {
-                        local_counts
-                            .entry(kmer)
-                            .and_modify(|e| *e = e.saturating_add(1))
-                            .or_insert(1);
-                    }
-                }
-            }
+        let distinct = seqs.len() > 1;
+        match (&mut self.buffers.kmers, &*self.targets_kmers) {
+            (KmerVec::U64(kmers), KmerSet::U64(targets)) => count_target_kmers(
+                kmers,
+                targets,
+                self.local_counts_u64.as_mut().unwrap(),
+                distinct,
+            ),
+            (KmerVec::U128(kmers), KmerSet::U128(targets)) => count_target_kmers(
+                kmers,
+                targets,
+                self.local_counts_u128.as_mut().unwrap(),
+                distinct,
+            ),
             _ => panic!("Mismatch between KmerVec and KmerSet types"),
         }
-
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+    fn flush(&mut self) {
         // Merge local into global counts
         if let Some(local) = &mut self.local_counts_u64 {
             let mut global = self.global_counts_u64.lock();
@@ -738,7 +729,47 @@ impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
 
             self.local_stats = ProcessingStats::default();
         }
+    }
+}
 
+/// Count occurrences, or distinct hits for pooled mates
+fn count_target_kmers<T: Copy + Ord + Hash>(
+    kmers: &mut Vec<T>,
+    targets: &RapidHashSet<T>,
+    counts: &mut CountMap<T>,
+    distinct: bool,
+) {
+    kmers.retain(|kmer| targets.contains(kmer));
+    if distinct {
+        kmers.sort_unstable();
+        kmers.dedup();
+    }
+    for &kmer in kmers.iter() {
+        counts
+            .entry(kmer)
+            .and_modify(|e| *e = e.saturating_add(1))
+            .or_insert(1);
+    }
+}
+
+impl<Rf: Record> ParallelProcessor<Rf> for SeqsProcessor {
+    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
+        self.process(&[&record.seq()])
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+        self.flush();
+        Ok(())
+    }
+}
+
+impl<Rf: Record> PairedParallelProcessor<Rf> for SeqsProcessor {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::Result<()> {
+        self.process(&[&record1.seq(), &record2.seq()])
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+        self.flush();
         Ok(())
     }
 }
@@ -953,8 +984,10 @@ fn calculate_patchiness(
     }
 }
 
-fn process_seqs_file(
-    seq_path: &Path,
+#[allow(clippy::too_many_arguments)]
+fn process_seqs_input(
+    input: &[PathBuf],
+    layout: Layout,
     targets_kmers: Arc<KmerSet>,
     kmer_length: u8,
     smer_length: u8,
@@ -964,13 +997,6 @@ fn process_seqs_file(
     label: &'static str,
     summary_label: &'static str,
 ) -> Result<(AbundanceMap, u64, u64)> {
-    let in_path = if seq_path.to_string_lossy() == "-" {
-        None
-    } else {
-        Some(seq_path)
-    };
-    let reader = reader_with_inferred_batch_size(in_path)?;
-
     let spinner = create_spinner(quiet)?;
     if let Some(ref pb) = spinner {
         pb.lock().set_message(format!("{label}: 0 seqs (0bp)"));
@@ -1005,8 +1031,7 @@ fn process_seqs_file(
         limit_bp,
     );
 
-    let process_result = reader.process_parallel(&mut processor, threads);
-    handle_process_result(process_result)?;
+    process_input(input, layout, &mut processor, threads)?;
 
     if let Some(ref pb) = spinner {
         pb.lock().finish_with_message("");
@@ -1183,9 +1208,10 @@ fn process_single_sample(
     let mut total_bp = 0u64;
 
     // Process each file and accumulate results
-    for seq_path in sample_paths {
-        let (file_abundance_map, file_seqs, file_bp) = process_seqs_file(
-            seq_path,
+    for input in sample_inputs(sample_paths, config.layout) {
+        let (file_abundance_map, file_seqs, file_bp) = process_seqs_input(
+            input,
+            config.layout,
             Arc::clone(&targets_kmers),
             config.kmer_length,
             config.smer_length,
@@ -1299,8 +1325,7 @@ fn build_union(targets: &[TargetInfo], kmer_length: u8) -> KmerSet {
     }
 }
 
-/// Drop target k-mers shared with background sequences. Streaming via `process_seqs_file`
-/// keeps peak memory bounded by the targets, not the background. Returns count removed.
+/// Stream background masking and return the number of k-mers removed
 fn mask_background(
     targets: &mut [TargetInfo],
     union: &KmerSet,
@@ -1314,8 +1339,9 @@ fn mask_background(
     let mut rm_u64: RapidHashSet<u64> = RapidHashSet::default();
     let mut rm_u128: RapidHashSet<u128> = RapidHashSet::default();
     for path in background_paths {
-        let (map, _, _) = process_seqs_file(
-            path,
+        let (map, _, _) = process_seqs_input(
+            std::slice::from_ref(path),
+            Layout::Single,
             Arc::clone(&union),
             kmer_length,
             smer_length,
@@ -1755,6 +1781,7 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
     if config.sample_paths.len() > 1 {
         options.push_str(&format!(", samples={}", config.sample_paths.len()));
     }
+    options.push_str(config.layout.option_label());
 
     if !abundance_thresholds.is_empty() {
         options.push_str(&format!(
