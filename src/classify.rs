@@ -35,6 +35,14 @@ pub enum ClassificationIndex {
 }
 
 impl ClassificationIndex {
+    fn new(kmer_length: u8) -> Self {
+        if kmer_length <= 32 {
+            Self::U64(HashMap::with_hasher(FixedRapidHasher))
+        } else {
+            Self::U128(HashMap::with_hasher(FixedRapidHasher))
+        }
+    }
+
     pub fn len(&self) -> usize {
         match self {
             ClassificationIndex::U64(m) => m.len(),
@@ -123,13 +131,8 @@ struct GroupKmerProcessor {
     kdust: Kdust,
     group_bit: u128,
 
-    // Thread-local k-mer map
-    local_map_u64: Option<HashMap<u64, u128, FixedRapidHasher>>,
-    local_map_u128: Option<HashMap<u128, u128, FixedRapidHasher>>,
-
-    // Shared global state
-    global_map_u64: Arc<Mutex<Option<HashMap<u64, u128, FixedRapidHasher>>>>,
-    global_map_u128: Arc<Mutex<Option<HashMap<u128, u128, FixedRapidHasher>>>>,
+    local_map: ClassificationIndex,
+    global_map: Arc<Mutex<ClassificationIndex>>,
     progress: Progress,
 
     /// Source name for `--individual` group-cap errors
@@ -146,26 +149,17 @@ impl GroupKmerProcessor {
         smer_length: u8,
         kdust: Kdust,
         group_bit: u128,
-        global_map_u64: Arc<Mutex<Option<HashMap<u64, u128, FixedRapidHasher>>>>,
-        global_map_u128: Arc<Mutex<Option<HashMap<u128, u128, FixedRapidHasher>>>>,
+        global_map: Arc<Mutex<ClassificationIndex>>,
         progress: Progress,
         individual_names: Option<Arc<Mutex<Vec<String>>>>,
         source: String,
     ) -> Self {
-        let (local_map_u64, local_map_u128) = if kmer_length <= 32 {
-            (Some(HashMap::with_hasher(FixedRapidHasher)), None)
-        } else {
-            (None, Some(HashMap::with_hasher(FixedRapidHasher)))
-        };
-
         Self {
             kmers: Kmers::new(kmer_length, smer_length),
             kdust,
             group_bit,
-            local_map_u64,
-            local_map_u128,
-            global_map_u64,
-            global_map_u128,
+            local_map: ClassificationIndex::new(kmer_length),
+            global_map,
             progress,
             source,
             individual_names,
@@ -196,43 +190,50 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
         let kmers = self.kmers.fill(&seq);
         self.kdust.retain(kmers, None);
 
-        match &*kmers {
-            KmerVec::U64(vec) => {
-                let local = self.local_map_u64.as_mut().unwrap();
-                for &kmer in vec {
-                    *local.entry(kmer).or_insert(0) |= group_bit;
-                }
+        match (&*kmers, &mut self.local_map) {
+            (KmerVec::U64(kmers), ClassificationIndex::U64(map)) => {
+                merge_group_bits(kmers.iter().map(|&kmer| (kmer, group_bit)), map)
             }
-            KmerVec::U128(vec) => {
-                let local = self.local_map_u128.as_mut().unwrap();
-                for &kmer in vec {
-                    *local.entry(kmer).or_insert(0) |= group_bit;
-                }
+            (KmerVec::U128(kmers), ClassificationIndex::U128(map)) => {
+                merge_group_bits(kmers.iter().map(|&kmer| (kmer, group_bit)), map)
             }
+            _ => unreachable!("k-mer width does not match index"),
         }
 
         Ok(())
     }
 
     fn on_batch_complete(&mut self) -> paraseq::Result<()> {
-        if let Some(local) = &mut self.local_map_u64 {
-            let mut global = self.global_map_u64.lock();
-            let global_map = global.as_mut().unwrap();
-            for (&kmer, &bits) in local.iter() {
-                *global_map.entry(kmer).or_insert(0) |= bits;
+        match (&mut self.local_map, &mut *self.global_map.lock()) {
+            (ClassificationIndex::U64(local), ClassificationIndex::U64(global)) => {
+                merge_group_bits(local.drain(), global)
             }
-            local.clear();
-        } else if let Some(local) = &mut self.local_map_u128 {
-            let mut global = self.global_map_u128.lock();
-            let global_map = global.as_mut().unwrap();
-            for (&kmer, &bits) in local.iter() {
-                *global_map.entry(kmer).or_insert(0) |= bits;
+            (ClassificationIndex::U128(local), ClassificationIndex::U128(global)) => {
+                merge_group_bits(local.drain(), global)
             }
-            local.clear();
+            _ => unreachable!("k-mer width does not match index"),
         }
         self.progress.flush();
         Ok(())
     }
+}
+
+fn merge_group_bits<K: Eq + Hash>(
+    entries: impl IntoIterator<Item = (K, u128)>,
+    map: &mut HashMap<K, u128, FixedRapidHasher>,
+) {
+    for (kmer, bits) in entries {
+        *map.entry(kmer).or_insert(0) |= bits;
+    }
+}
+
+fn group_counts<K>(map: &HashMap<K, u128, FixedRapidHasher>, group_bit: u128) -> (usize, usize) {
+    map.values().fold((0, 0), |(total, unique), &bits| {
+        (
+            total + usize::from(bits & group_bit != 0),
+            unique + usize::from(bits == group_bit),
+        )
+    })
 }
 
 /// Build an in-memory classification index from target groups
@@ -265,19 +266,7 @@ pub(crate) fn build_classification_index(
         );
     }
 
-    let global_map_u64: Arc<Mutex<Option<HashMap<u64, u128, FixedRapidHasher>>>> =
-        if kmer_length <= 32 {
-            Arc::new(Mutex::new(Some(HashMap::with_hasher(FixedRapidHasher))))
-        } else {
-            Arc::new(Mutex::new(None))
-        };
-
-    let global_map_u128: Arc<Mutex<Option<HashMap<u128, u128, FixedRapidHasher>>>> =
-        if kmer_length > 32 {
-            Arc::new(Mutex::new(Some(HashMap::with_hasher(FixedRapidHasher))))
-        } else {
-            Arc::new(Mutex::new(None))
-        };
+    let global_map = Arc::new(Mutex::new(ClassificationIndex::new(kmer_length)));
 
     let kdust = Kdust::from_threshold(complexity, kmer_length);
 
@@ -287,14 +276,10 @@ pub(crate) fn build_classification_index(
             kmer_length,
             smer_length,
             kdust,
-            Arc::clone(&global_map_u64),
-            Arc::clone(&global_map_u128),
+            Arc::clone(&global_map),
             quiet,
         )?;
-        return Ok((
-            finish_index(global_map_u64, global_map_u128, kmer_length, quiet),
-            names,
-        ));
+        return Ok((finish_index(global_map, quiet), names));
     }
 
     let group_names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
@@ -309,8 +294,7 @@ pub(crate) fn build_classification_index(
                 smer_length,
                 kdust,
                 group_bit,
-                Arc::clone(&global_map_u64),
-                Arc::clone(&global_map_u128),
+                Arc::clone(&global_map),
                 progress.clone(),
                 None,
                 String::new(),
@@ -322,27 +306,11 @@ pub(crate) fn build_classification_index(
 
         let stats = progress.finish();
 
-        let (group_kmers, unique_kmers) = if kmer_length <= 32 {
-            let map = global_map_u64.lock();
-            let map = map.as_ref().unwrap();
-            let group_kmers = map.values().filter(|&&v| v & group_bit != 0).count();
-            let unique = map
-                .values()
-                .filter(|&&v| v & group_bit != 0 && v.count_ones() == 1)
-                .count();
-            (group_kmers, unique)
-        } else {
-            let map = global_map_u128.lock();
-            let map = map.as_ref().unwrap();
-            let group_kmers = map.values().filter(|&&v| v & group_bit != 0).count();
-            let unique = map
-                .values()
-                .filter(|&&v| v & group_bit != 0 && v.count_ones() == 1)
-                .count();
-            (group_kmers, unique)
-        };
-
         if !quiet {
+            let (group_kmers, unique_kmers) = match &*global_map.lock() {
+                ClassificationIndex::U64(map) => group_counts(map, group_bit),
+                ClassificationIndex::U128(map) => group_counts(map, group_bit),
+            };
             eprintln!(
                 "  [{}] {} ({} file{}): {} seqs ({}), {} k-mers ({} unique)",
                 group_idx,
@@ -357,34 +325,12 @@ pub(crate) fn build_classification_index(
         }
     }
 
-    Ok((
-        finish_index(global_map_u64, global_map_u128, kmer_length, quiet),
-        group_names,
-    ))
+    Ok((finish_index(global_map, quiet), group_names))
 }
 
-type GlobalMap<K> = Arc<Mutex<Option<HashMap<K, u128, FixedRapidHasher>>>>;
-
 /// Unwrap accumulated k-mer maps into a classification index
-fn finish_index(
-    global_map_u64: GlobalMap<u64>,
-    global_map_u128: GlobalMap<u128>,
-    kmer_length: u8,
-    quiet: bool,
-) -> ClassificationIndex {
-    let index = if kmer_length <= 32 {
-        let map = Arc::try_unwrap(global_map_u64)
-            .unwrap()
-            .into_inner()
-            .unwrap();
-        ClassificationIndex::U64(map)
-    } else {
-        let map = Arc::try_unwrap(global_map_u128)
-            .unwrap()
-            .into_inner()
-            .unwrap();
-        ClassificationIndex::U128(map)
-    };
+fn finish_index(global_map: Arc<Mutex<ClassificationIndex>>, quiet: bool) -> ClassificationIndex {
+    let index = Arc::into_inner(global_map).unwrap().into_inner();
 
     if !quiet {
         let shared = match &index {
@@ -408,8 +354,7 @@ fn build_individual_groups(
     kmer_length: u8,
     smer_length: u8,
     kdust: Kdust,
-    global_map_u64: GlobalMap<u64>,
-    global_map_u128: GlobalMap<u128>,
+    global_map: Arc<Mutex<ClassificationIndex>>,
     quiet: bool,
 ) -> Result<Vec<String>> {
     let [group] = groups else {
@@ -431,8 +376,7 @@ fn build_individual_groups(
         smer_length,
         kdust,
         0,
-        global_map_u64,
-        global_map_u128,
+        global_map,
         Progress::new("Collecting record k-mers", quiet, None)?,
         Some(Arc::clone(&names)),
         group.name.clone(),

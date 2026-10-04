@@ -515,17 +515,24 @@ impl SeqProcessor for SeqsProcessor {
 
     fn flush(&mut self) -> paraseq::Result<()> {
         match (&mut self.local_counts, &mut *self.global_counts.lock()) {
-            (AbundanceMap::U64(local), AbundanceMap::U64(global)) => merge_counts(local, global),
-            (AbundanceMap::U128(local), AbundanceMap::U128(global)) => merge_counts(local, global),
+            (AbundanceMap::U64(local), AbundanceMap::U64(global)) => {
+                merge_counts(local.drain(), global)
+            }
+            (AbundanceMap::U128(local), AbundanceMap::U128(global)) => {
+                merge_counts(local.drain(), global)
+            }
             _ => unreachable!("k-mer width does not match targets"),
         }
         Ok(())
     }
 }
 
-/// Move thread-local counts into the shared counts
-fn merge_counts<T: Eq + Hash>(local: &mut CountMap<T>, global: &mut CountMap<T>) {
-    for (kmer, count) in local.drain() {
+/// Merge counts with saturation
+fn merge_counts<T: Eq + Hash>(
+    counts: impl IntoIterator<Item = (T, CountDepth)>,
+    global: &mut CountMap<T>,
+) {
+    for (kmer, count) in counts {
         global
             .entry(kmer)
             .and_modify(|e| *e = e.saturating_add(count))
@@ -946,12 +953,7 @@ fn process_single_sample(
     // Silence per-sample progress for >1 sample
     let quiet_sample = config.quiet || config.sample_paths.len() > 1;
 
-    // Initialise empty abundance map based on k-mer length
-    let mut combined_abundance_map = if config.kmer_length <= 32 {
-        AbundanceMap::U64(CountMap::default())
-    } else {
-        AbundanceMap::U128(CountMap::default())
-    };
+    let mut combined_abundance_map = AbundanceMap::new(config.kmer_length);
     let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
 
@@ -973,20 +975,10 @@ fn process_single_sample(
         // Merge abundance maps
         match (&mut combined_abundance_map, file_abundance_map) {
             (AbundanceMap::U64(combined), AbundanceMap::U64(new)) => {
-                for (kmer, count) in new {
-                    combined
-                        .entry(kmer)
-                        .and_modify(|e| *e = e.saturating_add(count))
-                        .or_insert(count);
-                }
+                merge_counts(new, combined);
             }
             (AbundanceMap::U128(combined), AbundanceMap::U128(new)) => {
-                for (kmer, count) in new {
-                    combined
-                        .entry(kmer)
-                        .and_modify(|e| *e = e.saturating_add(count))
-                        .or_insert(count);
-                }
+                merge_counts(new, combined);
             }
             _ => panic!("Mismatch between AbundanceMap types"),
         }

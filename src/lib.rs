@@ -241,7 +241,7 @@ pub fn format_bp_per_sec(bp_per_sec: f64) -> String {
 }
 
 /// Create a spinner progress bar for status display, or None if quiet
-fn create_spinner(quiet: bool) -> Result<Option<Arc<Mutex<indicatif::ProgressBar>>>> {
+fn create_spinner(quiet: bool) -> Result<Option<indicatif::ProgressBar>> {
     use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
     if quiet {
@@ -253,7 +253,7 @@ fn create_spinner(quiet: bool) -> Result<Option<Arc<Mutex<indicatif::ProgressBar
                 .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
                 .template("{msg}")?,
         );
-        Ok(Some(Arc::new(Mutex::new(pb))))
+        Ok(Some(pb))
     }
 }
 
@@ -297,7 +297,7 @@ pub(crate) fn sample_inputs(
 pub(crate) struct Progress {
     local: ProcessingStats,
     global: Arc<Mutex<ProcessingStats>>,
-    spinner: Option<Arc<Mutex<indicatif::ProgressBar>>>,
+    spinner: Option<indicatif::ProgressBar>,
     label: &'static str,
     start: Instant,
     limit_bp: Option<u64>,
@@ -309,7 +309,7 @@ impl Progress {
     pub(crate) fn new(label: &'static str, quiet: bool, limit_bp: Option<u64>) -> Result<Self> {
         let spinner = create_spinner(quiet)?;
         if let Some(spinner) = &spinner {
-            spinner.lock().set_message(format!("{label}: 0 seqs (0bp)"));
+            spinner.set_message(format!("{label}: 0 seqs (0bp)"));
         }
         Ok(Self {
             local: ProcessingStats::default(),
@@ -344,7 +344,7 @@ impl Progress {
         {
             stats.last_reported = reported;
             let secs = self.start.elapsed().as_secs_f64();
-            spinner.lock().set_message(format!(
+            spinner.set_message(format!(
                 "{}: {} seqs ({}). {:.0} seqs/s ({})",
                 self.label,
                 stats.total_seqs,
@@ -358,7 +358,7 @@ impl Progress {
     /// Clear the spinner and return the shared totals
     pub(crate) fn finish(&self) -> ProcessingStats {
         if let Some(spinner) = &self.spinner {
-            spinner.lock().finish_and_clear();
+            spinner.finish_and_clear();
         }
         self.global.lock().clone()
     }
