@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::fs::File;
 use std::hash::BuildHasher;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -193,8 +193,22 @@ pub fn reader_for_path(path: &Path) -> Result<FastxReader> {
     Ok(reader)
 }
 
+pub(crate) fn validate_index_output(path: Option<&Path>) -> Result<()> {
+    if path.is_none_or(|p| p == Path::new("-")) && std::io::stdout().is_terminal() {
+        anyhow::bail!(
+            "Refusing to write a binary index to a terminal. Use -o FILE or redirect stdout"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn index_writer(path: Option<&Path>) -> Result<Box<dyn Write + Send>> {
+    validate_index_output(path)?;
+    output_writer(path.filter(|p| *p != Path::new("-")))
+}
+
 /// Buffered writer to a file, or stdout if `None`
-pub fn output_writer(path: Option<&Path>) -> Result<Box<dyn Write + Send>> {
+pub(crate) fn output_writer(path: Option<&Path>) -> Result<Box<dyn Write + Send>> {
     Ok(match path {
         Some(path) => Box::new(BufWriter::new(File::create(path)?)),
         None => Box::new(BufWriter::new(std::io::stdout())),
@@ -263,14 +277,23 @@ impl Layout {
     }
 }
 
-/// Single files or mate pairs
-pub fn sample_inputs(paths: &[PathBuf], layout: Layout) -> std::slice::Chunks<'_, PathBuf> {
-    paths.chunks(if layout == Layout::Paired { 2 } else { 1 })
+/// Single files or complete mate pairs
+pub(crate) fn sample_inputs(
+    paths: &[PathBuf],
+    layout: Layout,
+) -> Result<std::slice::Chunks<'_, PathBuf>> {
+    anyhow::ensure!(!paths.is_empty(), "Sample has no input files");
+    let size = if layout == Layout::Paired { 2 } else { 1 };
+    anyhow::ensure!(
+        paths.len().is_multiple_of(size),
+        "Paired samples require complete R1,R2 pairs"
+    );
+    Ok(paths.chunks(size))
 }
 
 /// Per-thread progress, merged into shared totals once per batch
 #[derive(Clone)]
-pub struct Progress {
+pub(crate) struct Progress {
     local: ProcessingStats,
     global: Arc<Mutex<ProcessingStats>>,
     spinner: Option<Arc<Mutex<indicatif::ProgressBar>>>,
@@ -282,7 +305,7 @@ pub struct Progress {
 
 impl Progress {
     /// Progress under `label`, with a spinner unless quiet, stopping near `limit_bp`
-    pub fn new(label: &'static str, quiet: bool, limit_bp: Option<u64>) -> Result<Self> {
+    pub(crate) fn new(label: &'static str, quiet: bool, limit_bp: Option<u64>) -> Result<Self> {
         let spinner = create_spinner(quiet)?;
         if let Some(spinner) = &spinner {
             spinner.lock().set_message(format!("{label}: 0 seqs (0bp)"));
@@ -299,7 +322,7 @@ impl Progress {
     }
 
     /// Count records, failing once a flush has seen the base limit reached
-    pub fn add(&mut self, seqs: u64, bp: u64) -> paraseq::Result<()> {
+    pub(crate) fn add(&mut self, seqs: u64, bp: u64) -> paraseq::Result<()> {
         if self.limit_reached {
             return Err(paraseq::Error::Io(sample_limit_reached_io_error()));
         }
@@ -309,7 +332,7 @@ impl Progress {
     }
 
     /// Merge into the shared totals, refreshing the spinner every 0.1 Gbp
-    pub fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         let mut stats = self.global.lock();
         stats.total_seqs += std::mem::take(&mut self.local.total_seqs);
         stats.total_bp += std::mem::take(&mut self.local.total_bp);
@@ -332,7 +355,7 @@ impl Progress {
     }
 
     /// Clear the spinner and return the shared totals
-    pub fn finish(&self) -> ProcessingStats {
+    pub(crate) fn finish(&self) -> ProcessingStats {
         if let Some(spinner) = &self.spinner {
             spinner.lock().finish_and_clear();
         }
@@ -341,7 +364,7 @@ impl Progress {
 }
 
 /// A sample processor fed one record, or a pair's mates together
-pub trait SeqProcessor: Clone + Send {
+pub(crate) trait SeqProcessor: Clone + Send {
     fn process(&mut self, id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()>;
 
     /// Merge thread-local state, once per batch
@@ -390,7 +413,7 @@ impl<Rf: Record, P: SeqProcessor> PairedParallelProcessor<Rf> for Seqs<P> {
 }
 
 /// Dispatch by read layout, returning totals
-pub fn process_input<P: SeqProcessor>(
+pub(crate) fn process_input<P: SeqProcessor>(
     input: &[PathBuf],
     layout: Layout,
     processor: P,
@@ -907,6 +930,88 @@ pub fn validate_k_s(kmer_length: u8, smer_length: u8) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_limits_and_flushes_batches_once() {
+        let mut worker = Progress::new("Sample", true, Some(301)).unwrap();
+        let mut active = worker.clone();
+        worker.add(2, 301).unwrap();
+        worker.flush();
+        worker.flush();
+        assert_eq!(worker.finish().total_seqs, 2);
+        assert!(worker.add(2, 301).is_err());
+
+        active.add(2, 301).unwrap();
+        active.flush();
+        assert!(active.add(2, 301).is_err());
+        assert_eq!(worker.finish().total_seqs, 4);
+        assert_eq!(worker.finish().total_bp, 602);
+
+        let mut zero = Progress::new("Sample", true, Some(0)).unwrap();
+        assert!(zero.add(2, 301).is_err());
+        zero.flush();
+        assert_eq!(zero.finish().total_seqs, 0);
+    }
+
+    #[test]
+    fn sample_dispatch_validates_input_cardinality() {
+        #[derive(Clone)]
+        struct Noop;
+        impl SeqProcessor for Noop {
+            fn process(&mut self, _: &[u8], _: &[&[u8]]) -> paraseq::Result<()> {
+                unreachable!()
+            }
+            fn flush(&mut self) -> paraseq::Result<()> {
+                Ok(())
+            }
+        }
+        let paths = [PathBuf::from("missing-r1"), PathBuf::from("missing-r2")];
+        for layout in [Layout::Single, Layout::Interleaved, Layout::Paired] {
+            assert!(sample_inputs(&[], layout).is_err());
+            assert!(
+                process_input(
+                    &[],
+                    layout,
+                    Noop,
+                    Progress::new("Sample", true, None).unwrap(),
+                    1
+                )
+                .is_err()
+            );
+        }
+        assert!(sample_inputs(&paths[..1], Layout::Paired).is_err());
+        assert!(
+            process_input(
+                &paths[..1],
+                Layout::Paired,
+                Noop,
+                Progress::new("Sample", true, None).unwrap(),
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            process_input(
+                &paths,
+                Layout::Single,
+                Noop,
+                Progress::new("Sample", true, None).unwrap(),
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            process_input(
+                &paths,
+                Layout::Interleaved,
+                Noop,
+                Progress::new("Sample", true, None).unwrap(),
+                1
+            )
+            .is_err()
+        );
+        assert_eq!(sample_inputs(&paths, Layout::Paired).unwrap().count(), 1);
+    }
 
     #[test]
     fn test_format_bp() {

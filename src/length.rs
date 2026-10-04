@@ -193,7 +193,7 @@ fn process_single_sample(
     let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
 
-    for input in sample_inputs(sample_paths, config.layout) {
+    for input in sample_inputs(sample_paths, config.layout)? {
         let (file_buckets, file_seqs, file_bp) = process_seqs_input(
             input,
             config.layout,

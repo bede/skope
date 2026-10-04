@@ -45,7 +45,7 @@ flate2 = { version = "1.1", features = ["zlib-rs"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.27"
-nix = { version = "0.31", features = ["fs"] }
+nix = { version = "0.31", features = ["fs", "term"] }
 
 [profile.release]
 opt-level = 3

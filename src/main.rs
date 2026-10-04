@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use std::collections::HashSet;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use skope::{
@@ -196,14 +195,6 @@ fn initialise_thread_pool(threads: usize) -> Result<()> {
 
 fn output_path(output: &str) -> Option<PathBuf> {
     (output != "-").then(|| PathBuf::from(output))
-}
-
-/// Index output path, refusing to write binary to a terminal
-fn index_output_path(output: &str) -> Result<Option<PathBuf>> {
-    if output == "-" && std::io::stdout().is_terminal() {
-        anyhow::bail!("Refusing to write a binary index to a terminal: use -o or redirect stdout");
-    }
-    Ok(output_path(output))
 }
 
 fn parse_limit(limit: Option<&str>) -> Result<Option<u64>> {
@@ -652,7 +643,7 @@ fn main() -> Result<()> {
                     smer_length,
                     complexity: *complexity,
                     threads: *threads,
-                    output_path: index_output_path(output)?,
+                    output_path: output_path(output),
                     quiet: *quiet,
                 };
 
@@ -689,7 +680,7 @@ fn main() -> Result<()> {
                     individual: *individual,
                     positions: *positions,
                     threads: *threads,
-                    output_path: index_output_path(output)?,
+                    output_path: output_path(output),
                     quiet: *quiet,
                     fraction: *fraction,
                     complexity: *complexity,

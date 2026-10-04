@@ -2,8 +2,9 @@ use crate::kmers::{FracMinHash, Kdust, KmerVec, Kmers, decode_u64, decode_u128};
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::{
     FixedRapidHasher, Layout, Progress, RapidHashSet, SeqProcessor, StdinTargets, TargetSource,
-    check_index_complexity, complexity_info_line, format_bp, format_bp_per_sec, output_writer,
-    process_input, reader_for_path, resolve_targets, sample_inputs,
+    check_index_complexity, complexity_info_line, format_bp, format_bp_per_sec, index_writer,
+    output_writer, process_input, reader_for_path, resolve_targets, sample_inputs,
+    validate_index_output,
 };
 use anyhow::{Context, Result};
 use paraseq::Record;
@@ -955,7 +956,7 @@ fn process_single_sample(
     let mut total_bp = 0u64;
 
     // Process each file and accumulate results
-    for input in sample_inputs(sample_paths, config.layout) {
+    for input in sample_inputs(sample_paths, config.layout)? {
         let (file_abundance_map, file_seqs, file_bp) = process_seqs_input(
             input,
             config.layout,
@@ -1248,7 +1249,7 @@ fn save_query_index(
         ));
     }
 
-    let mut writer = output_writer(output_path)?;
+    let mut writer = index_writer(output_path)?;
 
     let meta: QueryIndexMeta = targets
         .iter()
@@ -1429,6 +1430,7 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
 
 /// Build and serialize a query index (with optional background masking)
 pub fn run_build_query(config: &BuildQueryConfig) -> Result<()> {
+    validate_index_output(config.output_path.as_deref())?;
     let start = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
     let mut options = String::new();

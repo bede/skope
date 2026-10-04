@@ -10,17 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--all-kmers` disables syncmer selection and instead selects and evaluates all (canonical) *k*-mers. Underneath this simply fixes `s=0`. Use this to hunt for individual k-mers. This (unsurprisingly!) uses more memory.
-- Paired read support in `query`, `classify` and `lenhist` via comma-separated mate files (`--paired a_R1.fq,a_R2.fq`) or  `--interleaved` files . `query` counts each distinct target *k*-mer once per pair. `classify` and `lenhist` apply thresholds to pooled distinct *k*-mers.
+- Paired read support in `query`, `classify` and `lenhist` via comma-separated mate files (`--paired a_R1.fq,a_R2.fq`) or `--interleaved` files. `query` counts each distinct target *k*-mer once per pair. `classify` and `lenhist` apply thresholds to pooled distinct *k*-mers.
 
 ### Changed
 
 - `--dump-syncmers` is now `--dump-kmers`.
 - `classify --per-seq` reports distinct *k*-mer counts in its `hits` and `seq_kmers` columns.
 - Correct handling of Windows line endings in FASTX via paraseq 0.6
-- `-l/--limit` no longer slows processing, having cost `query` around 40% of its throughput.
-- `index build-classify` and `index build-query` refuse to write a binary index to a terminal. Pass `-o` or redirect stdout.
+- Sample processors share progress tracking. `-l/--limit` checks the shared total once per batch instead of locking on every record. Limits remain approximate and allow in-flight batches to finish.
+- Index builds reject binary stdout to a terminal before reading targets, including library calls. Pass `-o` or redirect stdout.
+- **Library API:** `Kmers::{new, fill, pool, fill_with_positions}` replaces `Buffers`, `SmerHasher`, `make_hasher`, `fill_kmers`, `extend_kmers`, and `fill_kmers_with_positions`. Removed `reader_with_inferred_batch_size`. Sample dispatch (`sample_inputs`, `process_input`), `SeqProcessor`, and `Progress` are internal.
+- **Breaking:** `classify` and `lenhist` thresholds count distinct *k*-mers, pooled across mates. Repeated *k*-mers no longer inflate hits or dilute the relative threshold. Zero hits never match, even with `-a 0`, and `-r` must lie in `[0, 1]`.
 
 ### Fixed
+
+- Paired and interleaved reads use fixed record batches, handling 151/251 bp reads and unequal mate lengths after trimming.
 
 - `query` TOTAL rows could undercount `containmentN_hits` (and so `containmentN`) by one per target, through float truncation.
 

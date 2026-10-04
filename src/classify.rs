@@ -2,8 +2,8 @@ use crate::kmers::{Kdust, KmerVec, Kmers};
 use crate::{
     FixedRapidHasher, IndexKind, Layout, ProcessingStats, Progress, RapidHashSet, SeqProcessor,
     StdinTargets, TargetGroup, TargetSource, check_index_complexity, complexity_info_line,
-    format_bp, format_bp_per_sec, output_writer, process_input, reader_for_path, resolve_targets,
-    sample_inputs,
+    format_bp, format_bp_per_sec, index_writer, output_writer, process_input, reader_for_path,
+    resolve_targets, sample_inputs, validate_index_output,
 };
 use anyhow::{Context, Result};
 use paraseq::Record;
@@ -465,6 +465,7 @@ fn build_individual_groups(
 }
 
 pub fn run_build_classify(config: &BuildClassifyConfig) -> Result<()> {
+    validate_index_output(config.output_path.as_deref())?;
     let start_time = Instant::now();
     let version = env!("CARGO_PKG_VERSION");
 
@@ -526,7 +527,7 @@ fn save_index(
     complexity: f32,
     output_path: Option<&Path>,
 ) -> Result<()> {
-    let mut writer = output_writer(output_path)?;
+    let mut writer = index_writer(output_path)?;
 
     let header: ClassificationIndexHeader = (
         *INDEX_MAGIC,
@@ -1323,7 +1324,7 @@ fn process_sample_files(
     mut make_output: impl FnMut() -> ClassifyOutput,
 ) -> Result<ProcessingStats> {
     let mut totals = ProcessingStats::default();
-    for input in sample_inputs(sample_paths, layout) {
+    for input in sample_inputs(sample_paths, layout)? {
         if limit_bp.is_some_and(|limit| totals.total_bp >= limit) {
             break;
         }

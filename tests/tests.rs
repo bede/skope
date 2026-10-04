@@ -1943,7 +1943,8 @@ fn test_paired_mate_count_mismatch_errors() {
     let (r1, r2) = (dir.path().join("r1.fa"), dir.path().join("r2.fa"));
     write_records(&r1, &[("p0", &seq), ("p1", &seq)]);
     write_records(&r2, &[("p0", &seq)]);
-    assert!(classify_summary(&targets, vec![r1.clone(), r2], Layout::Paired, 1).is_err());
+    assert!(classify_summary(&targets, vec![r1.clone(), r2.clone()], Layout::Paired, 1).is_err());
+    assert!(classify_summary(&targets, vec![r2, r1.clone()], Layout::Paired, 1).is_err());
     assert!(classify_summary(&targets, vec![dir.path().join("r1.fa")], Layout::Single, 1).is_ok());
     write_records(&r1, &[("p0", &seq), ("p0", &seq), ("p1", &seq)]);
     assert!(classify_summary(&targets, vec![r1], Layout::Interleaved, 1).is_err());
@@ -2042,7 +2043,12 @@ fn test_paired_input_needs_two_files() {
     assert!(error.to_string().contains("R1,R2"), "{error}");
 }
 
-fn median_abundance(target: &std::path::Path, sample_paths: Vec<PathBuf>, layout: Layout) -> f64 {
+fn median_abundance(
+    target: &std::path::Path,
+    sample_paths: Vec<PathBuf>,
+    layout: Layout,
+    k: u8,
+) -> f64 {
     let out = NamedTempFile::new().unwrap();
     skope::run_query(&ContainmentConfig {
         background_paths: Vec::new(),
@@ -2050,7 +2056,7 @@ fn median_abundance(target: &std::path::Path, sample_paths: Vec<PathBuf>, layout
         sample_paths: vec![sample_paths],
         sample_names: vec!["s".to_string()],
         layout,
-        kmer_length: 15,
+        kmer_length: k,
         smer_length: 7,
         complexity: 0.0,
         threads: 1,
@@ -2091,18 +2097,24 @@ fn test_query_counts_each_kmer_once_per_pair() {
     let target = dir.path().join("t.fa");
     let seq = pseudo_dna_string(500, 11);
     write_fasta(&target, "t", &seq);
+    // Fully overlapping mates share every k-mer
     let rc = revcomp(&seq);
     let (r1, r2, il) = write_mates(dir.path(), &[(&seq, &rc)]);
 
-    assert_eq!(
-        median_abundance(&target, vec![il.clone()], Layout::Single),
-        2.0
-    );
-    assert_eq!(
-        median_abundance(&target, vec![il], Layout::Interleaved),
-        1.0
-    );
-    assert_eq!(median_abundance(&target, vec![r1, r2], Layout::Paired), 1.0);
+    for k in [15, 41] {
+        assert_eq!(
+            median_abundance(&target, vec![il.clone()], Layout::Single, k),
+            2.0
+        );
+        assert_eq!(
+            median_abundance(&target, vec![il.clone()], Layout::Interleaved, k),
+            1.0
+        );
+        assert_eq!(
+            median_abundance(&target, vec![r1.clone(), r2.clone()], Layout::Paired, k),
+            1.0
+        );
+    }
 }
 
 #[test]
@@ -2222,4 +2234,323 @@ fn test_total_row_sums_hits_exactly() {
         [("t", "15", "22"), ("TOTAL", "15", "22")],
         "{content}"
     );
+}
+
+fn write_fastq_mates(
+    dir: &std::path::Path,
+    mates: (&str, &str),
+    pairs: usize,
+    newline: &str,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let paths = (dir.join("r1.fq"), dir.join("r2.fq"), dir.join("il.fq"));
+    let record = |id, mate: usize, seq: &str| {
+        format!(
+            "@p{id}/{mate}{newline}{seq}{newline}+{newline}{}{newline}",
+            "I".repeat(seq.len())
+        )
+    };
+    let mut r1 = String::new();
+    let mut r2 = String::new();
+    let mut il = String::new();
+    for id in 0..pairs {
+        let a = record(id, 1, mates.0);
+        let b = record(id, 2, mates.1);
+        r1.push_str(&a);
+        r2.push_str(&b);
+        il.push_str(&a);
+        il.push_str(&b);
+    }
+    std::fs::write(&paths.0, r1).unwrap();
+    std::fs::write(&paths.1, r2).unwrap();
+    std::fs::write(&paths.2, il).unwrap();
+    paths
+}
+
+fn sample_command(command: &str, target: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_skope"));
+    cmd.args([command, "-q"]).arg(target);
+    cmd
+}
+
+fn successful_tsv(output: std::process::Output) -> String {
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn sample_totals(tsv: &str, command: &str) -> std::collections::HashMap<String, (u64, u64)> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(b'\t')
+        .from_reader(tsv.as_bytes());
+    let headers = reader.headers().unwrap();
+    let column = |name| headers.iter().position(|h| h == name).unwrap();
+    let sample = column("sample");
+    let (seqs, bases) = match command {
+        "query" => (column("sample_seqs"), column("sample_bases")),
+        "classify" => (column("seqs"), column("bases")),
+        "lenhist" => (column("total_seqs_processed"), column("total_bp_processed")),
+        _ => unreachable!(),
+    };
+    let mut totals = std::collections::HashMap::new();
+    for row in reader.records() {
+        let row = row.unwrap();
+        let counts = (row[seqs].parse().unwrap(), row[bases].parse().unwrap());
+        let entry = totals.entry(row[sample].to_string()).or_insert((0, 0));
+        if command == "classify" {
+            entry.0 += counts.0;
+            entry.1 += counts.1;
+        } else {
+            *entry = counts;
+        }
+    }
+    totals
+}
+
+#[test]
+fn test_paired_batch_boundaries() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("target.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    for (len1, len2) in [(151, 151), (151, 150), (251, 251)] {
+        let (r1, r2, il) = write_fastq_mates(dir.path(), (&seq[..len1], &seq[..len2]), 2051, "\n");
+        for command in ["query", "classify", "lenhist"] {
+            for threads in ["1", "4"] {
+                for (flag, sample) in [
+                    ("--paired", format!("{},{}", r1.display(), r2.display())),
+                    ("--interleaved", il.display().to_string()),
+                ] {
+                    let tsv = successful_tsv(
+                        sample_command(command, &target)
+                            .args([flag, &sample, "-t", threads, "-n", "s"])
+                            .output()
+                            .unwrap(),
+                    );
+                    assert_eq!(
+                        sample_totals(&tsv, command)["s"],
+                        (4102, (2051 * (len1 + len2)) as u64)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_paired_limits() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("target.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    let (r1, r2, il) = write_fastq_mates(dir.path(), (&seq[..151], &seq[..150]), 5000, "\n");
+    for command in ["query", "classify", "lenhist"] {
+        for threads in ["1", "4"] {
+            for (flag, sample) in [
+                ("--paired", format!("{},{}", r1.display(), r2.display())),
+                ("--interleaved", il.display().to_string()),
+            ] {
+                for limit in ["0", "1", "100G"] {
+                    let tsv = successful_tsv(
+                        sample_command(command, &target)
+                            .args([flag, &sample, "-t", threads, "-n", "s", "-l", limit])
+                            .output()
+                            .unwrap(),
+                    );
+                    let (seqs, bases) = sample_totals(&tsv, command)
+                        .get("s")
+                        .copied()
+                        .unwrap_or_default();
+                    assert_eq!(seqs % 2, 0);
+                    assert_eq!(bases, seqs / 2 * 301);
+                    match limit {
+                        "0" => assert_eq!(seqs, 0),
+                        "1" => assert!(seqs > 0 && seqs < 10000, "{command}: {seqs}"),
+                        _ => assert_eq!(seqs, 10000),
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_limits_span_files_and_reset_between_samples() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("target.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    let mut samples = Vec::new();
+    for name in ["a", "b"] {
+        let sample = dir.path().join(name);
+        std::fs::create_dir(&sample).unwrap();
+        let (_, _, il) = write_fastq_mates(dir.path(), (&seq[..151], &seq[..150]), 3, "\n");
+        std::fs::copy(&il, sample.join("a.fq")).unwrap();
+        std::fs::copy(&il, sample.join("b.fq")).unwrap();
+        samples.push(sample);
+    }
+    for command in ["query", "classify", "lenhist"] {
+        for (limit, expected) in [("1", 6), ("100G", 12)] {
+            let tsv = successful_tsv(
+                sample_command(command, &target)
+                    .args(&samples)
+                    .args(["--interleaved", "-t", "1", "-l", limit])
+                    .output()
+                    .unwrap(),
+            );
+            let totals = sample_totals(&tsv, command);
+            assert_eq!(totals.len(), 2);
+            for counts in totals.values() {
+                assert_eq!(*counts, (expected, expected / 2 * 301));
+            }
+        }
+    }
+}
+
+#[test]
+fn test_paired_fastq_crlf_and_interleaved_stdin() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("target.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    for command in ["query", "classify", "lenhist"] {
+        let mut outputs = Vec::new();
+        for newline in ["\n", "\r\n"] {
+            let (r1, r2, il) =
+                write_fastq_mates(dir.path(), (&seq[..151], &seq[..150]), 2051, newline);
+            outputs.push(successful_tsv(
+                sample_command(command, &target)
+                    .args([
+                        "--paired",
+                        &format!("{},{}", r1.display(), r2.display()),
+                        "-n",
+                        "s",
+                        "-t",
+                        "1",
+                    ])
+                    .output()
+                    .unwrap(),
+            ));
+            let reads = std::fs::read(il).unwrap();
+            let mut child = sample_command(command, &target)
+                .args(["--interleaved", "-", "-n", "s", "-t", "1"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(&reads).unwrap();
+            outputs.push(successful_tsv(child.wait_with_output().unwrap()));
+        }
+        assert!(outputs.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+}
+
+#[test]
+fn test_paired_per_seq_pools_thresholds_and_uses_r1_id() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("target.fa");
+    let seq = pseudo_dna_string(80, 11);
+    write_fasta(&target, "t", &seq);
+    let (r1, r2, _) = write_fastq_mates(dir.path(), (&seq[..15], &seq[40..55]), 1, "\n");
+    let tsv = successful_tsv(
+        sample_command("classify", &target)
+            .args([
+                "--paired",
+                &format!("{},{}", r1.display(), r2.display()),
+                "--per-seq",
+                "--all-kmers",
+                "-k",
+                "15",
+                "-a",
+                "2",
+                "-t",
+                "1",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let fields: Vec<_> = tsv.lines().nth(1).unwrap().split('\t').collect();
+    assert_eq!(
+        &fields[1..],
+        &["p0/1", "classified", "target", "2", "2", "30"]
+    );
+    for read in [r1, r2] {
+        let tsv = successful_tsv(
+            sample_command("classify", &target)
+                .arg(read)
+                .args(["--per-seq", "--all-kmers", "-k", "15", "-a", "2", "-t", "1"])
+                .output()
+                .unwrap(),
+        );
+        assert!(tsv.lines().nth(1).unwrap().contains("\tunclassified\t"));
+    }
+}
+
+#[test]
+fn test_binary_index_output_destinations() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("target.fa");
+    write_fasta(&target, "t", &pseudo_dna_string(500, 11));
+    for (command, kind) in [
+        ("build-query", skope::IndexKind::Query),
+        ("build-classify", skope::IndexKind::Classify),
+    ] {
+        for explicit in [false, true] {
+            let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_skope"));
+            cmd.args(["index", command, "-q", "-t", "1"]).arg(&target);
+            if explicit {
+                cmd.args(["-o", "-"]);
+            }
+            let output = cmd.output().unwrap();
+            assert!(output.status.success());
+            assert_eq!(&output.stdout[..5], &[b'S', b'K', b'P', b'E', kind as u8]);
+        }
+        let index = dir.path().join("output.sk");
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_skope"))
+            .args(["index", command, "-q", "-t", "1"])
+            .arg(&target)
+            .arg("-o")
+            .arg(&index)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(skope::read_index_kind(&index), Some(kind));
+        let previous = std::fs::read(&index).unwrap();
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_skope"))
+            .args(["index", command, "-q"])
+            .arg(dir.path().join("missing.fa"))
+            .arg("-o")
+            .arg(&index)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(std::fs::read(&index).unwrap(), previous);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_binary_index_terminal_rejection_precedes_target_loading() {
+    use std::process::{Command, Stdio};
+    let dir = TempDir::new().unwrap();
+    for command in ["build-query", "build-classify"] {
+        for explicit in [false, true] {
+            let pty = nix::pty::openpty(None, None).unwrap();
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_skope"));
+            cmd.args(["index", command])
+                .arg(dir.path().join("missing.fa"))
+                .stdout(Stdio::from(std::fs::File::from(pty.slave)));
+            if explicit {
+                cmd.args(["-o", "-"]);
+            }
+            let output = cmd.output().unwrap();
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("binary index to a terminal"));
+        }
+    }
 }

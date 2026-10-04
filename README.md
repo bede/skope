@@ -140,6 +140,8 @@ skope query --confidence refs.fa reads.fq
 
 `query`, `classify` and `lenhist` accept comma-separated mate files with `--paired` or interleaved files with `--interleaved`. Mates pool their *k*-mers. In `query`, each target *k*-mer counts at most once per pair toward abundance. `classify` and `lenhist` apply match thresholds to the pooled distinct *k*-mers, giving both mates the same classification. `classify --per-seq` writes one row per pair, with R1's identifier and the mates' combined length. A paired sample takes its R1 file's name without a mate tag such as `_1`, `_R1`, `.r1` or `_R1_001`.
 
+Summaries count both mates, and `lenhist` bins their lengths separately under the pair's classification. `--limit` is approximate and checked per batch, so in-flight batches can finish beyond the limit.
+
 ```bash
 skope query --paired refs.fa a_R1.fq.gz,a_R2.fq.gz b_R1.fq.gz,b_R2.fq.gz
 skope query --interleaved refs.fa a.interleaved.fq.gz
