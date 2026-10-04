@@ -186,10 +186,11 @@ fn open_reader(path: &Path) -> Result<FastxReader> {
     Ok(paraseq::ReaderBuilder::optional_path(in_path).build()?)
 }
 
-/// Read a path in batches of about 256 KiB, sized by the first record
+/// Read seqs in 1 mib batches extrapolating from first record
+/// Beware that larger batches make --limit coarser
 pub fn reader_for_path(path: &Path) -> Result<FastxReader> {
     let mut reader = open_reader(path)?;
-    reader.update_batch_size_in_bp(256 * 1024)?;
+    reader.update_batch_size_in_bp(1024 * 1024)?;
     Ok(reader)
 }
 
