@@ -282,9 +282,24 @@ impl Kmers {
 
     /// K-mers of a sequence, with their start positions in `positions`
     pub fn fill_with_positions(&mut self, seq: &[u8], positions: &mut Vec<usize>) -> &mut KmerVec {
+        self.pool_with_positions(&[seq], positions)
+    }
+
+    /// Pooled k-mers with start positions, each sequence offset by the lengths before it
+    pub fn pool_with_positions(
+        &mut self,
+        seqs: &[&[u8]],
+        positions: &mut Vec<usize>,
+    ) -> &mut KmerVec {
         self.values.clear();
         positions.clear();
-        self.extend::<true>(seq, positions);
+        let mut offset = 0;
+        for seq in seqs {
+            let start = positions.len();
+            self.extend::<true>(seq, positions);
+            positions[start..].iter_mut().for_each(|pos| *pos += offset);
+            offset += seq.len();
+        }
         &mut self.values
     }
 
@@ -436,6 +451,15 @@ mod tests {
             };
             assert_eq!(pooled, both);
             assert!(kmers.fill(&joined).len() > pooled.len());
+
+            // Pooled positions offset each sequence by those before it
+            let (mut a_pos, mut b_pos, mut pooled_pos) = (Vec::new(), Vec::new(), Vec::new());
+            kmers.fill_with_positions(&a, &mut a_pos);
+            kmers.fill_with_positions(&b, &mut b_pos);
+            kmers.pool_with_positions(&[&a, &b], &mut pooled_pos);
+            a_pos.extend(b_pos.iter().map(|pos| pos + a.len()));
+            assert_eq!(pooled_pos, a_pos);
+            assert_eq!(kmers.values.len(), pooled.len());
         }
     }
 

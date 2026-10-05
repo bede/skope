@@ -1,5 +1,5 @@
 use skope::{
-    BuildClassifyConfig, ClassifyConfig, ContainmentConfig, Layout, LengthHistogramConfig,
+    BuildClassifyConfig, ClassifyConfig, ContainmentConfig, Input, LengthHistogramConfig,
     SortOrder, discover_target_groups,
 };
 use std::path::PathBuf;
@@ -10,12 +10,15 @@ fn test_multisample_processing() {
     let config = ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
-        sample_paths: vec![
-            vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")],
-            vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")],
+        sample_inputs: vec![
+            vec![Input::File(PathBuf::from(
+                "data/rsviruses17900.1k.fastq.zst",
+            ))],
+            vec![Input::File(PathBuf::from(
+                "data/rsviruses17900.1k.fastq.zst",
+            ))],
         ],
         sample_names: vec!["sample1".to_string(), "sample2".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -44,12 +47,15 @@ fn test_multisample_tsv_structure() {
     let config = ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
-        sample_paths: vec![
-            vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")],
-            vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")],
+        sample_inputs: vec![
+            vec![Input::File(PathBuf::from(
+                "data/rsviruses17900.1k.fastq.zst",
+            ))],
+            vec![Input::File(PathBuf::from(
+                "data/rsviruses17900.1k.fastq.zst",
+            ))],
         ],
         sample_names: vec!["sample_a".to_string(), "sample_b".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -155,9 +161,10 @@ fn test_confidence_outputs_ani_and_patchiness_columns() {
     let config = ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
-        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_inputs: vec![vec![Input::File(PathBuf::from(
+            "data/rsviruses17900.1k.fastq.zst",
+        ))]],
         sample_names: vec!["sample".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -210,9 +217,10 @@ fn test_sort_target() {
     let config = ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
-        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_inputs: vec![vec![Input::File(PathBuf::from(
+            "data/rsviruses17900.1k.fastq.zst",
+        ))]],
         sample_names: vec!["test".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -259,9 +267,10 @@ fn test_sort_containment() {
     let config = ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: PathBuf::from("data/zmrp21.viruses.fa"),
-        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_inputs: vec![vec![Input::File(PathBuf::from(
+            "data/rsviruses17900.1k.fastq.zst",
+        ))]],
         sample_names: vec!["test".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -338,9 +347,10 @@ fn test_length_histogram() {
     let config = LengthHistogramConfig {
         individual: false,
         targets_path: targets_path.path().to_path_buf(),
-        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_inputs: vec![vec![Input::File(PathBuf::from(
+            "data/rsviruses17900.1k.fastq.zst",
+        ))]],
         sample_names: vec!["test".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -379,9 +389,10 @@ fn test_length_histogram_all_seqs() {
     let config = LengthHistogramConfig {
         individual: false,
         targets_path: PathBuf::from("-"),
-        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_inputs: vec![vec![Input::File(PathBuf::from(
+            "data/rsviruses17900.1k.fastq.zst",
+        ))]],
         sample_names: vec!["test".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 15,
         complexity: 0.0,
@@ -402,7 +413,7 @@ fn test_length_histogram_all_seqs() {
     assert!(lines.len() > 1, "Should have data rows");
     assert!(
         lines[1].starts_with("test\tall\t"),
-        "All reads should go to the 'all' bucket, got: {}",
+        "All sequences should go to the 'all' bucket, got: {}",
         lines[1]
     );
 }
@@ -425,9 +436,11 @@ fn classify_to(
     skope::run_classification(&ClassifyConfig {
         targets_path: targets.to_path_buf(),
         individual: false,
-        sample_paths,
+        sample_inputs: sample_paths
+            .into_iter()
+            .map(|paths| paths.into_iter().map(Input::File).collect())
+            .collect(),
         sample_names: sample_names.iter().map(|name| name.to_string()).collect(),
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -460,7 +473,7 @@ fn test_discover_target_groups_mixed_layout() {
     // Hidden top-level entries (skipped)
     write_fasta(&root.join(".hidden.fa"), "h", SEQ_A);
     std::fs::create_dir(root.join(".hidden_dir")).unwrap();
-    // Non-fastx file (skipped)
+    // Non-sequence file (skipped)
     std::fs::write(root.join("README.txt"), b"ignore me").unwrap();
     // Hidden file inside subdir (skipped)
     write_fasta(&root.join("class_b/.skip.fa"), "x", SEQ_A);
@@ -497,7 +510,7 @@ fn test_discover_target_groups_empty_subdir_errors() {
 
     let err = discover_target_groups(root).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("no fastx files"), "got: {}", msg);
+    assert!(msg.contains("no sequence files"), "got: {}", msg);
     assert!(msg.contains("class_a"), "got: {}", msg);
 }
 
@@ -531,9 +544,8 @@ fn test_query_directory_mixed_layout() {
     let config = ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: root.to_path_buf(),
-        sample_paths: vec![vec![sample.path().to_path_buf()]],
+        sample_inputs: vec![vec![Input::File(sample.path().to_path_buf())]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -613,9 +625,8 @@ fn test_dump_kmers_respects_discriminatory() {
     let make_config = |discriminatory: bool, dump: PathBuf| ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: root.to_path_buf(),
-        sample_paths: vec![vec![sample.path().to_path_buf()]],
+        sample_inputs: vec![vec![Input::File(sample.path().to_path_buf())]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -702,9 +713,8 @@ fn test_classify_build_mixed_layout() {
     let cfg = ClassifyConfig {
         individual: false,
         targets_path: idx_out.path().to_path_buf(),
-        sample_paths: vec![vec![sample.path().to_path_buf()]],
+        sample_inputs: vec![vec![Input::File(sample.path().to_path_buf())]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -945,9 +955,8 @@ fn query_to_tsv(targets_path: PathBuf, sample: &std::path::Path, out: &std::path
     skope::run_query(&ContainmentConfig {
         background_paths: Vec::new(),
         targets_path,
-        sample_paths: vec![vec![sample.to_path_buf()]],
+        sample_inputs: vec![vec![Input::File(sample.to_path_buf())]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1030,9 +1039,8 @@ fn test_query_index_positions_required_only_when_consumed() {
         skope::run_query(&ContainmentConfig {
             targets_path,
             background_paths: vec![],
-            sample_paths: vec![vec![sample.clone()]],
+            sample_inputs: vec![vec![Input::File(sample.clone())]],
             sample_names: vec!["s".to_string()],
-            layout: Layout::Single,
             kmer_length: 15,
             smer_length: 7,
             complexity: 0.0,
@@ -1096,9 +1104,8 @@ fn query_frac(
     skope::run_query(&ContainmentConfig {
         background_paths: Vec::new(),
         targets_path,
-        sample_paths: vec![vec![sample.to_path_buf()]],
+        sample_inputs: vec![vec![Input::File(sample.to_path_buf())]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1179,9 +1186,8 @@ fn lenhist_groups(
     skope::run_lenhist(&LengthHistogramConfig {
         targets_path,
         individual,
-        sample_paths: vec![vec![sample.to_path_buf()]],
+        sample_inputs: vec![vec![Input::File(sample.to_path_buf())]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1266,9 +1272,8 @@ fn test_classify_accepts_bare_fastx_file() {
     skope::run_classification(&ClassifyConfig {
         targets_path: targets,
         individual: false,
-        sample_paths: vec![vec![sample]],
+        sample_inputs: vec![vec![Input::File(sample)]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1283,7 +1288,7 @@ fn test_classify_accepts_bare_fastx_file() {
     })
     .unwrap();
 
-    // The matching read lands in the file-named group
+    // The matching sequence lands in the file-named group
     let content = std::fs::read_to_string(out).unwrap();
     let row = content
         .lines()
@@ -1292,7 +1297,7 @@ fn test_classify_accepts_bare_fastx_file() {
     assert_eq!(
         row.split('\t').nth(3),
         Some("1"),
-        "expected the read classified into 'refs': {content}"
+        "expected the sequence classified into 'refs': {content}"
     );
 }
 
@@ -1547,7 +1552,7 @@ fn test_resolve_targets_input_forms() {
     )
     .unwrap_err()
     .to_string();
-    assert!(err.contains("is not a fastx file"), "got: {err}");
+    assert!(err.contains("is not a fastx/CBQ file"), "got: {err}");
 
     // Missing path
     let err = skope::resolve_targets(
@@ -1585,9 +1590,10 @@ fn query_complexity(
     skope::run_query(&ContainmentConfig {
         background_paths: Vec::new(),
         targets_path,
-        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_inputs: vec![vec![Input::File(PathBuf::from(
+            "data/rsviruses17900.1k.fastq.zst",
+        ))]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length: 9,
         complexity,
@@ -1686,9 +1692,10 @@ fn query_all_kmers(
     skope::run_query(&ContainmentConfig {
         background_paths: Vec::new(),
         targets_path,
-        sample_paths: vec![vec![PathBuf::from("data/rsviruses17900.1k.fastq.zst")]],
+        sample_inputs: vec![vec![Input::File(PathBuf::from(
+            "data/rsviruses17900.1k.fastq.zst",
+        ))]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 31,
         smer_length,
         complexity: 0.0,
@@ -1854,17 +1861,15 @@ fn write_mates(dir: &std::path::Path, pairs: &[(&str, &str)]) -> (PathBuf, PathB
 
 fn classify_summary(
     targets: &std::path::Path,
-    sample_paths: Vec<PathBuf>,
-    layout: Layout,
+    sample: Vec<Input>,
     threads: usize,
 ) -> anyhow::Result<Vec<(String, String)>> {
     let out = NamedTempFile::new().unwrap();
     skope::run_classification(&ClassifyConfig {
         targets_path: targets.to_path_buf(),
         individual: false,
-        sample_paths: vec![sample_paths],
+        sample_inputs: vec![sample],
         sample_names: vec!["s".to_string()],
-        layout,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -1913,11 +1918,11 @@ fn test_classify_pools_mates() {
     ]
     .map(|(g, n)| (g.to_string(), n.to_string()));
     assert_eq!(
-        classify_summary(&targets, vec![r1, r2], Layout::Paired, 1).unwrap(),
+        classify_summary(&targets, vec![Input::Paired(r1, r2)], 1).unwrap(),
         pooled
     );
     assert_eq!(
-        classify_summary(&targets, vec![il.clone()], Layout::Interleaved, 1).unwrap(),
+        classify_summary(&targets, vec![Input::Interleaved(il.clone())], 1).unwrap(),
         pooled
     );
 
@@ -1929,7 +1934,7 @@ fn test_classify_pools_mates() {
     ]
     .map(|(g, n)| (g.to_string(), n.to_string()));
     assert_eq!(
-        classify_summary(&targets, vec![il], Layout::Single, 1).unwrap(),
+        classify_summary(&targets, vec![Input::File(il)], 1).unwrap(),
         single
     );
 }
@@ -1943,11 +1948,11 @@ fn test_paired_mate_count_mismatch_errors() {
     let (r1, r2) = (dir.path().join("r1.fa"), dir.path().join("r2.fa"));
     write_records(&r1, &[("p0", &seq), ("p1", &seq)]);
     write_records(&r2, &[("p0", &seq)]);
-    assert!(classify_summary(&targets, vec![r1.clone(), r2.clone()], Layout::Paired, 1).is_err());
-    assert!(classify_summary(&targets, vec![r2, r1.clone()], Layout::Paired, 1).is_err());
-    assert!(classify_summary(&targets, vec![dir.path().join("r1.fa")], Layout::Single, 1).is_ok());
+    assert!(classify_summary(&targets, vec![Input::Paired(r1.clone(), r2.clone())], 1).is_err());
+    assert!(classify_summary(&targets, vec![Input::Paired(r2, r1.clone())], 1).is_err());
+    assert!(classify_summary(&targets, vec![Input::File(dir.path().join("r1.fa"))], 1).is_ok());
     write_records(&r1, &[("p0", &seq), ("p0", &seq), ("p1", &seq)]);
-    assert!(classify_summary(&targets, vec![r1], Layout::Interleaved, 1).is_err());
+    assert!(classify_summary(&targets, vec![Input::Interleaved(r1)], 1).is_err());
 }
 
 #[test]
@@ -1966,11 +1971,11 @@ fn test_mates_span_batches_with_unequal_lengths() {
     let (r1, r2, il) = write_mates(dir.path(), &pairs);
 
     for threads in [1, 8] {
-        for (paths, layout) in [
-            (vec![r1.clone(), r2.clone()], Layout::Paired),
-            (vec![il.clone()], Layout::Interleaved),
+        for input in [
+            Input::Paired(r1.clone(), r2.clone()),
+            Input::Interleaved(il.clone()),
         ] {
-            let rows = classify_summary(&targets, paths, layout, threads).unwrap();
+            let rows = classify_summary(&targets, vec![input], threads).unwrap();
             assert!(rows.contains(&("t".into(), "4000".into())), "{rows:?}");
         }
     }
@@ -1995,9 +2000,8 @@ fn test_limit_stops_paired_query_early() {
         skope::run_query(&ContainmentConfig {
             background_paths: Vec::new(),
             targets_path: target.clone(),
-            sample_paths: vec![vec![r1.clone(), r2.clone()]],
+            sample_inputs: vec![vec![Input::Paired(r1.clone(), r2.clone())]],
             sample_names: vec!["s".to_string()],
-            layout: Layout::Paired,
             kmer_length: 15,
             smer_length: 7,
             complexity: 0.0,
@@ -2031,31 +2035,13 @@ fn test_limit_stops_paired_query_early() {
     }
 }
 
-#[test]
-fn test_paired_input_needs_two_files() {
-    let dir = TempDir::new().unwrap();
-    let targets = dir.path().join("t.fa");
-    let seq = pseudo_dna_string(500, 11);
-    write_fasta(&targets, "t", &seq);
-    let r1 = dir.path().join("r1.fa");
-    write_records(&r1, &[("p0", &seq)]);
-    let error = classify_summary(&targets, vec![r1], Layout::Paired, 1).unwrap_err();
-    assert!(error.to_string().contains("R1,R2"), "{error}");
-}
-
-fn median_abundance(
-    target: &std::path::Path,
-    sample_paths: Vec<PathBuf>,
-    layout: Layout,
-    k: u8,
-) -> f64 {
+fn median_abundance(target: &std::path::Path, input: Input, k: u8) -> f64 {
     let out = NamedTempFile::new().unwrap();
     skope::run_query(&ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: target.to_path_buf(),
-        sample_paths: vec![sample_paths],
+        sample_inputs: vec![vec![input]],
         sample_names: vec!["s".to_string()],
-        layout,
         kmer_length: k,
         smer_length: 7,
         complexity: 0.0,
@@ -2102,16 +2088,13 @@ fn test_query_counts_each_kmer_once_per_pair() {
     let (r1, r2, il) = write_mates(dir.path(), &[(&seq, &rc)]);
 
     for k in [15, 41] {
+        assert_eq!(median_abundance(&target, Input::File(il.clone()), k), 2.0);
         assert_eq!(
-            median_abundance(&target, vec![il.clone()], Layout::Single, k),
-            2.0
-        );
-        assert_eq!(
-            median_abundance(&target, vec![il.clone()], Layout::Interleaved, k),
+            median_abundance(&target, Input::Interleaved(il.clone()), k),
             1.0
         );
         assert_eq!(
-            median_abundance(&target, vec![r1.clone(), r2.clone()], Layout::Paired, k),
+            median_abundance(&target, Input::Paired(r1.clone(), r2.clone()), k),
             1.0
         );
     }
@@ -2130,9 +2113,8 @@ fn test_lenhist_bins_mates_under_pair_classification() {
     skope::run_lenhist(&LengthHistogramConfig {
         targets_path: target,
         individual: false,
-        sample_paths: vec![vec![r1, r2]],
+        sample_inputs: vec![vec![Input::Paired(r1, r2)]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Paired,
         kmer_length: 15,
         smer_length: 7,
         complexity: 0.0,
@@ -2192,16 +2174,15 @@ fn test_total_row_sums_hits_exactly() {
     );
     let seq = pseudo_dna_string(36, 7);
     write_fasta(&target, "t", &seq);
-    let reads: Vec<(String, &str)> = (0..10).map(|i| (format!("r{i}"), &seq[..29])).collect();
-    let reads: Vec<(&str, &str)> = reads.iter().map(|(id, s)| (id.as_str(), *s)).collect();
-    write_records(&sample, &reads);
+    let records: Vec<(String, &str)> = (0..10).map(|i| (format!("r{i}"), &seq[..29])).collect();
+    let records: Vec<(&str, &str)> = records.iter().map(|(id, s)| (id.as_str(), *s)).collect();
+    write_records(&sample, &records);
 
     skope::run_query(&ContainmentConfig {
         background_paths: Vec::new(),
         targets_path: target,
-        sample_paths: vec![vec![sample]],
+        sample_inputs: vec![vec![Input::File(sample)]],
         sample_names: vec!["s".to_string()],
-        layout: Layout::Single,
         kmer_length: 15,
         smer_length: 0,
         complexity: 0.0,
@@ -2319,13 +2300,12 @@ fn test_paired_batch_boundaries() {
         let (r1, r2, il) = write_fastq_mates(dir.path(), (&seq[..len1], &seq[..len2]), 2051, "\n");
         for command in ["query", "classify", "lenhist"] {
             for threads in ["1", "4"] {
-                for (flag, sample) in [
-                    ("--paired", format!("{},{}", r1.display(), r2.display())),
-                    ("--interleaved", il.display().to_string()),
-                ] {
+                let (mates, il) = (format!("{},{}", r1.display(), r2.display()), il.display());
+                for sample in [vec![mates], vec!["--interleaved".into(), il.to_string()]] {
                     let tsv = successful_tsv(
                         sample_command(command, &target)
-                            .args([flag, &sample, "-t", threads, "-n", "s"])
+                            .args(&sample)
+                            .args(["-t", threads, "-n", "s"])
                             .output()
                             .unwrap(),
                     );
@@ -2348,14 +2328,13 @@ fn test_paired_limits() {
     let (r1, r2, il) = write_fastq_mates(dir.path(), (&seq[..151], &seq[..150]), 5000, "\n");
     for command in ["query", "classify", "lenhist"] {
         for threads in ["1", "4"] {
-            for (flag, sample) in [
-                ("--paired", format!("{},{}", r1.display(), r2.display())),
-                ("--interleaved", il.display().to_string()),
-            ] {
+            let (mates, il) = (format!("{},{}", r1.display(), r2.display()), il.display());
+            for sample in [vec![mates], vec!["--interleaved".into(), il.to_string()]] {
                 for limit in ["0", "1", "100G"] {
                     let tsv = successful_tsv(
                         sample_command(command, &target)
-                            .args([flag, &sample, "-t", threads, "-n", "s", "-l", limit])
+                            .args(&sample)
+                            .args(["-t", threads, "-n", "s", "-l", limit])
                             .output()
                             .unwrap(),
                     );
@@ -2425,7 +2404,6 @@ fn test_paired_fastq_crlf_and_interleaved_stdin() {
             outputs.push(successful_tsv(
                 sample_command(command, &target)
                     .args([
-                        "--paired",
                         &format!("{},{}", r1.display(), r2.display()),
                         "-n",
                         "s",
@@ -2435,7 +2413,7 @@ fn test_paired_fastq_crlf_and_interleaved_stdin() {
                     .output()
                     .unwrap(),
             ));
-            let reads = std::fs::read(il).unwrap();
+            let interleaved = std::fs::read(il).unwrap();
             let mut child = sample_command(command, &target)
                 .args(["--interleaved", "-", "-n", "s", "-t", "1"])
                 .stdin(Stdio::piped())
@@ -2443,7 +2421,7 @@ fn test_paired_fastq_crlf_and_interleaved_stdin() {
                 .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
-            child.stdin.take().unwrap().write_all(&reads).unwrap();
+            child.stdin.take().unwrap().write_all(&interleaved).unwrap();
             outputs.push(successful_tsv(child.wait_with_output().unwrap()));
         }
         assert!(outputs.windows(2).all(|pair| pair[0] == pair[1]));
@@ -2460,7 +2438,6 @@ fn test_paired_per_seq_pools_thresholds_and_uses_r1_id() {
     let tsv = successful_tsv(
         sample_command("classify", &target)
             .args([
-                "--paired",
                 &format!("{},{}", r1.display(), r2.display()),
                 "--per-seq",
                 "--all-kmers",
@@ -2479,10 +2456,10 @@ fn test_paired_per_seq_pools_thresholds_and_uses_r1_id() {
         &fields[1..],
         &["p0/1", "classified", "target", "2", "2", "30"]
     );
-    for read in [r1, r2] {
+    for mate in [r1, r2] {
         let tsv = successful_tsv(
             sample_command("classify", &target)
-                .arg(read)
+                .arg(mate)
                 .args(["--per-seq", "--all-kmers", "-k", "15", "-a", "2", "-t", "1"])
                 .output()
                 .unwrap(),
@@ -2552,5 +2529,209 @@ fn test_binary_index_terminal_rejection_precedes_target_loading() {
             assert!(!output.status.success());
             assert!(String::from_utf8_lossy(&output.stderr).contains("binary index to a terminal"));
         }
+    }
+}
+
+/// Write CBQ in tiny blocks, consecutive records forming mates when `paired`
+fn write_cbq(path: &std::path::Path, records: &[(&str, &str)], paired: bool) {
+    use binseq::SequencingRecordBuilder;
+    use binseq::write::{BinseqWriterBuilder, Format};
+    let mut writer = BinseqWriterBuilder::new(Format::Cbq)
+        .paired(paired)
+        .headers(true)
+        .block_size(4096)
+        .build(std::fs::File::create(path).unwrap())
+        .unwrap();
+    for chunk in records.chunks(1 + paired as usize) {
+        let (id, seq) = chunk[0];
+        let mut record = SequencingRecordBuilder::default()
+            .s_header(id.as_bytes())
+            .s_seq(seq.as_bytes());
+        if let [_, (id, seq)] = chunk {
+            record = record.x_header(id.as_bytes()).x_seq(seq.as_bytes());
+        }
+        writer.push(record.build().unwrap()).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+/// Single and paired CBQ samples, targets, groups and backgrounds give fastx results
+#[test]
+fn test_cbq_matches_fastx() {
+    let dir = TempDir::new().unwrap();
+    let path = |name: &str| dir.path().join(name).display().to_string();
+    let skope = |args: &[&str]| {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_skope"));
+        cmd.args(args).args(["-q", "-k", "15", "-s", "7"]);
+        successful_tsv(cmd.output().unwrap())
+    };
+    let (seq_a, seq_b) = (pseudo_dna_string(600, 11), pseudo_dna_string(600, 29));
+    let targets = [("a", seq_a.as_str()), ("b", seq_b.as_str())];
+    write_records(path("t.fa").as_ref(), &targets);
+    write_cbq(path("t.cbq").as_ref(), &targets, false);
+
+    // Overlapping mates from one target, or one random mate, in blocks of a few records
+    let records: Vec<(String, String)> = (0..600)
+        .map(|i| {
+            let (pair, start) = (i / 2, i / 2 % 400 + i % 2 * 50);
+            let seq = match (pair % 3, i % 2) {
+                (0, _) | (2, 1) => seq_a[start..start + 150].to_string(),
+                (1, _) => seq_b[start..start + 150].to_string(),
+                _ => pseudo_dna_string(150, i as u64 + 100),
+            };
+            (format!("r{pair}"), seq)
+        })
+        .collect();
+    let records: Vec<(&str, &str)> = records.iter().map(|(i, s)| (&**i, &**s)).collect();
+    let (r1, r2): (Vec<_>, Vec<_>) = records.chunks(2).map(|p| (p[0], p[1])).unzip();
+    write_records(path("s.fa").as_ref(), &records);
+    write_records(path("r1.fa").as_ref(), &r1);
+    write_records(path("r2.fa").as_ref(), &r2);
+    write_cbq(path("s.cba").as_ref(), &records, false);
+    write_cbq(path("p.cba").as_ref(), &records, true);
+    let mates = format!("{},{}", path("r1.fa"), path("r2.fa"));
+
+    for command in ["query", "classify", "lenhist"] {
+        for threads in ["1", "4"] {
+            let run = |args: &[&str]| skope(&[&[command, "-t", threads, "-n", "s"], args].concat());
+            let single = run(&[&path("t.fa"), &path("s.fa")]);
+            assert_eq!(single, run(&[&path("t.cbq"), &path("s.cba")]));
+            if command != "lenhist" {
+                let paired = run(&[&path("t.fa"), &mates]);
+                assert_eq!(paired, run(&[&path("t.cbq"), &path("p.cba")]));
+                assert_ne!(single, paired);
+            }
+        }
+    }
+
+    // Groups from a directory mixing fastx and CBQ
+    for name in ["fa", "mixed"] {
+        std::fs::create_dir(path(name)).unwrap();
+        write_fasta(path(&format!("{name}/b.fa")).as_ref(), "b", &seq_b);
+    }
+    write_fasta(path("fa/a.fa").as_ref(), "a", &seq_a);
+    write_cbq(path("mixed/a.cbq").as_ref(), &targets[..1], false);
+    let classify = |targets: &str| skope(&["classify", "-n", "s", &path(targets), &path("s.cba")]);
+    assert_eq!(classify("fa"), classify("mixed"));
+
+    // Paired CBQ targets pool mates, offsetting R2 positions by R1 length
+    write_records(path("tp.fa").as_ref(), &records[..8]);
+    write_cbq(path("tp.cbq").as_ref(), &records[..8], true);
+    let dump = |targets: &str| {
+        let out = path(&format!("{targets}.dump"));
+        let tsv = skope(&["query", "--dump-kmers", &out, &path(targets), &path("s.fa")]);
+        (tsv, std::fs::read_to_string(out).unwrap())
+    };
+    assert_eq!(dump("tp.fa"), dump("tp.cbq"));
+
+    // Background masking takes single or paired CBQ
+    let index = |background: &str| {
+        let out = path(&format!("{background}.sk"));
+        skope(&[
+            "index",
+            "build-query",
+            "-b",
+            &path(background),
+            &path("t.fa"),
+            "-o",
+            &out,
+        ]);
+        std::fs::read(out).unwrap()
+    };
+    let masked = index("s.fa");
+    assert_eq!(masked, index("s.cba"));
+    assert_eq!(masked, index("p.cba"));
+}
+
+#[test]
+fn test_cbq_rejects_mate_layouts_and_honours_limits() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("t.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    let records: Vec<(&str, &str)> = (0..2000).map(|_| ("r", &seq[..150])).collect();
+    let cbq = dir.path().join("s.cbq");
+    write_cbq(&cbq, &records, true);
+    let mates = format!("{0},{0}", cbq.display());
+
+    for command in ["query", "classify", "lenhist"] {
+        for sample in [vec!["--interleaved", cbq.to_str().unwrap()], vec![&mates]] {
+            let output = sample_command(command, &target)
+                .args(sample)
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("CBQ stores its own pairing"), "{stderr}");
+        }
+        for threads in ["1", "4"] {
+            for limit in ["0", "1", "100G"] {
+                let tsv = successful_tsv(
+                    sample_command(command, &target)
+                        .arg(&cbq)
+                        .args(["-t", threads, "-n", "s", "-l", limit])
+                        .output()
+                        .unwrap(),
+                );
+                let (seqs, bases) = sample_totals(&tsv, command)
+                    .get("s")
+                    .copied()
+                    .unwrap_or_default();
+                assert_eq!(bases, seqs * 150);
+                match limit {
+                    "0" => assert_eq!(seqs, 0),
+                    "1" => assert!(seqs > 0 && seqs < 2000, "{command}: {seqs}"),
+                    _ => assert_eq!(seqs, 2000),
+                }
+            }
+        }
+    }
+}
+
+/// Truncated or corrupt CBQ fails at any thread count, even when a limit stops reading early
+#[test]
+fn test_cbq_truncated_or_corrupt_fails() {
+    use binseq::cbq::{BlockHeader, FileHeader, MmapReader};
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("t.fa");
+    let seq = pseudo_dna_string(500, 11);
+    write_fasta(&target, "t", &seq);
+    let records: Vec<(&str, &str)> = (0..2000).map(|_| ("r", &seq[..150])).collect();
+    let cbq = dir.path().join("s.cbq");
+    write_cbq(&cbq, &records, false);
+    let bytes = std::fs::read(&cbq).unwrap();
+    let first = MmapReader::new(&cbq)
+        .unwrap()
+        .iter_block_headers()
+        .next()
+        .unwrap()
+        .unwrap();
+    let data = size_of::<FileHeader>() + size_of::<BlockHeader>();
+    let second = data + first.block_len();
+
+    let fails = |bytes: &[u8], args: &[&str], expected: &str| {
+        let broken = dir.path().join("broken.cbq");
+        std::fs::write(&broken, bytes).unwrap();
+        let output = sample_command("query", &target)
+            .arg(&broken)
+            .args(args)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(stderr.contains(expected), "{args:?}: {stderr}");
+    };
+    for threads in ["1", "4"] {
+        for cut in [second, second + 2, bytes.len() - 1] {
+            fails(&bytes[..cut], &["-t", threads], "Truncated CBQ");
+        }
+    }
+
+    // A corrupt first block fails even when a limit stops reading early
+    let mut corrupt = bytes.clone();
+    assert_eq!(corrupt[data..data + 4], [0x28, 0xb5, 0x2f, 0xfd]);
+    corrupt[data] ^= 0xff;
+    for threads in ["1", "2", "4", "8"] {
+        fails(&corrupt, &["-t", threads, "-l", "1"], "frame");
     }
 }

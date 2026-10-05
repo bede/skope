@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use skope::{
-    DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, Layout, derive_mates_name, derive_sample_name,
-    find_fastx_files, find_fastx_files_recursive, is_special_input_path, resolve_k_s, validate_k_s,
+    DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, Input, derive_mates_name, derive_sample_name,
+    find_seq_files, find_seq_files_recursive, is_special_input_path, resolve_k_s, validate_k_s,
 };
 
 /// Check the kdust threshold is in [0, 1], rejecting NaN and inf
@@ -68,7 +68,7 @@ fn validate_sample_names(names: &[String]) -> Result<()> {
 /// Sample arguments shared by query, classify and lenhist
 #[derive(Args)]
 struct SampleArgs {
-    /// Samples as fastx files/dirs (- for stdin), or R1,R2 with --paired
+    /// Samples as fastx/CBQ files/dirs (- for stdin), or comma-separated mate files (R1,R2)
     #[arg(required = true)]
     samples: Vec<PathBuf>,
 
@@ -81,105 +81,97 @@ struct SampleArgs {
     )]
     names: Option<Vec<String>>,
 
-    /// Samples are interleaved pairs
-    #[arg(
-        long = "interleaved",
-        default_value_t = false,
-        conflicts_with = "paired"
-    )]
+    /// Sample files outside R1,R2 pairs are interleaved pairs
+    #[arg(long = "interleaved", default_value_t = false)]
     interleaved: bool,
 
-    /// Samples are comma-separated mate files (R1,R2)
-    #[arg(long = "paired", default_value_t = false)]
-    paired: bool,
+    /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
+    #[arg(short = 'l', long = "limit", value_name = "BASES", value_parser = parse_bases)]
+    limit: Option<u64>,
 }
 
 impl SampleArgs {
     fn prepare(&self) -> Result<PreparedSamples> {
-        let layout = match (self.interleaved, self.paired) {
-            (true, _) => Layout::Interleaved,
-            (_, true) => Layout::Paired,
-            _ => Layout::Single,
-        };
-        prepare_samples(&self.samples, self.names.as_deref(), layout)
+        prepare_samples(&self.samples, self.names.as_deref(), self.interleaved)
     }
 }
 
 #[derive(Debug)]
 struct PreparedSamples {
-    paths: Vec<Vec<PathBuf>>,
+    inputs: Vec<Vec<Input>>,
     names: Vec<String>,
-    layout: Layout,
 }
 
-fn split_mates(input: &Path) -> Result<Vec<PathBuf>> {
-    let input = input.to_string_lossy();
-    let mates: Vec<PathBuf> = input.split(',').map(PathBuf::from).collect();
-    if mates.len() != 2 {
-        return Err(anyhow::anyhow!(
-            "--paired samples must be comma-separated mate files (R1,R2), got {input}"
-        ));
+/// Split an `R1,R2` argument into its two mate files
+fn split_mates(arg: &Path) -> Result<(PathBuf, PathBuf)> {
+    let arg = arg.to_string_lossy();
+    let Some((r1, r2)) = arg
+        .split_once(',')
+        .filter(|(r1, r2)| !r1.is_empty() && !r2.is_empty() && !r2.contains(','))
+    else {
+        anyhow::bail!("Mate pairs must be two comma-separated files (R1,R2), got {arg}");
+    };
+    for mate in [r1, r2].map(Path::new) {
+        anyhow::ensure!(
+            mate.is_file() || is_special_input_path(mate),
+            "Mate is not a file: {}",
+            mate.display()
+        );
     }
-    if let Some(mate) = mates
-        .iter()
-        .find(|mate| !(mate.is_file() || is_special_input_path(mate)))
-    {
-        return Err(anyhow::anyhow!("Mate is not a file: {}", mate.display()));
-    }
-    Ok(mates)
+    Ok((r1.into(), r2.into()))
 }
 
+/// Resolve each sample argument: an existing path wins, then `R1,R2` mates.
+/// `--interleaved` applies to every file outside a mate pair
 fn prepare_samples(
-    inputs: &[PathBuf],
+    args: &[PathBuf],
     names: Option<&[String]>,
-    layout: Layout,
+    interleaved: bool,
 ) -> Result<PreparedSamples> {
     if let Some(names) = names
-        && names.len() != inputs.len()
+        && names.len() != args.len()
     {
         return Err(anyhow::anyhow!(
             "Number of sample names ({}) must match number of samples ({})",
             names.len(),
-            inputs.len()
+            args.len()
         ));
     }
 
-    let mut paths = Vec::with_capacity(inputs.len());
-    let mut prepared_names = Vec::with_capacity(inputs.len());
+    let file = |path| match interleaved {
+        true => Input::Interleaved(path),
+        false => Input::File(path),
+    };
+    let mut inputs = Vec::with_capacity(args.len());
+    let mut prepared_names = Vec::with_capacity(args.len());
 
-    for (i, input) in inputs.iter().enumerate() {
-        let (sample_paths, name) = if layout == Layout::Paired {
-            let mates = split_mates(input)?;
-            let name = derive_mates_name(&mates[0]);
-            (mates, name)
-        } else if input.to_string_lossy() == "-" || is_special_input_path(input) {
-            (vec![input.clone()], derive_sample_name(input, false))
-        } else {
-            if !input.exists() {
-                return Err(anyhow::anyhow!("Path does not exist: {}", input.display()));
-            }
-            let metadata = std::fs::metadata(input)
-                .with_context(|| format!("Failed to access path: {}", input.display()))?;
-            if metadata.is_file() {
-                (vec![input.clone()], derive_sample_name(input, false))
-            } else if metadata.is_dir() {
-                (find_fastx_files(input)?, derive_sample_name(input, true))
-            } else {
-                return Err(anyhow::anyhow!(
+    for (i, arg) in args.iter().enumerate() {
+        let (sample, name) =
+            if arg.as_os_str() == "-" || is_special_input_path(arg) || arg.is_file() {
+                (vec![file(arg.clone())], derive_sample_name(arg, false))
+            } else if arg.is_dir() {
+                let files = find_seq_files(arg)?.into_iter().map(file).collect();
+                (files, derive_sample_name(arg, true))
+            } else if arg.exists() {
+                anyhow::bail!(
                     "Path is neither a regular file nor directory: {}",
-                    input.display()
-                ));
-            }
-        };
-        paths.push(sample_paths);
+                    arg.display()
+                );
+            } else if arg.to_string_lossy().contains(',') {
+                let (r1, r2) = split_mates(arg)?;
+                let name = derive_mates_name(&r1);
+                (vec![Input::Paired(r1, r2)], name)
+            } else {
+                anyhow::bail!("Path does not exist: {}", arg.display());
+            };
+        inputs.push(sample);
         prepared_names.push(names.map_or(name, |names| names[i].clone()));
     }
 
     validate_sample_names(&prepared_names)?;
     Ok(PreparedSamples {
-        paths,
+        inputs,
         names: prepared_names,
-        layout,
     })
 }
 
@@ -197,12 +189,8 @@ fn output_path(output: &str) -> Option<PathBuf> {
     (output != "-").then(|| PathBuf::from(output))
 }
 
-fn parse_limit(limit: Option<&str>) -> Result<Option<u64>> {
-    limit.map(parse_bases).transpose()
-}
-
-/// Expand background inputs into a flat list of fastx files (directories searched recursively)
-fn expand_background_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+/// Expand background paths into a flat list of sequence files (directories searched recursively)
+fn expand_background_paths(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for input in inputs {
         if input.to_string_lossy() == "-" || is_special_input_path(input) {
@@ -216,7 +204,7 @@ fn expand_background_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
             ));
         }
         if std::fs::metadata(input)?.is_dir() {
-            files.extend(find_fastx_files_recursive(input)?);
+            files.extend(find_seq_files_recursive(input)?);
         } else {
             files.push(input.clone());
         }
@@ -255,13 +243,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum IndexCommands {
-    /// Build a classification index (.sk) from fastx file(s) or a directory of groups (alpha)
+    /// Build a classification index (.sk) from fastx/CBQ file(s) or a directory of groups (alpha)
     #[command(alias = "build")]
     BuildClassify {
-        /// Path to fastx file (single group unless -i), directory of fastx files/subdirs (one group per child file/subdir), or - for stdin
+        /// Path to fastx/CBQ file (single group unless -i), directory of such files/subdirs (one group per child file/subdir), or - for stdin
         targets: PathBuf,
 
-        /// Treat each fastx record as a separate group (single fastx file only)
+        /// Treat each record as a separate group (single file only)
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
@@ -298,12 +286,12 @@ enum IndexCommands {
         quiet: bool,
     },
 
-    /// Build a query index (.sk) from target fastx file(s), optionally masking background k-mers (alpha)
+    /// Build a query index (.sk) from target fastx/CBQ file(s), optionally masking background k-mers (alpha)
     BuildQuery {
-        /// Path to fastx file (single target unless -i), directory of fastx files/subdirs (one target per child file/subdir), or - for stdin
+        /// Path to fastx/CBQ file (single target unless -i), directory of such files/subdirs (one target per child file/subdir), or - for stdin
         targets: PathBuf,
 
-        /// Path to fastx file(s) whose k-mers we wish to drop from our targets
+        /// Path to fastx/CBQ file(s) whose k-mers we wish to drop from our targets
         #[arg(short = 'b', long = "background")]
         background: Vec<PathBuf>,
 
@@ -315,7 +303,7 @@ enum IndexCommands {
         #[arg(short = 's', long = "smer", value_name = "S", default_value_t = DEFAULT_SMER_LENGTH)]
         smer_length: u8,
 
-        /// Treat each fastx record as a separate target (default: merge records into one target)
+        /// Treat each record as a separate target (default: merge records into one target)
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
@@ -366,13 +354,10 @@ enum IndexCommands {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Estimate target containment & abundance in fastx file(s) or directories thereof using open syncmers or all k-mers
+    /// Estimate target containment & abundance in sequence collections using open syncmers or all k-mers
     Query {
-        /// Path to fastx file (single target unless -i), directory of fastx files/subdirs (one target per child file/subdir) or query index (.sk)
+        /// Path to fastx/CBQ file (single target unless -i), directory of such files/subdirs (one target per child file/subdir) or query index (.sk)
         targets: PathBuf,
-
-        #[command(flatten)]
-        samples: SampleArgs,
 
         #[arg(short = 'k', long = "kmer", value_name = "K", value_parser = clap::value_parser!(u8).range(1..=61), help = k_help())]
         kmer_length: Option<u8>,
@@ -380,7 +365,7 @@ enum Commands {
         #[arg(short = 's', long = "smer", value_name = "S", help = s_help())]
         smer_length: Option<u8>,
 
-        /// Treat each fastx record as separate target (default: merge records into one target)
+        /// Treat each record as a separate target (default: merge records into one target)
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
 
@@ -423,13 +408,12 @@ enum Commands {
         )]
         abundance_thresholds: Vec<usize>,
 
-        /// Path to fastx file(s) whose k-mers we wish to drop from our targets
+        /// Path to fastx/CBQ file(s) whose k-mers we wish to drop from our targets
         #[arg(short = 'b', long = "background")]
         background: Vec<PathBuf>,
 
-        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
-        #[arg(short = 'l', long = "limit", value_name = "BASES")]
-        limit: Option<String>,
+        #[command(flatten)]
+        samples: SampleArgs,
 
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
@@ -458,15 +442,12 @@ enum Commands {
 
     /// Classify sequences into groups by k-mer content (alpha)
     Classify {
-        /// Path to fastx file (single group unless -i), directory of fastx files/subdirs (one group per child file/subdir) or classification index (.sk)
+        /// Path to fastx/CBQ file (single group unless -i), directory of such files/subdirs (one group per child file/subdir) or classification index (.sk)
         targets: PathBuf,
 
-        /// Treat each fastx record as a separate group (single fastx file only)
+        /// Treat each record as a separate group (single file only)
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
-
-        #[command(flatten)]
-        samples: SampleArgs,
 
         #[arg(short = 'k', long = "kmer", value_name = "K", value_parser = clap::value_parser!(u8).range(1..=61), help = k_help())]
         kmer_length: Option<u8>,
@@ -508,9 +489,8 @@ enum Commands {
         )]
         rel_threshold: f64,
 
-        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
-        #[arg(short = 'l', long = "limit", value_name = "BASES")]
-        limit: Option<String>,
+        #[command(flatten)]
+        samples: SampleArgs,
 
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
@@ -531,15 +511,12 @@ enum Commands {
 
     /// Generate per-group length histograms based on k-mer classification (alpha)
     Lenhist {
-        /// Path to fastx file (single group unless -i), directory of fastx files/subdirs (one group per child file/subdir), classification index (.sk), or - to disable group filtering (single "all" bucket)
+        /// Path to fastx/CBQ file (single group unless -i), directory of such files/subdirs (one group per child file/subdir), classification index (.sk), or - to disable group filtering (single "all" bucket)
         targets: PathBuf,
 
-        /// Treat each fastx record as a separate group (single fastx file only)
+        /// Treat each record as a separate group (single file only)
         #[arg(short = 'i', long = "individual", default_value_t = false)]
         individual: bool,
-
-        #[command(flatten)]
-        samples: SampleArgs,
 
         // Algorithm parameters
         #[arg(short = 'k', long = "kmer", value_name = "K", value_parser = clap::value_parser!(u8).range(1..=61), help = k_help())]
@@ -583,9 +560,8 @@ enum Commands {
         rel_threshold: f64,
 
         // Processing options
-        /// Terminate processing after approximately this many bases (e.g. 50M, 10G)
-        #[arg(short = 'l', long = "limit", value_name = "BASES")]
-        limit: Option<String>,
+        #[command(flatten)]
+        samples: SampleArgs,
 
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
@@ -674,7 +650,7 @@ fn main() -> Result<()> {
 
                 let config = skope::BuildQueryConfig {
                     targets_path: targets.clone(),
-                    background_paths: expand_background_inputs(background)?,
+                    background_paths: expand_background_paths(background)?,
                     kmer_length: *kmer_length,
                     smer_length,
                     individual: *individual,
@@ -706,7 +682,6 @@ fn main() -> Result<()> {
             abs_threshold,
             rel_threshold,
             threads,
-            limit,
             output,
             per_seq,
             quiet,
@@ -725,16 +700,15 @@ fn main() -> Result<()> {
             let config = skope::ClassifyConfig {
                 targets_path: targets.clone(),
                 individual: *individual,
-                sample_paths: prepared.paths,
+                sample_inputs: prepared.inputs,
                 sample_names: prepared.names,
-                layout: prepared.layout,
                 kmer_length,
                 smer_length,
                 complexity: *complexity,
                 abs_threshold: *abs_threshold,
                 rel_threshold: *rel_threshold,
                 threads: *threads,
-                limit_bp: parse_limit(limit.as_deref())?,
+                limit_bp: samples.limit,
                 output_path: output_path(output),
                 per_seq: *per_seq,
                 discriminatory: *discriminatory,
@@ -756,7 +730,6 @@ fn main() -> Result<()> {
             abundance_thresholds,
             discriminatory,
             individual,
-            limit,
             sort,
             dump_kmers,
             no_total,
@@ -766,7 +739,7 @@ fn main() -> Result<()> {
             complexity,
         } => {
             let prepared = samples.prepare()?;
-            let background_paths = expand_background_inputs(background)?;
+            let background_paths = expand_background_paths(background)?;
             validate_fraction(*fraction)?;
             validate_complexity(*complexity)?;
             let (kmer_length, smer_length) = resolve_k_s(
@@ -788,9 +761,8 @@ fn main() -> Result<()> {
             let config = skope::ContainmentConfig {
                 targets_path: targets.clone(),
                 background_paths,
-                sample_paths: prepared.paths,
+                sample_inputs: prepared.inputs,
                 sample_names: prepared.names,
-                layout: prepared.layout,
                 kmer_length,
                 smer_length,
                 threads: *threads,
@@ -799,7 +771,7 @@ fn main() -> Result<()> {
                 abundance_thresholds: abundance_thresholds.clone(),
                 discriminatory: *discriminatory,
                 individual: *individual,
-                limit_bp: parse_limit(limit.as_deref())?,
+                limit_bp: samples.limit,
                 sort_order,
                 dump_kmers_path: dump_kmers.clone(),
                 no_total: *no_total,
@@ -826,7 +798,6 @@ fn main() -> Result<()> {
             threads,
             output,
             quiet,
-            limit,
         } => {
             let prepared = samples.prepare()?;
             validate_complexity(*complexity)?;
@@ -845,9 +816,8 @@ fn main() -> Result<()> {
             let config = skope::LengthHistogramConfig {
                 targets_path: targets.clone(),
                 individual: *individual,
-                sample_paths: prepared.paths,
+                sample_inputs: prepared.inputs,
                 sample_names: prepared.names,
-                layout: prepared.layout,
                 kmer_length,
                 smer_length,
                 complexity: *complexity,
@@ -857,7 +827,7 @@ fn main() -> Result<()> {
                 threads: *threads,
                 output_path: output_path(output),
                 quiet: *quiet,
-                limit_bp: parse_limit(limit.as_deref())?,
+                limit_bp: samples.limit,
                 no_filter,
             };
 
@@ -879,53 +849,70 @@ mod tests {
     fn prepare_samples_expands_inputs_and_derives_names() {
         let temp = TempDir::new().unwrap();
         let file = temp.path().join("single.fastq");
-        let directory = temp.path().join("reads");
+        let directory = temp.path().join("collection");
         std::fs::write(&file, b"@r\nACGT\n+\nIIII\n").unwrap();
         std::fs::create_dir(&directory).unwrap();
         std::fs::write(directory.join("part.fa"), b">r\nACGT\n").unwrap();
 
-        let prepared =
-            prepare_samples(&[file.clone(), directory.clone()], None, Layout::Single).unwrap();
-        assert_eq!(prepared.names, ["single", "reads"]);
+        let args = [file.clone(), directory.clone()];
+        let prepared = prepare_samples(&args, None, false).unwrap();
+        assert_eq!(prepared.names, ["single", "collection"]);
         assert_eq!(
-            prepared.paths,
-            [vec![file], vec![directory.join("part.fa")]]
+            prepared.inputs,
+            [
+                vec![Input::File(file.clone())],
+                vec![Input::File(directory.join("part.fa"))]
+            ]
         );
+        let prepared = prepare_samples(&args[..1], None, true).unwrap();
+        assert_eq!(prepared.inputs, [vec![Input::Interleaved(file)]]);
     }
 
     #[test]
-    fn prepare_samples_splits_paired_mates() {
+    fn prepare_samples_splits_comma_mates() {
         let temp = TempDir::new().unwrap();
         let (r1, r2) = (temp.path().join("s_R1.fq"), temp.path().join("s_R2.fq"));
         std::fs::write(&r1, b"@r\nACGT\n+\nIIII\n").unwrap();
         std::fs::write(&r2, b"@r\nACGT\n+\nIIII\n").unwrap();
-        let mates = PathBuf::from(format!("{},{}", r1.display(), r2.display()));
+        let comma = |a: &Path, b: &Path| PathBuf::from(format!("{},{}", a.display(), b.display()));
 
-        let prepared = prepare_samples(&[mates], None, Layout::Paired).unwrap();
-        assert_eq!(prepared.names, ["s"]);
-        assert_eq!(prepared.paths, [vec![r1.clone(), r2]]);
+        // Mates stay paired under --interleaved and mix with single files
+        let args = [comma(&r1, &r2), r1.clone()];
+        let prepared = prepare_samples(&args, None, true).unwrap();
+        assert_eq!(prepared.names, ["s", "s_R1"]);
+        assert_eq!(
+            prepared.inputs,
+            [
+                vec![Input::Paired(r1.clone(), r2.clone())],
+                vec![Input::Interleaved(r1.clone())]
+            ]
+        );
 
-        let error = prepare_samples(std::slice::from_ref(&r1), None, Layout::Paired).unwrap_err();
-        assert!(error.to_string().contains("R1,R2"));
-        let missing = PathBuf::from(format!(
-            "{},{}",
-            r1.display(),
-            temp.path().join("x").display()
-        ));
-        let error = prepare_samples(&[missing], None, Layout::Paired).unwrap_err();
+        // A literal path wins over comma splitting
+        let literal = comma(&r1, Path::new("x"));
+        std::fs::write(&literal, b">r\nACGT\n").unwrap();
+        let prepared = prepare_samples(std::slice::from_ref(&literal), None, false).unwrap();
+        assert_eq!(prepared.inputs, [vec![Input::File(literal)]]);
+
+        let missing = comma(&r1, &temp.path().join("y"));
+        let error = prepare_samples(&[missing], None, false).unwrap_err();
         assert!(error.to_string().contains("Mate is not a file"));
+        for bad in [",", "a,", ",b", "a,b,c"].map(PathBuf::from) {
+            let error = prepare_samples(&[bad], None, false).unwrap_err();
+            assert!(error.to_string().contains("R1,R2"), "{error}");
+        }
     }
 
     #[test]
     fn prepare_samples_validates_supplied_names() {
-        let error = prepare_samples(&[PathBuf::from("-")], Some(&[]), Layout::Single).unwrap_err();
+        let error = prepare_samples(&[PathBuf::from("-")], Some(&[]), false).unwrap_err();
         assert!(error.to_string().contains("must match number of samples"));
 
         let names = ["same".to_string(), "same".to_string()];
         let error = prepare_samples(
             &[PathBuf::from("-"), PathBuf::from("-")],
             Some(&names),
-            Layout::Single,
+            false,
         )
         .unwrap_err();
         assert!(error.to_string().contains("Duplicate sample names"));

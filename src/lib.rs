@@ -6,13 +6,14 @@ pub mod query;
 pub mod stats;
 
 use anyhow::Result;
+use binseq::{BinseqRecord, cbq};
 use paraseq::Record;
 use paraseq::parallel::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::fs::File;
 use std::hash::BuildHasher;
-use std::io::{BufWriter, IsTerminal, Write};
+use std::io::{BufReader, BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -188,7 +189,7 @@ fn open_reader(path: &Path) -> Result<FastxReader> {
 
 /// Read seqs in 1 mib batches extrapolating from first record
 /// Beware that larger batches make --limit coarser
-pub fn reader_for_path(path: &Path) -> Result<FastxReader> {
+fn reader_for_path(path: &Path) -> Result<FastxReader> {
     let mut reader = open_reader(path)?;
     reader.update_batch_size_in_bp(1024 * 1024)?;
     Ok(reader)
@@ -257,39 +258,15 @@ fn create_spinner(quiet: bool) -> Result<Option<indicatif::ProgressBar>> {
     }
 }
 
-/// Sample read layout
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Layout {
-    #[default]
-    Single,
-    /// Consecutive mates
-    Interleaved,
-    /// Separate mate files
-    Paired,
-}
-
-impl Layout {
-    pub fn option_label(self) -> &'static str {
-        match self {
-            Layout::Single => "",
-            Layout::Interleaved => ", interleaved",
-            Layout::Paired => ", paired",
-        }
-    }
-}
-
-/// Single files or complete mate pairs
-pub(crate) fn sample_inputs(
-    paths: &[PathBuf],
-    layout: Layout,
-) -> Result<std::slice::Chunks<'_, PathBuf>> {
-    anyhow::ensure!(!paths.is_empty(), "Sample has no input files");
-    let size = if layout == Layout::Paired { 2 } else { 1 };
-    anyhow::ensure!(
-        paths.len().is_multiple_of(size),
-        "Paired samples require complete R1,R2 pairs"
-    );
-    Ok(paths.chunks(size))
+/// How to read one input. Its format, fastx or CBQ, is detected on opening
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Input {
+    /// Fastx, or CBQ with its own pairing
+    File(PathBuf),
+    /// Fastx of consecutive mates
+    Interleaved(PathBuf),
+    /// Separate fastx mate files
+    Paired(PathBuf, PathBuf),
 }
 
 /// Per-thread progress, merged into shared totals once per batch
@@ -364,7 +341,7 @@ impl Progress {
     }
 }
 
-/// A sample processor fed one record, or a pair's mates together
+/// A processor fed one record, or a pair's mates together
 pub(crate) trait SeqProcessor: Clone + Send {
     fn process(&mut self, id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()>;
 
@@ -372,7 +349,7 @@ pub(crate) trait SeqProcessor: Clone + Send {
     fn flush(&mut self) -> paraseq::Result<()>;
 }
 
-/// Feeds a `SeqProcessor` from paraseq's single and paired readers, tracking progress
+/// Feeds a `SeqProcessor` from paraseq's single and paired readers or CBQ, tracking progress
 #[derive(Clone)]
 struct Seqs<P> {
     processor: P,
@@ -413,10 +390,9 @@ impl<Rf: Record, P: SeqProcessor> PairedParallelProcessor<Rf> for Seqs<P> {
     }
 }
 
-/// Dispatch by read layout, returning totals
+/// Dispatch by format and pairing, returning totals
 pub(crate) fn process_input<P: SeqProcessor>(
-    input: &[PathBuf],
-    layout: Layout,
+    input: &Input,
     processor: P,
     progress: Progress,
     threads: usize,
@@ -426,38 +402,143 @@ pub(crate) fn process_input<P: SeqProcessor>(
         progress,
     };
     // Mates keep fixed batches, since sizing by first record length can split pairs
-    let result = handle_process_result(match (layout, input) {
-        (Layout::Single, [path]) => reader_for_path(path)?.process_parallel(&mut seqs, threads),
-        (Layout::Interleaved, [path]) => {
+    let result = handle_process_result(match input {
+        Input::File(path) if is_cbq(path) => process_cbq(path, &seqs, threads),
+        Input::File(path) => reader_for_path(path)?.process_parallel(&mut seqs, threads),
+        Input::Interleaved(path) | Input::Paired(path, _) | Input::Paired(_, path)
+            if is_cbq(path) =>
+        {
+            anyhow::bail!(
+                "CBQ stores its own pairing, so {} takes neither --interleaved nor a mate",
+                path.display()
+            )
+        }
+        Input::Interleaved(path) => {
             open_reader(path)?.process_parallel_interleaved(&mut seqs, threads)
         }
-        (Layout::Paired, [r1, r2]) => {
+        Input::Paired(r1, r2) => {
             open_reader(r1)?.process_parallel_paired(open_reader(r2)?, &mut seqs, threads)
         }
-        _ => anyhow::bail!(
-            "{layout:?} input needs {}, got {} file(s)",
-            if layout == Layout::Paired {
-                "two files (R1,R2)"
-            } else {
-                "one file"
-            },
-            input.len()
-        ),
     });
     let stats = seqs.progress.finish();
     result.map(|()| stats)
 }
 
-/// Treat sample-limit interruptions as normal completion
+/// Treat sample-limit interruptions as normal completion, unwrapping processor errors
 fn handle_process_result(result: std::result::Result<(), paraseq::Error>) -> Result<()> {
     match result {
         Ok(()) => Ok(()),
         Err(e) if is_sample_limit_error(&e) => Ok(()),
+        Err(paraseq::Error::Process(e)) => Err(anyhow::Error::from_boxed(e)),
         Err(e) => Err(anyhow::anyhow!(e)),
     }
 }
 
-const FASTX_EXTENSIONS: &[&str] = &[
+/// Whether a file is BINSEQ CBQ (`.cbq`, or `.cba` without quality) by its magic.
+/// Never reads stdin or pipes, which are fastx
+fn is_cbq(path: &Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0; 7];
+    path != Path::new("-")
+        && !is_special_input_path(path)
+        && File::open(path)
+            .and_then(|mut file| file.read_exact(&mut magic))
+            .is_ok()
+        && &magic == cbq::FILE_MAGIC
+}
+
+/// Reader and records read so far, `None` once drained or failed
+type CbqState = Mutex<Option<(cbq::Reader<BufReader<File>>, u64)>>;
+
+/// Process CBQ like paraseq does fastx. Workers take compressed blocks in file order under a
+/// lock, then decompress and process them alone, so faster cores take more blocks
+fn process_cbq<P: SeqProcessor>(
+    path: &Path,
+    seqs: &Seqs<P>,
+    threads: usize,
+) -> paraseq::Result<()> {
+    let reader = cbq::Reader::new(BufReader::new(File::open(path)?)).map_err(cbq_error)?;
+    // Empty, carrying the file header
+    let block = reader.block.clone();
+    let state: CbqState = Mutex::new(Some((reader, 0)));
+    let threads = match threads {
+        0 => std::thread::available_parallelism().map_or(1, usize::from),
+        n => n,
+    };
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                let (state, mut block, mut seqs) = (&state, block.clone(), seqs.clone());
+                scope.spawn(move || {
+                    let result = cbq_worker(path, state, &mut block, &mut seqs);
+                    if result.is_err() {
+                        *state.lock() = None;
+                    }
+                    result
+                })
+            })
+            .collect();
+        worst_result(
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("CBQ worker panicked")),
+        )
+    })
+}
+
+/// The first real error, else a limit interruption, else success. Consumes every result, so
+/// joining workers through it cannot let a limit interruption hide another worker's error
+fn worst_result(results: impl Iterator<Item = paraseq::Result<()>>) -> paraseq::Result<()> {
+    results
+        .filter_map(Result::err)
+        .min_by_key(is_sample_limit_error)
+        .map_or(Ok(()), Err)
+}
+
+/// Take, decompress and process blocks until the reader is drained or fails
+fn cbq_worker<P: SeqProcessor>(
+    path: &Path,
+    state: &CbqState,
+    block: &mut cbq::ColumnarBlock,
+    seqs: &mut Seqs<P>,
+) -> paraseq::Result<()> {
+    loop {
+        let range = {
+            let mut state = state.lock();
+            let Some((reader, records)) = state.as_mut() else {
+                return Ok(());
+            };
+            let Some(header) = reader.read_block().map_err(cbq_error)? else {
+                // Blocks end at EOF too, so only the index proves the file complete
+                let indexed = reader.read_index().ok().flatten();
+                if indexed.is_none_or(|index| index.num_records() as u64 != *records) {
+                    return Err(anyhow::anyhow!(
+                        "Truncated CBQ: {} lacks an index matching the {records} records read",
+                        path.display()
+                    )
+                    .into());
+                }
+                *state = None;
+                return Ok(());
+            };
+            std::mem::swap(block, &mut reader.block);
+            *records += header.num_records;
+            cbq::BlockRange::new(0, *records)
+        };
+        block.decompress_columns().map_err(cbq_error)?;
+        for record in block.iter_records(range) {
+            let mates = [record.sseq(), record.xseq()];
+            seqs.process(record.sheader(), &mates[..1 + record.is_paired() as usize])?;
+        }
+        seqs.flush()?;
+    }
+}
+
+fn cbq_error(err: binseq::Error) -> paraseq::Error {
+    paraseq::Error::Process(Box::new(err))
+}
+
+const SEQ_EXTENSIONS: &[&str] = &[
     ".fasta",
     ".fa",
     ".fastq",
@@ -474,26 +555,28 @@ const FASTX_EXTENSIONS: &[&str] = &[
     ".fa.zst",
     ".fastq.zst",
     ".fq.zst",
+    ".cbq",
+    ".cba",
 ];
 
-/// Check whether a path has a recognised fastx extension
-pub fn is_fastx_file(path: &Path) -> bool {
+/// Whether a path has a recognised sequence file (fastx or CBQ) extension
+pub fn is_seq_file(path: &Path) -> bool {
     let path_str = path.to_string_lossy().to_lowercase();
-    FASTX_EXTENSIONS.iter().any(|ext| path_str.ends_with(ext))
+    SEQ_EXTENSIONS.iter().any(|ext| path_str.ends_with(ext))
 }
 
 /// One sequence group discovered under a target/class directory:
-/// either a single top-level FASTX file or all FASTX files directly inside a subdirectory.
+/// either a single top-level sequence file or all sequence files directly inside a subdirectory.
 #[derive(Debug, Clone)]
 pub struct TargetGroup {
     pub name: String,
     pub files: Vec<PathBuf>,
 }
 
-/// Discover sequence groups under a directory, one per top-level FASTX file or subdirectory.
+/// Discover sequence groups under a directory, one per top-level sequence file or subdirectory.
 ///
-/// - Top-level FASTX files are returned first (sorted), then top-level subdirectories (sorted).
-/// - Each subdirectory must contain at least one FASTX file directly inside it; nested
+/// - Top-level sequence files are returned first (sorted), then top-level subdirectories (sorted).
+/// - Each subdirectory must contain at least one sequence file directly inside it; nested
 ///   sub-subdirectories are not allowed and are rejected with an error.
 /// - Hidden top-level entries and hidden files inside subdirectories are skipped.
 /// - Duplicate derived group names (including `foo.fa` colliding with `foo/`) are rejected.
@@ -525,7 +608,7 @@ pub fn discover_target_groups(dir_path: &Path) -> Result<Vec<TargetGroup>> {
 
         if metadata.is_dir() {
             top_subdirs.push(path);
-        } else if metadata.is_file() && is_fastx_file(&path) {
+        } else if metadata.is_file() && is_seq_file(&path) {
             top_files.push(path);
         }
     }
@@ -535,7 +618,7 @@ pub fn discover_target_groups(dir_path: &Path) -> Result<Vec<TargetGroup>> {
 
     if top_files.is_empty() && top_subdirs.is_empty() {
         return Err(anyhow::anyhow!(
-            "Directory contains no fastx files or subdirectories: {}",
+            "Directory contains no sequence files or subdirectories: {}",
             dir_path.display()
         ));
     }
@@ -577,20 +660,20 @@ pub fn discover_target_groups(dir_path: &Path) -> Result<Vec<TargetGroup>> {
 
             if metadata.is_dir() {
                 return Err(anyhow::anyhow!(
-                    "Nested subdirectory not allowed in group directory '{}': {}. Group directories must contain only fastx files.",
+                    "Nested subdirectory not allowed in group directory '{}': {}. Group directories must contain only sequence files.",
                     subdir.display(),
                     path.display()
                 ));
             }
 
-            if metadata.is_file() && is_fastx_file(&path) {
+            if metadata.is_file() && is_seq_file(&path) {
                 subdir_files.push(path);
             }
         }
 
         if subdir_files.is_empty() {
             return Err(anyhow::anyhow!(
-                "Group directory contains no fastx files: {}",
+                "Group directory contains no sequence files: {}",
                 subdir.display()
             ));
         }
@@ -634,10 +717,10 @@ pub fn is_special_input_path(_path: &Path) -> bool {
     false
 }
 
-/// Cheap sniff for fastx content: a plain `>`/`@` header, or a compression magic. Extensions
-/// are too varied to check (`.fna` and friends are legitimate), so this reads the first bytes,
-/// purely to give a clear error for non-sequence files.
-fn looks_like_fastx(path: &Path) -> bool {
+/// Cheap sniff for sequence content: a plain `>`/`@` header, or a compression or CBQ magic.
+/// Extensions are too varied to check (`.fna` and friends are legitimate), so this reads the
+/// first bytes, purely to give a clear error for non-sequence files.
+fn looks_like_seqs(path: &Path) -> bool {
     use std::io::Read;
     let mut buf = [0u8; 8];
     let Ok(mut file) = std::fs::File::open(path) else {
@@ -648,11 +731,12 @@ fn looks_like_fastx(path: &Path) -> bool {
     };
     let buf = &buf[..n];
 
-    const MAGICS: [&[u8]; 4] = [
+    const MAGICS: [&[u8]; 5] = [
         &[0x1f, 0x8b],                   // gzip
         &[0x28, 0xb5, 0x2f, 0xfd],       // zstd
         &[0xfd, b'7', b'z', b'X', b'Z'], // xz
         b"BZh",                          // bzip2
+        cbq::FILE_MAGIC,
     ];
     if MAGICS.iter().any(|magic| buf.starts_with(magic)) {
         return true;
@@ -670,7 +754,7 @@ fn looks_like_fastx(path: &Path) -> bool {
 pub enum TargetSource {
     /// Prebuilt `.sk` index of the expected kind
     Index(PathBuf),
-    /// Fastx file or stdin, merged unless `--individual`
+    /// Sequence file or stdin, merged unless `--individual`
     File(TargetGroup),
     /// Directory grouped by top-level file or subdirectory
     Directory(Vec<TargetGroup>),
@@ -706,8 +790,8 @@ pub enum StdinTargets {
 /// Resolve `<TARGETS>` for a subcommand expecting index kind `expect`
 ///
 /// Accepts, in order: `-` (only where `stdin` is [`StdinTargets::Accept`]), a prebuilt `.sk`
-/// index, a directory (one group per top-level fastx file or subdirectory), or a single fastx
-/// file (one group). Pipes are always rejected: paraseq cannot sniff compression on a
+/// index, a directory (one group per top-level sequence file or subdirectory), or a single
+/// sequence file (one group). Pipes are always rejected: paraseq cannot sniff compression on a
 /// non-seekable path, so they fail later with a confusing parse error.
 pub fn resolve_targets(
     path: &Path,
@@ -718,7 +802,7 @@ pub fn resolve_targets(
         if stdin == StdinTargets::Reject {
             return Err(anyhow::anyhow!(
                 "Targets cannot be read from stdin; `-` is accepted only for samples. \
-                 Give a fastx file, a directory of fastx files, or a skope {expect} index."
+                 Give a fastx/CBQ file, a directory of these, or a skope {expect} index."
             ));
         }
         return Ok(TargetSource::File(TargetGroup {
@@ -730,7 +814,7 @@ pub fn resolve_targets(
     if is_special_input_path(path) {
         return Err(anyhow::anyhow!(
             "Targets cannot be read from a pipe ({}). \
-             Give a fastx file, a directory of fastx files, or a skope {expect} index.",
+             Give a fastx/CBQ file, a directory of these, or a skope {expect} index.",
             path.display()
         ));
     }
@@ -754,9 +838,9 @@ pub fn resolve_targets(
     }
 
     if path.is_file() {
-        if !looks_like_fastx(path) {
+        if !looks_like_seqs(path) {
             return Err(anyhow::anyhow!(
-                "{} is not a fastx file, a directory of fastx files, or a skope {expect} index",
+                "{} is not a fastx/CBQ file, a directory of these, or a skope {expect} index",
                 path.display()
             ));
         }
@@ -767,13 +851,13 @@ pub fn resolve_targets(
     }
 
     Err(anyhow::anyhow!(
-        "{} is neither a fastx file, a directory of fastx files, nor a skope {expect} index",
+        "{} is neither a fastx/CBQ file, a directory of these, nor a skope {expect} index",
         path.display()
     ))
 }
 
-/// Find all fastx files in a directory (non-recursive, following symlinks)
-pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
+/// Find all sequence files in a directory (non-recursive, following symlinks)
+pub fn find_seq_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     let entries = std::fs::read_dir(dir_path)
@@ -805,16 +889,16 @@ pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
             continue;
         }
 
-        if is_fastx_file(&path) {
+        if is_seq_file(&path) {
             files.push(path);
         }
     }
 
     if files.is_empty() {
         return Err(anyhow::anyhow!(
-            "Directory contains no fastx files: {}. Expected files with extensions: {}",
+            "Directory contains no sequence files: {}. Expected files with extensions: {}",
             dir_path.display(),
-            FASTX_EXTENSIONS.join(", ")
+            SEQ_EXTENSIONS.join(", ")
         ));
     }
 
@@ -822,9 +906,9 @@ pub fn find_fastx_files(dir_path: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Recursive fastq hunting under a directory. Descends real subdirectories
+/// Recursive sequence file hunting under a directory. Descends real subdirectories
 /// only (symlinked dirs skipped, so cycles can't loop); hidden entries skipped.
-pub fn find_fastx_files_recursive(dir_path: &Path) -> Result<Vec<PathBuf>> {
+pub fn find_seq_files_recursive(dir_path: &Path) -> Result<Vec<PathBuf>> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
@@ -838,7 +922,7 @@ pub fn find_fastx_files_recursive(dir_path: &Path) -> Result<Vec<PathBuf>> {
             }
             if entry.file_type()?.is_dir() {
                 walk(&path, out)?;
-            } else if is_fastx_file(&path) {
+            } else if is_seq_file(&path) {
                 out.push(path);
             }
         }
@@ -850,7 +934,7 @@ pub fn find_fastx_files_recursive(dir_path: &Path) -> Result<Vec<PathBuf>> {
     files.sort();
     if files.is_empty() {
         return Err(anyhow::anyhow!(
-            "Directory contains no fastx files (recursively): {}",
+            "Directory contains no sequence files (recursively): {}",
             dir_path.display()
         ));
     }
@@ -877,7 +961,9 @@ pub fn derive_sample_name(path: &Path, is_directory: bool) -> String {
 
     // For files, strip known extensions
     let mut name = filename.to_string();
-    let extensions = [".xz", ".gz", ".zst", ".fasta", ".fa", ".fastq", ".fq"];
+    let extensions = [
+        ".xz", ".gz", ".zst", ".fasta", ".fa", ".fastq", ".fq", ".cbq", ".cba",
+    ];
 
     loop {
         let original_len = name.len();
@@ -955,63 +1041,13 @@ mod tests {
     }
 
     #[test]
-    fn sample_dispatch_validates_input_cardinality() {
-        #[derive(Clone)]
-        struct Noop;
-        impl SeqProcessor for Noop {
-            fn process(&mut self, _: &[u8], _: &[&[u8]]) -> paraseq::Result<()> {
-                unreachable!()
-            }
-            fn flush(&mut self) -> paraseq::Result<()> {
-                Ok(())
-            }
-        }
-        let paths = [PathBuf::from("missing-r1"), PathBuf::from("missing-r2")];
-        for layout in [Layout::Single, Layout::Interleaved, Layout::Paired] {
-            assert!(sample_inputs(&[], layout).is_err());
-            assert!(
-                process_input(
-                    &[],
-                    layout,
-                    Noop,
-                    Progress::new("Sample", true, None).unwrap(),
-                    1
-                )
-                .is_err()
-            );
-        }
-        assert!(sample_inputs(&paths[..1], Layout::Paired).is_err());
-        assert!(
-            process_input(
-                &paths[..1],
-                Layout::Paired,
-                Noop,
-                Progress::new("Sample", true, None).unwrap(),
-                1
-            )
-            .is_err()
-        );
-        assert!(
-            process_input(
-                &paths,
-                Layout::Single,
-                Noop,
-                Progress::new("Sample", true, None).unwrap(),
-                1
-            )
-            .is_err()
-        );
-        assert!(
-            process_input(
-                &paths,
-                Layout::Interleaved,
-                Noop,
-                Progress::new("Sample", true, None).unwrap(),
-                1
-            )
-            .is_err()
-        );
-        assert_eq!(sample_inputs(&paths, Layout::Paired).unwrap().count(), 1);
+    fn worst_result_prefers_real_errors_to_limits() {
+        let limit = || Err(paraseq::Error::Io(sample_limit_reached_io_error()));
+        let real = || Err(paraseq::Error::InvalidThreadCount);
+        let worst = |results: Vec<_>| worst_result(results.into_iter());
+        assert!(worst(vec![Ok(()), limit(), real()]).is_err_and(|e| !is_sample_limit_error(&e)));
+        assert!(worst(vec![Ok(()), limit()]).is_err_and(|e| is_sample_limit_error(&e)));
+        assert!(worst(vec![Ok(()), Ok(())]).is_ok());
     }
 
     #[test]

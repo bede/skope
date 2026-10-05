@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--all-kmers` disables syncmer selection and instead selects and evaluates all (canonical) *k*-mers. Underneath this simply fixes `s=0`. Use this to hunt for individual k-mers. This (unsurprisingly!) uses more memory.
-- `query`, `classify` and `lenhist` accept `--paired R1,R2` or `--interleaved` reads. All three pool mates and count each distinct *k*-mer once per pair.
+- `query`, `classify` and `lenhist` accept paired samples, given as R1,R2 or as interleaved files with `--interleaved`. Mates pool their *k*-mers, and paired and single samples can share a run.
+- Support for BINSEQ CBQ input (`.cbq`/`.cba`) for targets, backgrounds and samples. Paired reads are supported either as separate files with comma-delimited paths or as single files in conjunction with `--interleaved`.
 
 ### Changed
 
@@ -23,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Sound handling of rare (and horrid) Windows line endings in fastx input ([#101](https://github.com/bede/deacon/issues/101)). Previously `\r` was treated as an ambiguous base and would break syncmer selection in wrapped multiline fastx. Fixed via paraseq 0.6.0.
-- Paired and interleaved batching for 151/251 bp reads and unequal mate lengths.
+- Paired and interleaved batching for 151/251 bp records and unequal mate lengths.
 
 ## [0.5.0] - 2026-09-14
 

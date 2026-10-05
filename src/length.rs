@@ -3,8 +3,8 @@ use crate::classify::{
     build_classification_index, load_classification_index,
 };
 use crate::{
-    IndexKind, Layout, Progress, SeqProcessor, StdinTargets, TargetSource, check_index_complexity,
-    format_bp, format_bp_per_sec, output_writer, process_input, resolve_targets, sample_inputs,
+    IndexKind, Input, Progress, SeqProcessor, StdinTargets, TargetSource, check_index_complexity,
+    format_bp, format_bp_per_sec, output_writer, process_input, resolve_targets,
 };
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -31,12 +31,11 @@ struct LengthHistogramResult {
 
 /// `lenhist` run settings
 pub struct LengthHistogramConfig {
-    /// Fastx file, directory of groups, `.sk` index, or `-` to disable group filtering
+    /// Sequence file, directory of groups, `.sk` index, or `-` to disable group filtering
     pub targets_path: PathBuf,
     pub individual: bool,
-    pub sample_paths: Vec<Vec<PathBuf>>,
+    pub sample_inputs: Vec<Vec<Input>>,
     pub sample_names: Vec<String>,
-    pub layout: Layout,
     pub kmer_length: u8,
     pub smer_length: u8,
     pub complexity: f32,
@@ -134,8 +133,7 @@ impl SeqProcessor for LengthHistogramProcessor {
 }
 
 fn process_seqs_input(
-    input: &[PathBuf],
-    layout: Layout,
+    input: &Input,
     classifier: &Classifier,
     threads: usize,
     quiet: bool,
@@ -152,7 +150,7 @@ fn process_seqs_input(
     let processor =
         LengthHistogramProcessor::new(classifier.clone(), no_filter, Arc::clone(&global_buckets));
     let progress = Progress::new("Processing sample", quiet, limit_bp)?;
-    let stats = process_input(input, layout, processor, progress, threads)?;
+    let stats = process_input(input, processor, progress, threads)?;
     let buckets: Vec<BucketState> = global_buckets
         .iter()
         .map(|m| std::mem::take(&mut *m.lock()))
@@ -179,24 +177,23 @@ fn process_seqs_input(
 }
 
 /// Process a single sample's sequences and calculate per-bucket length histograms
-fn process_single_sample(
-    sample_paths: &[PathBuf],
+fn process_sample(
+    sample: &[Input],
     sample_name: &str,
     classifier: &Classifier,
     config: &LengthHistogramConfig,
 ) -> Result<LengthHistogramResult> {
     // Silence per-sample progress for >1 sample
-    let quiet_sample = config.quiet || config.sample_paths.len() > 1;
+    let quiet_sample = config.quiet || config.sample_inputs.len() > 1;
 
     let bucket_count = classifier.num_groups + 2;
     let mut combined_buckets: Vec<BucketState> = vec![BucketState::default(); bucket_count];
     let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
 
-    for input in sample_inputs(sample_paths, config.layout)? {
+    for input in sample {
         let (file_buckets, file_seqs, file_bp) = process_seqs_input(
             input,
-            config.layout,
             classifier,
             config.threads,
             quiet_sample,
@@ -260,10 +257,9 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
             options.push_str(", discriminatory");
         }
     }
-    options.push_str(config.layout.option_label());
 
-    if config.sample_paths.len() > 1 {
-        options.push_str(&format!(", samples={}", config.sample_paths.len()));
+    if config.sample_inputs.len() > 1 {
+        options.push_str(&format!(", samples={}", config.sample_inputs.len()));
     }
 
     if config.complexity > 0.0 {
@@ -361,11 +357,11 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
     // Process each sample in parallel
     use rayon::prelude::*;
 
-    let is_multisample = config.sample_paths.len() > 1;
+    let is_multisample = config.sample_inputs.len() > 1;
     let completed = if is_multisample && !config.quiet {
         eprint!(
             "\x1B[2K\rSamples: processed 0 of {}…",
-            config.sample_paths.len()
+            config.sample_inputs.len()
         );
         Some(Arc::new(Mutex::new(0usize)))
     } else {
@@ -376,11 +372,11 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
     };
 
     let sample_results: Vec<LengthHistogramResult> = config
-        .sample_paths
+        .sample_inputs
         .par_iter()
         .zip(&config.sample_names)
-        .map(|(sample_paths, sample_name)| {
-            let result = process_single_sample(sample_paths, sample_name, &classifier, config);
+        .map(|(sample, sample_name)| {
+            let result = process_sample(sample, sample_name, &classifier, config);
 
             if let Some(ref counter) = completed {
                 let mut count = counter.lock();
@@ -388,7 +384,7 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
                 eprint!(
                     "\rSamples: processed {} of {}…",
                     *count,
-                    config.sample_paths.len()
+                    config.sample_inputs.len()
                 );
             }
 

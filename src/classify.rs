@@ -1,13 +1,11 @@
 use crate::kmers::{Kdust, KmerVec, Kmers};
 use crate::{
-    FixedRapidHasher, IndexKind, Layout, ProcessingStats, Progress, RapidHashSet, SeqProcessor,
+    FixedRapidHasher, IndexKind, Input, ProcessingStats, Progress, RapidHashSet, SeqProcessor,
     StdinTargets, TargetGroup, TargetSource, check_index_complexity, complexity_info_line,
-    format_bp, format_bp_per_sec, index_writer, output_writer, process_input, reader_for_path,
-    resolve_targets, sample_inputs, validate_index_output,
+    format_bp, format_bp_per_sec, index_writer, output_writer, process_input, resolve_targets,
+    validate_index_output,
 };
 use anyhow::{Context, Result};
-use paraseq::Record;
-use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -22,8 +20,6 @@ use crate::INDEX_MAGIC;
 const CLASSIFICATION_INDEX_VERSION: u8 = 1;
 /// Maximum groups representable by a u128 bitmask
 pub const MAX_GROUPS: usize = 128;
-/// Marker for `--individual` group-cap errors crossing the paraseq boundary
-const TOO_MANY_RECORDS_MSG: &str = "Too many records for --individual";
 // magic, kind, version, k, s, num_groups, complexity (kdust)
 type ClassificationIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, f32);
 
@@ -108,9 +104,8 @@ pub struct BuildClassifyConfig {
 pub struct ClassifyConfig {
     pub targets_path: PathBuf,
     pub individual: bool,
-    pub sample_paths: Vec<Vec<PathBuf>>,
+    pub sample_inputs: Vec<Vec<Input>>,
     pub sample_names: Vec<String>,
-    pub layout: Layout,
     pub kmer_length: u8,
     pub smer_length: u8,
     pub complexity: f32,
@@ -124,7 +119,7 @@ pub struct ClassifyConfig {
     pub quiet: bool,
 }
 
-/// Collect k-mers from one group FASTA file
+/// Collect k-mers from one group's sequence file
 #[derive(Clone)]
 struct GroupKmerProcessor {
     kmers: Kmers,
@@ -133,7 +128,6 @@ struct GroupKmerProcessor {
 
     local_map: ClassificationIndex,
     global_map: Arc<Mutex<ClassificationIndex>>,
-    progress: Progress,
 
     /// Source name for `--individual` group-cap errors
     source: String,
@@ -150,7 +144,6 @@ impl GroupKmerProcessor {
         kdust: Kdust,
         group_bit: u128,
         global_map: Arc<Mutex<ClassificationIndex>>,
-        progress: Progress,
         individual_names: Option<Arc<Mutex<Vec<String>>>>,
         source: String,
     ) -> Self {
@@ -160,34 +153,32 @@ impl GroupKmerProcessor {
             group_bit,
             local_map: ClassificationIndex::new(kmer_length),
             global_map,
-            progress,
             source,
             individual_names,
         }
     }
 }
 
-impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
+impl SeqProcessor for GroupKmerProcessor {
+    fn process(&mut self, id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()> {
         let group_bit = match &self.individual_names {
             Some(names) => {
                 let mut names = names.lock();
                 if names.len() >= MAX_GROUPS {
-                    return Err(paraseq::Error::Io(std::io::Error::other(format!(
-                        "{TOO_MANY_RECORDS_MSG}: {} has more than {MAX_GROUPS} records, \
-                             the maximum number of groups",
+                    return Err(anyhow::anyhow!(
+                        "Too many records for --individual: {} has more than {MAX_GROUPS} \
+                         records, the maximum number of groups",
                         self.source
-                    ))));
+                    )
+                    .into());
                 }
-                names.push(String::from_utf8_lossy(record.id()).to_string());
+                names.push(String::from_utf8_lossy(id).to_string());
                 1u128 << (names.len() - 1)
             }
             None => self.group_bit,
         };
 
-        let seq = record.seq();
-        self.progress.add(1, seq.len() as u64)?;
-        let kmers = self.kmers.fill(&seq);
+        let kmers = self.kmers.pool(seqs);
         self.kdust.retain(kmers, None);
 
         match (&*kmers, &mut self.local_map) {
@@ -203,7 +194,7 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
+    fn flush(&mut self) -> paraseq::Result<()> {
         match (&mut self.local_map, &mut *self.global_map.lock()) {
             (ClassificationIndex::U64(local), ClassificationIndex::U64(global)) => {
                 merge_group_bits(local.drain(), global)
@@ -213,7 +204,6 @@ impl<Rf: Record> ParallelProcessor<Rf> for GroupKmerProcessor {
             }
             _ => unreachable!("k-mer width does not match index"),
         }
-        self.progress.flush();
         Ok(())
     }
 }
@@ -249,7 +239,7 @@ pub(crate) fn build_classification_index(
 ) -> Result<(ClassificationIndex, Vec<String>)> {
     if groups.len() > MAX_GROUPS {
         return Err(anyhow::anyhow!(
-            "Too many groups: {} (max {MAX_GROUPS}). Each top-level fastx file or subdirectory is one group.",
+            "Too many groups: {} (max {MAX_GROUPS}). Each top-level sequence file or subdirectory is one group.",
             groups.len()
         ));
     }
@@ -286,25 +276,26 @@ pub(crate) fn build_classification_index(
 
     for (group_idx, group) in groups.iter().enumerate() {
         let group_bit = 1u128 << group_idx;
-        let progress = Progress::new("Collecting group k-mers", quiet, None)?;
-
+        let mut stats = ProcessingStats::default();
         for group_file in &group.files {
-            let mut processor = GroupKmerProcessor::new(
+            let processor = GroupKmerProcessor::new(
                 kmer_length,
                 smer_length,
                 kdust,
                 group_bit,
                 Arc::clone(&global_map),
-                progress.clone(),
                 None,
                 String::new(),
             );
-
-            let reader = reader_for_path(group_file)?;
-            reader.process_parallel(&mut processor, threads)?;
+            let file_stats = process_input(
+                &Input::File(group_file.clone()),
+                processor,
+                Progress::new("Collecting group k-mers", quiet, None)?,
+                threads,
+            )?;
+            stats.total_seqs += file_stats.total_seqs;
+            stats.total_bp += file_stats.total_bp;
         }
-
-        let stats = progress.finish();
 
         if !quiet {
             let (group_kmers, unique_kmers) = match &*global_map.lock() {
@@ -347,8 +338,8 @@ fn finish_index(global_map: Arc<Mutex<ClassificationIndex>>, quiet: bool) -> Cla
     index
 }
 
-/// Index a single fastx file one group per record (`--individual`), returning the record
-/// names in file order. Single-threaded so those names match the bit indices.
+/// Index a single sequence file one group per record or mate pair (`--individual`), returning
+/// the record names in file order. Single-threaded so those names match the bit indices.
 fn build_individual_groups(
     groups: &[TargetGroup],
     kmer_length: u8,
@@ -359,43 +350,34 @@ fn build_individual_groups(
 ) -> Result<Vec<String>> {
     let [group] = groups else {
         return Err(anyhow::anyhow!(
-            "--individual expects a single fastx file, got {} groups",
+            "--individual expects a single sequence file, got {} groups",
             groups.len()
         ));
     };
     let [file] = group.files.as_slice() else {
         return Err(anyhow::anyhow!(
-            "--individual expects a single fastx file, got {} files",
+            "--individual expects a single sequence file, got {} files",
             group.files.len()
         ));
     };
 
     let names = Arc::new(Mutex::new(Vec::new()));
-    let mut processor = GroupKmerProcessor::new(
+    let processor = GroupKmerProcessor::new(
         kmer_length,
         smer_length,
         kdust,
         0,
         global_map,
-        Progress::new("Collecting record k-mers", quiet, None)?,
         Some(Arc::clone(&names)),
         group.name.clone(),
     );
-
-    let reader = reader_for_path(file)?;
-    // Surface the group-cap error on its own rather than wrapped as an I/O failure
-    if let Err(err) = reader.process_parallel(&mut processor, 1) {
-        return Err(match &err {
-            paraseq::Error::Io(io_err) if io_err.to_string().starts_with(TOO_MANY_RECORDS_MSG) => {
-                anyhow::anyhow!("{io_err}")
-            }
-            _ => err.into(),
-        });
-    }
-    let stats = processor.progress.finish();
-    drop(processor);
-
-    let names = Arc::try_unwrap(names).unwrap().into_inner();
+    let stats = process_input(
+        &Input::File(file.clone()),
+        processor,
+        Progress::new("Collecting record k-mers", quiet, None)?,
+        1,
+    )?;
+    let names = Arc::into_inner(names).unwrap().into_inner();
     if !quiet {
         eprintln!(
             "  {} records from {} ({})",
@@ -977,7 +959,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         source,
         TargetSource::Index(_)
     ) {
-        let mut options = config.layout.option_label().to_string();
+        let mut options = String::new();
         if config.complexity > 0.0 {
             options.push_str(&format!(", complexity={}", config.complexity));
         }
@@ -990,7 +972,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             if matches!(source, TargetSource::Directory(_)) {
                 "directory"
             } else {
-                "fastx"
+                "file"
             },
             config.kmer_length,
             config.smer_length,
@@ -1017,13 +999,8 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             .limit_bp
             .map_or(String::new(), |v| format!(", limit_bp={}", v));
         eprintln!(
-            "Skope v{}; mode: classify (from index); options: threads={}, abs_threshold={}, rel_threshold={}{}{}",
-            version,
-            config.threads,
-            config.abs_threshold,
-            config.rel_threshold,
-            config.layout.option_label(),
-            limit_str
+            "Skope v{}; mode: classify (from index); options: threads={}, abs_threshold={}, rel_threshold={}{}",
+            version, config.threads, config.abs_threshold, config.rel_threshold, limit_str
         );
 
         let load_start = Instant::now();
@@ -1087,10 +1064,9 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
             )?;
         }
 
-        for (sample_paths, sample_name) in config.sample_paths.iter().zip(&config.sample_names) {
-            process_sample_files(
-                sample_paths,
-                config.layout,
+        for (sample, sample_name) in config.sample_inputs.iter().zip(&config.sample_names) {
+            process_sample(
+                sample,
                 sample_name,
                 &classifier,
                 config.threads,
@@ -1107,11 +1083,11 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 
         writer.lock().flush()?;
     } else {
-        let is_multisample = config.sample_paths.len() > 1;
+        let is_multisample = config.sample_inputs.len() > 1;
         let completed = if is_multisample && !config.quiet {
             eprint!(
                 "\x1B[2K\rSamples: processed 0 of {}…",
-                config.sample_paths.len()
+                config.sample_inputs.len()
             );
             Some(Arc::new(Mutex::new(0usize)))
         } else {
@@ -1122,14 +1098,13 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
         };
 
         let sample_results: Vec<(String, SampleClassificationResult)> = config
-            .sample_paths
+            .sample_inputs
             .par_iter()
             .zip(&config.sample_names)
-            .map(|(sample_paths, sample_name)| {
+            .map(|(sample, sample_name)| {
                 let counts = Arc::new(Mutex::new(ClassifyCounts::new(num_groups)));
-                let result = process_sample_files(
-                    sample_paths,
-                    config.layout,
+                let result = process_sample(
+                    sample,
                     sample_name,
                     &classifier,
                     config.threads,
@@ -1152,7 +1127,7 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
                     eprint!(
                         "\rSamples: processed {} of {}…",
                         *count,
-                        config.sample_paths.len()
+                        config.sample_inputs.len()
                     );
                 }
 
@@ -1257,9 +1232,8 @@ pub fn run_classification(config: &ClassifyConfig) -> Result<()> {
 
 /// Stream each file of one sample through a `ClassifyProcessor`, honouring `limit_bp` across files
 #[allow(clippy::too_many_arguments)]
-fn process_sample_files(
-    sample_paths: &[PathBuf],
-    layout: Layout,
+fn process_sample(
+    sample: &[Input],
     sample_name: &str,
     classifier: &Classifier,
     threads: usize,
@@ -1268,7 +1242,7 @@ fn process_sample_files(
     mut make_output: impl FnMut() -> ClassifyOutput,
 ) -> Result<ProcessingStats> {
     let mut totals = ProcessingStats::default();
-    for input in sample_inputs(sample_paths, layout)? {
+    for input in sample {
         if limit_bp.is_some_and(|limit| totals.total_bp >= limit) {
             break;
         }
@@ -1279,7 +1253,7 @@ fn process_sample_files(
         };
         let file_limit = limit_bp.map(|limit| limit.saturating_sub(totals.total_bp));
         let progress = Progress::new("Classifying", quiet, file_limit)?;
-        let stats = process_input(input, layout, processor, progress, threads)?;
+        let stats = process_input(input, processor, progress, threads)?;
         totals.total_seqs += stats.total_seqs;
         totals.total_bp += stats.total_bp;
         if !quiet {
@@ -1370,7 +1344,7 @@ mod tests {
     #[test]
     fn test_fast_matches_exact() {
         let (a, b) = (pseudo_dna(400, 1), pseudo_dna(400, 2));
-        let reads = [
+        let seqs = [
             a.clone(),
             b.clone(),
             pseudo_dna(400, 3),
@@ -1390,8 +1364,8 @@ mod tests {
                         Classifier::new(Arc::clone(&index), groups.len(), K, S, thresholds, exact)
                     };
                     let (mut fast, mut exact) = (classifier(false), classifier(true));
-                    for r1 in &reads {
-                        for r2 in &reads {
+                    for r1 in &seqs {
+                        for r2 in &seqs {
                             for seqs in [&[&r1[..]][..], &[&r1[..], &r2[..]]] {
                                 let verdicts = (fast.classify(seqs), exact.classify(seqs));
                                 match verdicts {

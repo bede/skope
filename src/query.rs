@@ -1,14 +1,11 @@
 use crate::kmers::{FracMinHash, Kdust, KmerVec, Kmers, decode_u64, decode_u128};
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::{
-    FixedRapidHasher, Layout, Progress, RapidHashSet, SeqProcessor, StdinTargets, TargetSource,
+    FixedRapidHasher, Input, Progress, RapidHashSet, SeqProcessor, StdinTargets, TargetSource,
     check_index_complexity, complexity_info_line, format_bp, format_bp_per_sec, index_writer,
-    output_writer, process_input, reader_for_path, resolve_targets, sample_inputs,
-    validate_index_output,
+    output_writer, process_input, resolve_targets, validate_index_output,
 };
 use anyhow::{Context, Result};
-use paraseq::Record;
-use paraseq::parallel::{ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -200,9 +197,8 @@ struct SampleResults {
 pub struct ContainmentConfig {
     pub targets_path: PathBuf,
     pub background_paths: Vec<PathBuf>, // Off-target sequences to mask (empty = none)
-    pub sample_paths: Vec<Vec<PathBuf>>, // Each sample is a Vec of file paths
+    pub sample_inputs: Vec<Vec<Input>>,
     pub sample_names: Vec<String>,
-    pub layout: Layout,
     pub kmer_length: u8,
     pub smer_length: u8,
     pub threads: usize,
@@ -246,41 +242,14 @@ struct TargetsProcessor {
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
     collect_positions: bool,
-    progress: Progress,
 }
 
-impl TargetsProcessor {
-    fn new(
-        kmer_length: u8,
-        smer_length: u8,
-        fmh: FracMinHash,
-        kdust: Kdust,
-        targets: Arc<Mutex<Vec<TargetInfo>>>,
-        progress: Progress,
-        collect_positions: bool,
-    ) -> Self {
-        Self {
-            kmers: Kmers::new(kmer_length, smer_length),
-            fmh,
-            kdust,
-            positions: Vec::new(),
-            targets,
-            collect_positions,
-            progress,
-        }
-    }
-}
-
-impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
-    fn process_record(&mut self, record: Rf) -> paraseq::Result<()> {
-        let sequence = record.seq();
-        let target_name = String::from_utf8_lossy(record.id()).to_string();
-        self.progress.add(1, sequence.len() as u64)?;
-
+impl SeqProcessor for TargetsProcessor {
+    fn process(&mut self, id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()> {
         let mut positions = self.collect_positions.then_some(&mut self.positions);
         let values = match positions.as_deref_mut() {
-            Some(positions) => self.kmers.fill_with_positions(&sequence, positions),
-            None => self.kmers.fill(&sequence),
+            Some(positions) => self.kmers.pool_with_positions(seqs, positions),
+            None => self.kmers.pool(seqs),
         };
         self.fmh.retain(values, positions.as_deref_mut());
         self.kdust.retain(values, positions);
@@ -323,8 +292,8 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         };
 
         self.targets.lock().push(TargetInfo {
-            name: target_name,
-            length: sequence.len(),
+            name: String::from_utf8_lossy(id).to_string(),
+            length: seqs.iter().map(|seq| seq.len()).sum(),
             kmers,
             kmer_positions,
             positioned_kmers,
@@ -333,12 +302,12 @@ impl<Rf: Record> ParallelProcessor<Rf> for TargetsProcessor {
         Ok(())
     }
 
-    fn on_batch_complete(&mut self) -> paraseq::Result<()> {
-        self.progress.flush();
+    fn flush(&mut self) -> paraseq::Result<()> {
         Ok(())
     }
 }
 
+/// Targets of one file, one per record or mate pair
 fn process_targets_file(
     targets_path: &Path,
     kmer_length: u8,
@@ -348,27 +317,23 @@ fn process_targets_file(
     quiet: bool,
     collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
-    let reader = reader_for_path(targets_path)?;
-    let targets: Arc<Mutex<Vec<TargetInfo>>> = Arc::new(Mutex::new(Vec::new()));
-    let mut processor = TargetsProcessor::new(
-        kmer_length,
-        smer_length,
+    let targets = Arc::default();
+    let processor = TargetsProcessor {
+        kmers: Kmers::new(kmer_length, smer_length),
         fmh,
         kdust,
-        Arc::clone(&targets),
-        Progress::new("Collecting target k-mers", quiet, None)?,
+        positions: Vec::new(),
+        targets: Arc::clone(&targets),
         collect_positions,
-    );
-
+    };
     // Single thread to preserve order
-    reader.process_parallel(&mut processor, 1)?;
-    processor.progress.finish();
-
-    // Drop processor so its Arc clones are released
-    drop(processor);
-    let targets = Arc::try_unwrap(targets).unwrap().into_inner();
-
-    Ok(targets)
+    process_input(
+        &Input::File(targets_path.to_path_buf()),
+        processor,
+        Progress::new("Collecting target k-mers", quiet, None)?,
+        1,
+    )?;
+    Ok(Arc::into_inner(targets).unwrap().into_inner())
 }
 
 /// Merge multiple TargetInfos into one with the given name
@@ -400,7 +365,7 @@ fn merge_targets(targets: Vec<TargetInfo>, name: String) -> Result<TargetInfo> {
 
 /// Process resolved targets into `TargetInfo`s
 ///
-/// A directory always yields one target per child, named after that child. A single fastx
+/// A directory always yields one target per child, named after that child. A single sequence
 /// file yields one target named after the file, unless `--individual` is set or it holds a
 /// single record, in which case records keep their own names.
 fn process_target_groups(
@@ -471,14 +436,14 @@ fn warn_empty_targets(targets: &[TargetInfo]) {
 
 /// Processor for counting k-mer depths from sequences
 #[derive(Clone)]
-struct SeqsProcessor {
+struct CountProcessor {
     kmers: Kmers,
     targets_kmers: Arc<KmerSet>,
     local_counts: AbundanceMap,
     global_counts: Arc<Mutex<AbundanceMap>>,
 }
 
-impl SeqsProcessor {
+impl CountProcessor {
     fn new(
         kmer_length: u8,
         smer_length: u8,
@@ -494,7 +459,7 @@ impl SeqsProcessor {
     }
 }
 
-impl SeqProcessor for SeqsProcessor {
+impl SeqProcessor for CountProcessor {
     fn process(&mut self, _id: &[u8], seqs: &[&[u8]]) -> paraseq::Result<()> {
         let distinct = seqs.len() > 1;
         match (
@@ -790,8 +755,7 @@ fn calculate_patchiness(
 
 #[allow(clippy::too_many_arguments)]
 fn process_seqs_input(
-    input: &[PathBuf],
-    layout: Layout,
+    input: &Input,
     targets_kmers: Arc<KmerSet>,
     kmer_length: u8,
     smer_length: u8,
@@ -804,14 +768,14 @@ fn process_seqs_input(
     let start_time = Instant::now();
     let total_target_kmers = targets_kmers.len();
     let global_counts = Arc::new(Mutex::new(AbundanceMap::new(kmer_length)));
-    let processor = SeqsProcessor::new(
+    let processor = CountProcessor::new(
         kmer_length,
         smer_length,
         targets_kmers,
         Arc::clone(&global_counts),
     );
     let progress = Progress::new(label, quiet, limit_bp)?;
-    let stats = process_input(input, layout, processor, progress, threads)?;
+    let stats = process_input(input, processor, progress, threads)?;
     let abundance_map = Arc::into_inner(global_counts).unwrap().into_inner();
 
     if !quiet {
@@ -942,8 +906,8 @@ fn calculate_containment_statistics(
 }
 
 /// Process a single sample's sequences and calculate statistics
-fn process_single_sample(
-    sample_paths: &[PathBuf], // Multiple files per sample
+fn process_sample(
+    sample: &[Input],
     sample_name: &str,
     targets: &[TargetInfo],
     targets_kmers: Arc<KmerSet>,
@@ -951,17 +915,16 @@ fn process_single_sample(
     config: &ContainmentConfig,
 ) -> Result<SampleResults> {
     // Silence per-sample progress for >1 sample
-    let quiet_sample = config.quiet || config.sample_paths.len() > 1;
+    let quiet_sample = config.quiet || config.sample_inputs.len() > 1;
 
     let mut combined_abundance_map = AbundanceMap::new(config.kmer_length);
     let mut total_seqs = 0u64;
     let mut total_bp = 0u64;
 
     // Process each file and accumulate results
-    for input in sample_inputs(sample_paths, config.layout)? {
+    for input in sample {
         let (file_abundance_map, file_seqs, file_bp) = process_seqs_input(
             input,
-            config.layout,
             Arc::clone(&targets_kmers),
             config.kmer_length,
             config.smer_length,
@@ -1080,8 +1043,7 @@ fn mask_background(
     let mut rm_u128: RapidHashSet<u128> = RapidHashSet::default();
     for path in background_paths {
         let (map, _, _) = process_seqs_input(
-            std::slice::from_ref(path),
-            Layout::Single,
+            &Input::File(path.clone()),
             Arc::clone(&union),
             kmer_length,
             smer_length,
@@ -1516,10 +1478,9 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
         config.kmer_length, config.smer_length, config.threads
     );
 
-    if config.sample_paths.len() > 1 {
-        options.push_str(&format!(", samples={}", config.sample_paths.len()));
+    if config.sample_inputs.len() > 1 {
+        options.push_str(&format!(", samples={}", config.sample_inputs.len()));
     }
-    options.push_str(config.layout.option_label());
 
     if !abundance_thresholds.is_empty() {
         options.push_str(&format!(
@@ -1576,7 +1537,7 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
         options
     );
 
-    // Load a prebuilt query index else extract targets from fastx
+    // Load a prebuilt query index else extract targets from sequence files
     let need_positions = config.dump_kmers_path.is_some() || config.confidence;
     let mut targets = if let TargetSource::Index(path) = &source {
         let index = load_query_index(path)?;
@@ -1772,12 +1733,12 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
     // Process each sample in parallel
     use rayon::prelude::*;
 
-    let is_multisample = config.sample_paths.len() > 1;
+    let is_multisample = config.sample_inputs.len() > 1;
     let completed = if is_multisample && !config.quiet {
         // Give us a blank line to overwrite
         eprint!(
             "\x1B[2K\rSamples: processed 0 of {}…",
-            config.sample_paths.len()
+            config.sample_inputs.len()
         );
         Some(Arc::new(Mutex::new(0usize)))
     } else {
@@ -1789,12 +1750,12 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
     };
 
     let sample_results: Vec<SampleResults> = config
-        .sample_paths
+        .sample_inputs
         .par_iter()
         .zip(&config.sample_names)
-        .map(|(sample_paths, sample_name)| {
-            let result = process_single_sample(
-                sample_paths, // Now a &Vec<PathBuf>
+        .map(|(sample, sample_name)| {
+            let result = process_sample(
+                sample,
                 sample_name,
                 &targets,
                 Arc::clone(&targets_kmers),
@@ -1809,7 +1770,7 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
                 eprint!(
                     "\rSamples: processed {} of {}…",
                     *count,
-                    config.sample_paths.len()
+                    config.sample_inputs.len()
                 );
             }
 
