@@ -1,2 +1,6 @@
 [build]
 rustflags = ["-C", "target-cpu=native"]
+
+[target.wasm32-unknown-unknown]
+# Target-specific flags take precedence over build.rustflags
+rustflags = ["-C", "target-feature=+simd128"]

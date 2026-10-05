@@ -4,3 +4,5 @@
 .DS_Store
 benches.sh
 *S.md
+/skope-wasm/pkg/
+/skope-wasm/pkg-node/

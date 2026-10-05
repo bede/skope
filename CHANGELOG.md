@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--all-kmers` disables syncmer selection and instead selects and evaluates all (canonical) *k*-mers. Underneath this simply fixes `s=0`. Use this to hunt for individual k-mers. This (unsurprisingly!) uses more memory.
 - `query`, `classify` and `lenhist` accept paired samples, given as R1,R2 or as interleaved files with `--interleaved`. Mates pool their *k*-mers, and paired and single samples can share a run.
 - Support for BINSEQ CBQ input (`.cbq`/`.cba`) for targets, backgrounds and samples. Paired reads are supported either as separate files with comma-delimited paths or as single files in conjunction with `--interleaved`.
+- `skope-wasm`: WebAssembly bindings for `query`, with a browser demo. See [Browser](README.md#browser).
 - `QuerySession` runs `index build-query` and `query` over `std::io::Read` streams on one thread, for embedding.
 
 ### Changed

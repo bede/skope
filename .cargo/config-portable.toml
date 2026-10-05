@@ -5,3 +5,7 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 [target.'cfg(all(target_arch="aarch64", target_os="macos"))']
 # Portable Apple-silicon baseline; negligible practical difference M1->M4
 rustflags = ["-C", "target-cpu=apple-m1"]
+
+[target.wasm32-unknown-unknown]
+# Target-specific flags take precedence over build.rustflags
+rustflags = ["-C", "target-feature=+simd128"]

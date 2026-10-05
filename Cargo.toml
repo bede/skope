@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "skope-wasm"]
+
 [package]
 name = "skope"
 version = "0.5.0"

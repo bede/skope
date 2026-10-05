@@ -158,3 +158,22 @@ Memory use grows with thread count and CBQ block size, and blocks of 1 MiB or le
 ## Dumping target k-mers
 
 Passing `--dump-kmers <path>` to `skope query` writes the selected _canonical_ target k-mers to a TSV file with columns `target`, `position`, and `kmer`. The dump reflects whatever selection is in effect, so `--discriminatory` is respected. N.B. One row is emitted per k-mer occurrence, so the row count can exceed `target_kmers` (which counts distinct k-mers) when a *k*-mer recurs within a target.
+
+## Browser
+
+`skope-wasm` runs `skope query` in the browser as WebAssembly, on one thread with SIMD128. Files are read locally and never uploaded, and results match the CLI's.
+
+```bash
+./skope-wasm/build.sh  # needs wasm-pack
+./skope-wasm/serve.sh  # then open http://localhost:8000
+```
+
+The demo takes targets as one fastx file, several files (as for a directory, one target per file), or a query index (`.sk`). Samples can be single, paired (R1 and R2 files) or interleaved. Background masking and most query options are available, and the demo can save its targets as a query index for the CLI or later use.
+
+Browser mode reads plain and gzipped FASTA/FASTQ only, not CBQ, zstd, xz or bzip2. It runs about 3× slower than the CLI on one thread, and has at most 4 GiB of memory.
+
+In JavaScript, `Query` takes inputs as synchronous `read(offset, length)` callbacks that return a `Uint8Array`, such as `FileReaderSync` reads in a worker (see `skope-wasm/worker.js`). In Rust, `skope::QuerySession` runs the same pipeline over any `std::io::Read`. To check the compiled wasm against the CLI:
+
+```bash
+cargo build --release && ./skope-wasm/build.sh nodejs && node skope-wasm/parity.mjs
+```

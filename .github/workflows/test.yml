@@ -29,3 +29,29 @@ jobs:
         run: cargo check --no-default-features --features cli
       - name: Check gzip-only feature
         run: cargo check --no-default-features --features cli,gz
+  wasm:
+    name: WebAssembly
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: Install Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Use portable config
+        run: mv .cargo/config-portable.toml .cargo/config.toml
+      - name: Build CLI and wasm
+        run: cargo build --release && ./skope-wasm/build.sh nodejs
+      - name: Check wasm matches the CLI
+        run: node skope-wasm/parity.mjs
