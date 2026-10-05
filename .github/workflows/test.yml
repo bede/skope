@@ -26,6 +26,6 @@ jobs:
       - name: Run tests
         run: cargo test
       - name: Check without compression
-        run: cargo check --no-default-features
+        run: cargo check --no-default-features --features cli
       - name: Check gzip-only feature
-        run: cargo check --no-default-features --features gz
+        run: cargo check --no-default-features --features cli,gz

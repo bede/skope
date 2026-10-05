@@ -2,10 +2,10 @@ use crate::classify::{
     Classification, ClassificationIndex, Classifier, Thresholds, apply_discriminatory_filter,
     build_classification_index, load_classification_index,
 };
-use crate::{
-    IndexKind, Input, Progress, SeqProcessor, StdinTargets, TargetSource, check_index_complexity,
-    format_bp, format_bp_per_sec, output_writer, process_input, resolve_targets,
+use crate::io::{
+    Progress, StdinTargets, TargetSource, output_writer, process_input, resolve_targets,
 };
+use crate::{IndexKind, Input, SeqProcessor, check_index_complexity, format_bp, format_bp_per_sec};
 use anyhow::Result;
 use parking_lot::Mutex;
 use std::collections::HashMap;

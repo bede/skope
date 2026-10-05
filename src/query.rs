@@ -1,19 +1,24 @@
-use crate::kmers::{FracMinHash, Kdust, KmerVec, Kmers, decode_u64, decode_u128};
+use crate::kmers::{FracMinHash, Kdust, KmerVec, Kmers};
 use crate::stats::{WILSON_Z_95, normal_survival, wilson_interval};
 use crate::{
-    FixedRapidHasher, Input, Progress, RapidHashSet, SeqProcessor, StdinTargets, TargetSource,
-    check_index_complexity, complexity_info_line, format_bp, format_bp_per_sec, index_writer,
-    output_writer, process_input, resolve_targets, validate_index_output,
+    DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, FixedRapidHasher, INDEX_MAGIC, IndexKind, Input,
+    ProcessingStats, RapidHashSet, SeqProcessor, check_index_complexity, format_bp, process_stream,
+    validate_complexity, validate_fraction, validate_k_s,
 };
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::fs::{self, File};
 use std::hash::Hash;
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::{Read, Write};
 use std::sync::Arc;
-use std::time::Instant;
+
+#[cfg(feature = "cli")]
+mod io;
+#[cfg(feature = "cli")]
+pub use io::{
+    BuildQueryConfig, ContainmentConfig, print_query_index_info, read_query_index_meta,
+    run_build_query, run_query,
+};
 
 /// Alias for abund counts
 type CountDepth = u16;
@@ -28,6 +33,21 @@ pub enum SortOrder {
     Containment, // Descending by containment1 (highest first)
 }
 
+impl std::str::FromStr for SortOrder {
+    type Err = anyhow::Error;
+
+    fn from_str(sort: &str) -> Result<Self> {
+        match sort {
+            "input" => Ok(Self::Original),
+            "target" => Ok(Self::Target),
+            "containment" => Ok(Self::Containment),
+            _ => Err(anyhow::anyhow!(
+                "Invalid sort order {sort}: expected containment, target or input"
+            )),
+        }
+    }
+}
+
 /// Zero-cost (hopefully?) abstraction over u64 and u128 k-mer sets
 #[derive(Debug, Clone)]
 enum KmerSet {
@@ -36,6 +56,15 @@ enum KmerSet {
 }
 
 impl KmerSet {
+    /// Empty set as wide as `kmer_length` needs
+    fn new(kmer_length: u8) -> Self {
+        if kmer_length <= 32 {
+            KmerSet::U64(RapidHashSet::default())
+        } else {
+            KmerSet::U128(RapidHashSet::default())
+        }
+    }
+
     fn len(&self) -> usize {
         match self {
             KmerSet::U64(set) => set.len(),
@@ -194,34 +223,6 @@ struct SampleResults {
     total_stats: TotalStats,
 }
 
-pub struct ContainmentConfig {
-    pub targets_path: PathBuf,
-    pub background_paths: Vec<PathBuf>, // Off-target sequences to mask (empty = none)
-    pub sample_inputs: Vec<Vec<Input>>,
-    pub sample_names: Vec<String>,
-    pub kmer_length: u8,
-    pub smer_length: u8,
-    pub threads: usize,
-    pub output_path: Option<PathBuf>,
-    pub quiet: bool,
-    pub abundance_thresholds: Vec<usize>,
-    pub discriminatory: bool,
-    pub individual: bool,
-    pub limit_bp: Option<u64>,
-    pub sort_order: SortOrder,
-    pub dump_kmers_path: Option<PathBuf>,
-    pub no_total: bool,
-    pub confidence: bool,
-    pub fraction: f64,
-    pub complexity: f32,
-}
-
-impl ContainmentConfig {
-    pub fn execute(&self) -> Result<()> {
-        run_query(self)
-    }
-}
-
 fn normalize_abundance_thresholds(thresholds: &[usize]) -> Vec<usize> {
     let mut thresholds: Vec<usize> = thresholds
         .iter()
@@ -242,6 +243,25 @@ struct TargetsProcessor {
     positions: Vec<usize>,
     targets: Arc<Mutex<Vec<TargetInfo>>>,
     collect_positions: bool,
+}
+
+impl TargetsProcessor {
+    fn new(
+        kmer_length: u8,
+        smer_length: u8,
+        fmh: FracMinHash,
+        kdust: Kdust,
+        collect_positions: bool,
+    ) -> Self {
+        Self {
+            kmers: Kmers::new(kmer_length, smer_length),
+            fmh,
+            kdust,
+            positions: Vec::new(),
+            targets: Arc::default(),
+            collect_positions,
+        }
+    }
 }
 
 impl SeqProcessor for TargetsProcessor {
@@ -307,35 +327,6 @@ impl SeqProcessor for TargetsProcessor {
     }
 }
 
-/// Targets of one file, one per record or mate pair
-fn process_targets_file(
-    targets_path: &Path,
-    kmer_length: u8,
-    smer_length: u8,
-    fmh: FracMinHash,
-    kdust: Kdust,
-    quiet: bool,
-    collect_positions: bool,
-) -> Result<Vec<TargetInfo>> {
-    let targets = Arc::default();
-    let processor = TargetsProcessor {
-        kmers: Kmers::new(kmer_length, smer_length),
-        fmh,
-        kdust,
-        positions: Vec::new(),
-        targets: Arc::clone(&targets),
-        collect_positions,
-    };
-    // Single thread to preserve order
-    process_input(
-        &Input::File(targets_path.to_path_buf()),
-        processor,
-        Progress::new("Collecting target k-mers", quiet, None)?,
-        1,
-    )?;
-    Ok(Arc::into_inner(targets).unwrap().into_inner())
-}
-
 /// Merge multiple TargetInfos into one with the given name
 fn merge_targets(targets: Vec<TargetInfo>, name: String) -> Result<TargetInfo> {
     if targets.is_empty() {
@@ -363,57 +354,30 @@ fn merge_targets(targets: Vec<TargetInfo>, name: String) -> Result<TargetInfo> {
     Ok(merged)
 }
 
-/// Process resolved targets into `TargetInfo`s
-///
-/// A directory always yields one target per child, named after that child. A single sequence
-/// file yields one target named after the file, unless `--individual` is set or it holds a
-/// single record, in which case records keep their own names.
-fn process_target_groups(
-    source: &TargetSource,
+/// Targets of one group. A lone file's records stay apart under `--individual`, or when there is
+/// only one, keeping their names. Otherwise they merge under the group's name
+fn group_targets(
+    targets: Vec<TargetInfo>,
+    name: &str,
+    lone_file: bool,
     individual: bool,
-    kmer_length: u8,
-    smer_length: u8,
-    fmh: FracMinHash,
-    kdust: Kdust,
-    quiet: bool,
-    collect_positions: bool,
 ) -> Result<Vec<TargetInfo>> {
-    let groups = source.groups();
-    let per_record = matches!(source, TargetSource::File(_));
-
-    let mut results: Vec<TargetInfo> = Vec::with_capacity(groups.len());
-    for group in groups {
-        let mut all_targets: Vec<TargetInfo> = Vec::new();
-        for file_path in &group.files {
-            let targets = process_targets_file(
-                file_path,
-                kmer_length,
-                smer_length,
-                fmh,
-                kdust,
-                quiet,
-                collect_positions,
-            )?;
-            all_targets.extend(targets);
-        }
-        if per_record && (individual || all_targets.len() <= 1) {
-            results.extend(all_targets);
-        } else {
-            results.push(merge_targets(all_targets, group.name.clone())?);
-        }
+    if lone_file && (individual || targets.len() <= 1) {
+        Ok(targets)
+    } else {
+        Ok(vec![merge_targets(targets, name.to_string())?])
     }
-
-    Ok(results)
 }
 
-fn warn_empty_targets(targets: &[TargetInfo]) {
+/// Warning naming any targets without k-mers
+fn empty_targets_warning(targets: &[TargetInfo]) -> Option<String> {
     let empty: Vec<&str> = targets
         .iter()
         .filter(|t| t.kmers.is_empty())
         .map(|t| t.name.as_str())
         .collect();
     if empty.is_empty() {
-        return;
+        return None;
     }
 
     const SHOWN: usize = 3;
@@ -427,11 +391,11 @@ fn warn_empty_targets(targets: &[TargetInfo]) {
         0 => String::new(),
         n => format!(" and {n} more"),
     };
-    eprintln!(
+    Some(format!(
         "Warning: {} of {} targets yielded no k-mers: {named}{more}",
         empty.len(),
         targets.len()
-    );
+    ))
 }
 
 /// Processor for counting k-mer depths from sequences
@@ -545,6 +509,14 @@ impl AbundanceMap {
         match self {
             Self::U64(map) => map.len(),
             Self::U128(map) => map.len(),
+        }
+    }
+
+    /// The counted k-mers
+    fn into_kmers(self) -> KmerSet {
+        match self {
+            Self::U64(map) => KmerSet::U64(map.into_keys().collect()),
+            Self::U128(map) => KmerSet::U128(map.into_keys().collect()),
         }
     }
 }
@@ -753,46 +725,6 @@ fn calculate_patchiness(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn process_seqs_input(
-    input: &Input,
-    targets_kmers: Arc<KmerSet>,
-    kmer_length: u8,
-    smer_length: u8,
-    threads: usize,
-    quiet: bool,
-    limit_bp: Option<u64>,
-    label: &'static str,
-    summary_label: &'static str,
-) -> Result<(AbundanceMap, u64, u64)> {
-    let start_time = Instant::now();
-    let total_target_kmers = targets_kmers.len();
-    let global_counts = Arc::new(Mutex::new(AbundanceMap::new(kmer_length)));
-    let processor = CountProcessor::new(
-        kmer_length,
-        smer_length,
-        targets_kmers,
-        Arc::clone(&global_counts),
-    );
-    let progress = Progress::new(label, quiet, limit_bp)?;
-    let stats = process_input(input, processor, progress, threads)?;
-    let abundance_map = Arc::into_inner(global_counts).unwrap().into_inner();
-
-    if !quiet {
-        let bp_per_sec = stats.total_bp as f64 / start_time.elapsed().as_secs_f64();
-        eprintln!(
-            "{summary_label}: {} records ({}), found {} of {} distinct target k-mers ({})",
-            stats.total_seqs,
-            format_bp(stats.total_bp as usize),
-            abundance_map.len(),
-            total_target_kmers,
-            format_bp_per_sec(bp_per_sec)
-        );
-    }
-
-    Ok((abundance_map, stats.total_seqs, stats.total_bp))
-}
-
 fn calculate_containment_statistics(
     targets: &[TargetInfo],
     abundance_map: &AbundanceMap,
@@ -905,106 +837,57 @@ fn calculate_containment_statistics(
         .collect()
 }
 
-/// Process a single sample's sequences and calculate statistics
-fn process_sample(
-    sample: &[Input],
-    sample_name: &str,
-    targets: &[TargetInfo],
-    targets_kmers: Arc<KmerSet>,
-    abundance_thresholds: &[usize],
-    config: &ContainmentConfig,
-) -> Result<SampleResults> {
-    // Silence per-sample progress for >1 sample
-    let quiet_sample = config.quiet || config.sample_inputs.len() > 1;
+impl SampleResults {
+    /// Results of one sample, totalled over its targets
+    fn new(
+        sample_name: String,
+        targets: Vec<ContainmentResult>,
+        abundance_thresholds: &[usize],
+        total_seqs_processed: u64,
+        total_bp_processed: u64,
+    ) -> Self {
+        let target_kmers: usize = targets.iter().map(|r| r.target_kmers).sum();
+        let total_containment1_hits: usize = targets.iter().map(|r| r.containment1_hits).sum();
+        let total_containment1 = if target_kmers > 0 {
+            total_containment1_hits as f64 / target_kmers as f64
+        } else {
+            0.0
+        };
 
-    let mut combined_abundance_map = AbundanceMap::new(config.kmer_length);
-    let mut total_seqs = 0u64;
-    let mut total_bp = 0u64;
+        // Sum integer hits to avoid float truncation
+        let total_hits_at_threshold = abundance_thresholds
+            .iter()
+            .map(|&threshold| {
+                let hits = targets
+                    .iter()
+                    .map(|r| r.hits_at_threshold[&threshold])
+                    .sum();
+                (threshold, hits)
+            })
+            .collect();
 
-    // Process each file and accumulate results
-    for input in sample {
-        let (file_abundance_map, file_seqs, file_bp) = process_seqs_input(
-            input,
-            Arc::clone(&targets_kmers),
-            config.kmer_length,
-            config.smer_length,
-            config.threads,
-            quiet_sample,
-            config.limit_bp.map(|limit| limit.saturating_sub(total_bp)),
-            "Processing sample",
-            "Sample",
-        )?;
-
-        // Merge abundance maps
-        match (&mut combined_abundance_map, file_abundance_map) {
-            (AbundanceMap::U64(combined), AbundanceMap::U64(new)) => {
-                merge_counts(new, combined);
-            }
-            (AbundanceMap::U128(combined), AbundanceMap::U128(new)) => {
-                merge_counts(new, combined);
-            }
-            _ => panic!("Mismatch between AbundanceMap types"),
-        }
-
-        total_seqs += file_seqs;
-        total_bp += file_bp;
-
-        // Check if limit reached
-        if let Some(limit) = config.limit_bp
-            && total_bp >= limit
-        {
-            break;
+        Self {
+            sample_name,
+            targets,
+            total_stats: TotalStats {
+                target_kmers,
+                total_containment1_hits,
+                total_containment1,
+                total_seqs_processed,
+                total_bp_processed,
+                total_hits_at_threshold,
+            },
         }
     }
+}
 
-    let abundance_map = combined_abundance_map;
-
-    // Calculate containment statistics for this sample
-    let mut containment_results = calculate_containment_statistics(
-        targets,
-        &abundance_map,
-        abundance_thresholds,
-        config.kmer_length,
-        config.confidence,
-    );
-    sort_results(&mut containment_results, config.sort_order);
-
-    // Overall stats for this sample
-    let target_kmers: usize = containment_results.iter().map(|r| r.target_kmers).sum();
-    let total_containment1_hits: usize = containment_results
-        .iter()
-        .map(|r| r.containment1_hits)
-        .sum();
-    let total_containment1 = if target_kmers > 0 {
-        total_containment1_hits as f64 / target_kmers as f64
-    } else {
-        0.0
-    };
-
-    // Sum integer hits to avoid float truncation
-    let total_hits_at_threshold = abundance_thresholds
-        .iter()
-        .map(|&threshold| {
-            let hits = containment_results
-                .iter()
-                .map(|r| r.hits_at_threshold[&threshold])
-                .sum();
-            (threshold, hits)
-        })
-        .collect();
-
-    Ok(SampleResults {
-        sample_name: sample_name.to_string(),
-        targets: containment_results,
-        total_stats: TotalStats {
-            target_kmers,
-            total_containment1_hits,
-            total_containment1,
-            total_seqs_processed: total_seqs,
-            total_bp_processed: total_bp,
-            total_hits_at_threshold,
-        },
-    })
+/// Summary of a counted stream, less its rate
+fn counted_summary(label: &str, stats: &ProcessingStats, found: usize, total: usize) -> String {
+    format!(
+        "{label}: {} records ({}), found {found} of {total} distinct target k-mers",
+        stats.total_seqs,
+        format_bp(stats.total_bp as usize)
+    )
 }
 
 /// Combined set of every target's k-mers
@@ -1028,58 +911,121 @@ fn build_union(targets: &[TargetInfo], kmer_length: u8) -> KmerSet {
     }
 }
 
-/// Stream background masking and return the number of k-mers removed
-fn mask_background(
-    targets: &mut [TargetInfo],
-    union: &KmerSet,
-    background_paths: &[PathBuf],
-    kmer_length: u8,
-    smer_length: u8,
-    threads: usize,
-    quiet: bool,
-) -> Result<usize> {
-    let union = Arc::new(union.clone());
-    let mut rm_u64: RapidHashSet<u64> = RapidHashSet::default();
-    let mut rm_u128: RapidHashSet<u128> = RapidHashSet::default();
-    for path in background_paths {
-        let (map, _, _) = process_seqs_input(
-            &Input::File(path.clone()),
-            Arc::clone(&union),
-            kmer_length,
-            smer_length,
-            threads,
-            quiet,
-            None,
-            "Masking background",
-            "Background",
-        )?;
-        match map {
-            AbundanceMap::U64(m) => rm_u64.extend(m.into_keys()),
-            AbundanceMap::U128(m) => rm_u128.extend(m.into_keys()),
-        }
-    }
-
-    let to_remove = if kmer_length <= 32 {
-        KmerSet::U64(rm_u64)
-    } else {
-        KmerSet::U128(rm_u128)
-    };
-    let removed = to_remove.len();
-
-    // Apply removal to each target; re-sync positions like the discriminatory filter
-    for target in targets.iter_mut() {
-        target.kmers.retain_not_in(&to_remove);
+/// Drop background k-mers from every target, re-syncing positions like the discriminatory filter
+fn mask_targets(targets: &mut [TargetInfo], background: &KmerSet) {
+    for target in targets {
+        target.kmers.retain_not_in(background);
         target.positioned_kmers.retain_in_set(&target.kmers);
         target.kmer_positions = target.positioned_kmers.positions();
     }
-    Ok(removed)
+}
+
+/// Count k-mers shared by multiple targets, keeping only unshared k-mers when `discriminatory`.
+/// Returns the shared and distinct k-mer counts
+fn share_kmers(
+    targets: &mut [TargetInfo],
+    kmer_length: u8,
+    discriminatory: bool,
+) -> (usize, usize) {
+    if targets.len() <= 1 {
+        return (0, targets.first().map(|t| t.kmers.len()).unwrap_or(0));
+    }
+    let mut kmer_target_counts: HashMap<u64, usize> = HashMap::new();
+    let mut kmer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
+
+    for target in targets.iter() {
+        match &target.kmers {
+            KmerSet::U64(set) => {
+                for &kmer in set {
+                    *kmer_target_counts.entry(kmer).or_insert(0) += 1;
+                }
+            }
+            KmerSet::U128(set) => {
+                for &kmer in set {
+                    *kmer_target_counts_u128.entry(kmer).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let shared = if kmer_length <= 32 {
+        kmer_target_counts
+            .values()
+            .filter(|&&count| count > 1)
+            .count()
+    } else {
+        kmer_target_counts_u128
+            .values()
+            .filter(|&&count| count > 1)
+            .count()
+    };
+
+    let unique = if kmer_length <= 32 {
+        kmer_target_counts.len()
+    } else {
+        kmer_target_counts_u128.len()
+    };
+
+    // Apply discriminatory filtering if enabled
+    if discriminatory {
+        for target in targets.iter_mut() {
+            match &mut target.kmers {
+                KmerSet::U64(set) => {
+                    set.retain(|kmer| kmer_target_counts.get(kmer).is_none_or(|&count| count == 1));
+                }
+                KmerSet::U128(set) => {
+                    set.retain(|kmer| {
+                        kmer_target_counts_u128
+                            .get(kmer)
+                            .is_none_or(|&count| count == 1)
+                    });
+                }
+            }
+            target.positioned_kmers.retain_in_set(&target.kmers);
+            target.kmer_positions = target.positioned_kmers.positions();
+        }
+    }
+
+    (shared, unique)
+}
+
+/// The targets summary line
+fn targets_summary(
+    targets: &[TargetInfo],
+    discriminatory: bool,
+    shared_kmers: usize,
+    unique_across_all: usize,
+) -> String {
+    let total_unique_kmers: usize = targets.iter().map(|t| t.kmers.len()).sum();
+    let total_bp: usize = targets.iter().map(|t| t.length).sum();
+    if discriminatory {
+        format!(
+            "Targets: {} records ({}), {} discriminatory k-mers ({} shared k-mers dropped)",
+            targets.len(),
+            format_bp(total_bp),
+            total_unique_kmers,
+            shared_kmers
+        )
+    } else {
+        let shared_pct = if unique_across_all > 0 {
+            shared_kmers as f64 / unique_across_all as f64 * 100.0
+        } else {
+            0.0
+        };
+        format!(
+            "Targets: {} records ({}), {} k-mers, of which {} ({:.1}%) shared by multiple targets",
+            targets.len(),
+            format_bp(total_bp),
+            total_unique_kmers,
+            shared_kmers,
+            shared_pct
+        )
+    }
 }
 
 // ── Query index (.sk, kind = query) ─────────────────────────────────────────
 // Header + wincode metadata, then per target `count` raw entries of `ceil(k/4)` value
 // bytes, each with a trailing u32 position when positions are stored.
-use crate::{INDEX_MAGIC, IndexKind};
-
 const QUERY_INDEX_VERSION: u8 = 1;
 const QUERY_INDEX_FLAG_POSITIONS: u8 = 0b001;
 const QUERY_INDEX_FLAG_BACKGROUND: u8 = 0b010;
@@ -1088,87 +1034,35 @@ const QUERY_INDEX_FLAG_BACKGROUND: u8 = 0b010;
 type QueryIndexHeader = ([u8; 4], u8, u8, u8, u8, u8, u32, f64, f32);
 type QueryIndexMeta = Vec<(String, u64, u64)>; // (name, length, entry_count)
 
-/// Config for `skope index build-query`
-pub struct BuildQueryConfig {
-    pub targets_path: PathBuf,
-    pub background_paths: Vec<PathBuf>,
-    pub kmer_length: u8,
-    pub smer_length: u8,
-    pub individual: bool,
-    pub positions: bool,
-    pub threads: usize,
-    pub output_path: Option<PathBuf>,
-    pub quiet: bool,
-    /// Fraction for stable FracMinHash selection in `(0, 1]`
-    pub fraction: f64,
-    /// Minimum kdust in `[0, 1]`, 0 retains all
-    pub complexity: f32,
-}
-
 struct QueryIndex {
+    kmer_length: u8,
+    smer_length: u8,
+    flags: u8,
+    fraction: f64,
+    complexity: f32,
     targets: Vec<TargetInfo>,
-    has_positions: bool,
 }
 
-/// Read a query index header without loading entries
-pub fn read_query_index_meta(path: &Path) -> Result<(u8, u8, f64, f32)> {
-    let mut buf = [0u8; 64];
-    let n = File::open(path)?.read(&mut buf)?;
-    let mut cursor = wincode::io::Cursor::new(&buf[..n]);
-    let (magic, kind, version, k, s, _flags, _n, fraction, complexity): QueryIndexHeader =
-        wincode::deserialize_from(&mut cursor).context("Failed to read query index header")?;
-    validate_query_index_header(&magic, kind, version)?;
-    Ok((k, s, fraction, complexity))
-}
-
-/// Print human-readable metadata for a query index (`skope index info`)
-pub fn print_query_index_info(path: &Path) -> Result<()> {
-    let mut reader = BufReader::new(File::open(path)?);
-    let (magic, kind, version, kmer_length, smer_length, flags, n_targets, fraction, complexity): QueryIndexHeader =
-        wincode::deserialize_from(&mut reader).context("Failed to read query index header")?;
-    validate_query_index_header(&magic, kind, version)?;
-    let meta: QueryIndexMeta =
-        wincode::deserialize_from(&mut reader).context("Failed to decode query index metadata")?;
-    if meta.len() != n_targets as usize {
-        return Err(anyhow::anyhow!("Query index target count mismatch"));
+impl QueryIndex {
+    /// Reject an index without positions when they are needed
+    fn require_positions(&self, needed: bool) -> Result<()> {
+        if needed && self.flags & QUERY_INDEX_FLAG_POSITIONS == 0 {
+            return Err(anyhow::anyhow!(
+                "Query index built without --positions; cannot use --confidence or --dump-kmers"
+            ));
+        }
+        Ok(())
     }
+}
 
-    let total_kmers: u64 = meta.iter().map(|(_, _, count)| count).sum();
-    let total_bp: u64 = meta.iter().map(|(_, length, _)| length).sum();
-
-    println!("Index information:");
-    println!("  Format: query");
-    println!("  Format version: {version}");
-    println!("  K-mer length (k): {kmer_length}");
-    println!("  S-mer length (s): {smer_length}");
-    println!("  Targets: {n_targets}");
-    println!("  Total k-mers: {total_kmers}");
-    println!("  Total length: {}", format_bp(total_bp as usize));
-    println!(
-        "  FracMinHash fraction: {}",
-        if fraction >= 1.0 {
-            "1 (retain all)".to_string()
-        } else {
-            format!("{fraction} (keeps ~{:.0}% of k-mers)", fraction * 100.0)
-        }
-    );
-    println!("{}", complexity_info_line(complexity));
-    println!(
-        "  K-mer positions: {}",
-        if flags & QUERY_INDEX_FLAG_POSITIONS != 0 {
-            "stored"
-        } else {
-            "not stored"
-        }
-    );
-    println!(
-        "  Background masking: {}",
-        if flags & QUERY_INDEX_FLAG_BACKGROUND != 0 {
-            "applied"
-        } else {
-            "none"
-        }
-    );
+/// Reject a fraction that disagrees with a prebuilt index's.
+/// Exact comparison: a CLI-parsed float round-trips through the header bit-identically
+fn check_index_fraction(fraction: f64, index_fraction: f64) -> Result<()> {
+    if fraction < 1.0 && fraction != index_fraction {
+        return Err(anyhow::anyhow!(
+            "--fraction {fraction} conflicts with the query index's fraction {index_fraction}; omit --fraction to use the index's"
+        ));
+    }
     Ok(())
 }
 
@@ -1184,14 +1078,15 @@ fn validate_query_index_header(magic: &[u8; 4], kind: u8, version: u8) -> Result
     Ok(())
 }
 
-fn save_query_index(
+/// Serialise targets as a query index
+fn write_query_index(
+    writer: &mut dyn Write,
     targets: &[TargetInfo],
     kmer_length: u8,
     smer_length: u8,
     fraction: f64,
     complexity: f32,
     flags: u8,
-    output_path: Option<&Path>,
 ) -> Result<()> {
     let has_positions = flags & QUERY_INDEX_FLAG_POSITIONS != 0;
     let kmer_bytes = (kmer_length as usize).div_ceil(4);
@@ -1202,8 +1097,6 @@ fn save_query_index(
             u32::MAX
         ));
     }
-
-    let mut writer = index_writer(output_path)?;
 
     let meta: QueryIndexMeta = targets
         .iter()
@@ -1269,12 +1162,11 @@ fn save_query_index(
     Ok(())
 }
 
-fn load_query_index(path: &Path) -> Result<QueryIndex> {
-    let bytes = fs::read(path)
-        .with_context(|| format!("Failed to open query index: {}", path.display()))?;
-    let mut cursor = wincode::io::Cursor::new(bytes.as_slice());
+/// Deserialise a query index
+fn read_query_index(bytes: &[u8]) -> Result<QueryIndex> {
+    let mut cursor = wincode::io::Cursor::new(bytes);
 
-    let (magic, kind, version, kmer_length, _smer_length, flags, n_targets, _fraction, _complexity): QueryIndexHeader =
+    let (magic, kind, version, kmer_length, smer_length, flags, n_targets, fraction, complexity): QueryIndexHeader =
         wincode::deserialize_from(&mut cursor).context("Failed to decode query index header")?;
     validate_query_index_header(&magic, kind, version)?;
 
@@ -1377,421 +1269,13 @@ fn load_query_index(path: &Path) -> Result<QueryIndex> {
     }
 
     Ok(QueryIndex {
-        targets,
-        has_positions,
-    })
-}
-
-/// Build and serialize a query index (with optional background masking)
-pub fn run_build_query(config: &BuildQueryConfig) -> Result<()> {
-    validate_index_output(config.output_path.as_deref())?;
-    let start = Instant::now();
-    let version = env!("CARGO_PKG_VERSION");
-    let mut options = String::new();
-    if config.fraction < 1.0 {
-        options.push_str(&format!(", fraction={}", config.fraction));
-    }
-    if config.complexity > 0.0 {
-        options.push_str(&format!(", complexity={}", config.complexity));
-    }
-    eprintln!(
-        "Skope v{version}; mode: index build-query; options: k={}, s={}, threads={}{}",
-        config.kmer_length, config.smer_length, config.threads, options
-    );
-
-    let fmh = FracMinHash::from_fraction(config.fraction);
-    let kdust = Kdust::from_threshold(config.complexity, config.kmer_length);
-    let collect_positions = config.positions;
-    let source = resolve_targets(&config.targets_path, IndexKind::Query, StdinTargets::Accept)?;
-    if let TargetSource::Index(path) = &source {
-        return Err(anyhow::anyhow!(
-            "{} is already a skope query index",
-            path.display()
-        ));
-    }
-    let mut targets = process_target_groups(
-        &source,
-        config.individual,
-        config.kmer_length,
-        config.smer_length,
-        fmh,
-        kdust,
-        config.quiet,
-        collect_positions,
-    )?;
-
-    let mut flags = 0u8;
-    if config.positions {
-        flags |= QUERY_INDEX_FLAG_POSITIONS;
-    }
-
-    if !config.background_paths.is_empty() {
-        let union = build_union(&targets, config.kmer_length);
-        let removed = mask_background(
-            &mut targets,
-            &union,
-            &config.background_paths,
-            config.kmer_length,
-            config.smer_length,
-            config.threads,
-            config.quiet,
-        )?;
-        flags |= QUERY_INDEX_FLAG_BACKGROUND;
-        // Per-file "found N of M" lines already report single-file totals;
-        // only the multi-file aggregate adds information.
-        if !config.quiet && config.background_paths.len() > 1 {
-            eprintln!(
-                "Masked {removed} background k-mers across {} files",
-                config.background_paths.len()
-            );
-        }
-    }
-
-    save_query_index(
-        &targets,
-        config.kmer_length,
-        config.smer_length,
-        config.fraction,
-        config.complexity,
+        kmer_length,
+        smer_length,
         flags,
-        config.output_path.as_deref(),
-    )?;
-
-    if !config.quiet {
-        let total: usize = targets.iter().map(|t| t.kmers.len()).sum();
-        eprintln!(
-            "Wrote query index ({} targets, {total} k-mers, positions={}) in {:.1}s",
-            targets.len(),
-            config.positions,
-            start.elapsed().as_secs_f64()
-        );
-    }
-    Ok(())
-}
-
-pub fn run_query(config: &ContainmentConfig) -> Result<()> {
-    let version = env!("CARGO_PKG_VERSION").to_string();
-    let abundance_thresholds = normalize_abundance_thresholds(&config.abundance_thresholds);
-
-    let mut options = format!(
-        "k={}, s={}, threads={}",
-        config.kmer_length, config.smer_length, config.threads
-    );
-
-    if config.sample_inputs.len() > 1 {
-        options.push_str(&format!(", samples={}", config.sample_inputs.len()));
-    }
-
-    if !abundance_thresholds.is_empty() {
-        options.push_str(&format!(
-            ", abundance-thresholds={}",
-            abundance_thresholds
-                .iter()
-                .map(|t| t.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        ));
-    }
-
-    if config.discriminatory {
-        options.push_str(", discriminatory");
-    }
-
-    if let Some(limit) = config.limit_bp {
-        options.push_str(&format!(", limit={}", format_bp(limit as usize)));
-    }
-
-    let source = resolve_targets(&config.targets_path, IndexKind::Query, StdinTargets::Reject)?;
-    let from_index = matches!(source, TargetSource::Index(_));
-    // Stored fraction and complexity trump
-    // A CLI-parsed float round-trips through the header bit-identically, so compare exactly
-    let (effective_fraction, effective_complexity) = if from_index {
-        let (_k, _s, index_fraction, index_complexity) =
-            read_query_index_meta(&config.targets_path)?;
-        if config.fraction < 1.0 && config.fraction != index_fraction {
-            return Err(anyhow::anyhow!(
-                "--fraction {} conflicts with the query index's fraction {}; omit --fraction to use the index's",
-                config.fraction,
-                index_fraction
-            ));
-        }
-        check_index_complexity(config.complexity, index_complexity)?;
-        (index_fraction, index_complexity)
-    } else {
-        (config.fraction, config.complexity)
-    };
-    if effective_fraction < 1.0 {
-        options.push_str(&format!(", fraction={effective_fraction}"));
-    }
-    if effective_complexity > 0.0 {
-        options.push_str(&format!(", complexity={effective_complexity}"));
-    }
-    eprintln!(
-        "Skope v{}; mode: query{}; options: {}",
-        version,
-        match source {
-            TargetSource::Index(_) => " (from index)",
-            TargetSource::Directory(_) => " (from directory)",
-            TargetSource::File(_) => "",
-        },
-        options
-    );
-
-    // Load a prebuilt query index else extract targets from sequence files
-    let need_positions = config.dump_kmers_path.is_some() || config.confidence;
-    let mut targets = if let TargetSource::Index(path) = &source {
-        let index = load_query_index(path)?;
-        if need_positions && !index.has_positions {
-            return Err(anyhow::anyhow!(
-                "Query index built without --positions; cannot use --confidence or --dump-kmers"
-            ));
-        }
-        index.targets
-    } else {
-        process_target_groups(
-            &source,
-            config.individual,
-            config.kmer_length,
-            config.smer_length,
-            FracMinHash::from_fraction(effective_fraction),
-            Kdust::from_threshold(effective_complexity, config.kmer_length),
-            config.quiet,
-            need_positions,
-        )?
-    };
-
-    // Runtime masking
-    if !config.background_paths.is_empty() {
-        let union = build_union(&targets, config.kmer_length);
-        let removed = mask_background(
-            &mut targets,
-            &union,
-            &config.background_paths,
-            config.kmer_length,
-            config.smer_length,
-            config.threads,
-            config.quiet,
-        )?;
-        // Per-file "found N of M" lines already report single-file totals;
-        // only the multi-file aggregate adds information.
-        if !config.quiet && config.background_paths.len() > 1 {
-            eprintln!(
-                "Masked {removed} background k-mers across {} files",
-                config.background_paths.len()
-            );
-        }
-    }
-
-    // Count k-mers shared between targets (only meaningful with >1 target)
-    let (shared_kmers, unique_across_all) = if targets.len() > 1 {
-        if !config.quiet {
-            eprint!("Counting shared k-mers…\r");
-        }
-        let mut kmer_target_counts: HashMap<u64, usize> = HashMap::new();
-        let mut kmer_target_counts_u128: HashMap<u128, usize> = HashMap::new();
-
-        for target in &targets {
-            match &target.kmers {
-                KmerSet::U64(set) => {
-                    for &kmer in set {
-                        *kmer_target_counts.entry(kmer).or_insert(0) += 1;
-                    }
-                }
-                KmerSet::U128(set) => {
-                    for &kmer in set {
-                        *kmer_target_counts_u128.entry(kmer).or_insert(0) += 1;
-                    }
-                }
-            }
-        }
-
-        let shared = if config.kmer_length <= 32 {
-            kmer_target_counts
-                .values()
-                .filter(|&&count| count > 1)
-                .count()
-        } else {
-            kmer_target_counts_u128
-                .values()
-                .filter(|&&count| count > 1)
-                .count()
-        };
-
-        let unique = if config.kmer_length <= 32 {
-            kmer_target_counts.len()
-        } else {
-            kmer_target_counts_u128.len()
-        };
-
-        // Apply discriminatory filtering if enabled
-        if config.discriminatory {
-            for target in &mut targets {
-                match &mut target.kmers {
-                    KmerSet::U64(set) => {
-                        set.retain(|kmer| {
-                            kmer_target_counts.get(kmer).is_none_or(|&count| count == 1)
-                        });
-                    }
-                    KmerSet::U128(set) => {
-                        set.retain(|kmer| {
-                            kmer_target_counts_u128
-                                .get(kmer)
-                                .is_none_or(|&count| count == 1)
-                        });
-                    }
-                }
-                target.positioned_kmers.retain_in_set(&target.kmers);
-                target.kmer_positions = target.positioned_kmers.positions();
-            }
-        }
-
-        (shared, unique)
-    } else {
-        (0, targets.first().map(|t| t.kmers.len()).unwrap_or(0))
-    };
-
-    if !config.quiet {
-        eprint!("\r"); // Clear space
-        let total_unique_kmers: usize = targets.iter().map(|t| t.kmers.len()).sum();
-        let total_bp: usize = targets.iter().map(|t| t.length).sum();
-
-        if config.discriminatory {
-            eprintln!(
-                "Targets: {} records ({}), {} discriminatory k-mers ({} shared k-mers dropped)",
-                targets.len(),
-                format_bp(total_bp),
-                total_unique_kmers,
-                shared_kmers
-            );
-        } else {
-            let shared_pct = if unique_across_all > 0 {
-                shared_kmers as f64 / unique_across_all as f64 * 100.0
-            } else {
-                0.0
-            };
-            eprintln!(
-                "Targets: {} records ({}), {} k-mers, of which {} ({:.1}%) shared by multiple targets",
-                targets.len(),
-                format_bp(total_bp),
-                total_unique_kmers,
-                shared_kmers,
-                shared_pct
-            );
-        }
-
-        warn_empty_targets(&targets);
-    }
-
-    // Build set of all unique k-mers across targets
-    if !config.quiet {
-        eprint!("Building k-mer set…\r");
-    }
-    let targets_kmers = Arc::new(build_union(&targets, config.kmer_length));
-
-    // Dump k-mers (position + k-mer sequence) if requested
-    if let Some(ref path) = config.dump_kmers_path {
-        let mut file = BufWriter::new(File::create(path)?);
-        let k = config.kmer_length;
-        let mut total = 0usize;
-        for target in &targets {
-            match &target.positioned_kmers {
-                PositionedKmers::U64(entries) => {
-                    for &(value, pos) in entries {
-                        let kmer = decode_u64(value, k);
-                        writeln!(
-                            file,
-                            "{}\t{}\t{}",
-                            target.name,
-                            pos,
-                            String::from_utf8_lossy(&kmer)
-                        )?;
-                        total += 1;
-                    }
-                }
-                PositionedKmers::U128(entries) => {
-                    for &(value, pos) in entries {
-                        let kmer = decode_u128(value, k);
-                        writeln!(
-                            file,
-                            "{}\t{}\t{}",
-                            target.name,
-                            pos,
-                            String::from_utf8_lossy(&kmer)
-                        )?;
-                        total += 1;
-                    }
-                }
-                PositionedKmers::Empty => {}
-            }
-        }
-        file.flush()?;
-        if !config.quiet {
-            eprintln!("Dumped {} k-mers to {}", total, path.display());
-        }
-    }
-
-    // Process each sample in parallel
-    use rayon::prelude::*;
-
-    let is_multisample = config.sample_inputs.len() > 1;
-    let completed = if is_multisample && !config.quiet {
-        // Give us a blank line to overwrite
-        eprint!(
-            "\x1B[2K\rSamples: processed 0 of {}…",
-            config.sample_inputs.len()
-        );
-        Some(Arc::new(Mutex::new(0usize)))
-    } else {
-        // Give us a blank line to overwrite
-        if !config.quiet {
-            eprint!("\x1B[2K\r");
-        }
-        None
-    };
-
-    let sample_results: Vec<SampleResults> = config
-        .sample_inputs
-        .par_iter()
-        .zip(&config.sample_names)
-        .map(|(sample, sample_name)| {
-            let result = process_sample(
-                sample,
-                sample_name,
-                &targets,
-                Arc::clone(&targets_kmers),
-                &abundance_thresholds,
-                config,
-            );
-
-            // Report completion for multisample runs
-            if let Some(ref counter) = completed {
-                let mut count = counter.lock();
-                *count += 1;
-                eprint!(
-                    "\rSamples: processed {} of {}…",
-                    *count,
-                    config.sample_inputs.len()
-                );
-            }
-
-            result
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    if is_multisample && !config.quiet {
-        eprintln!();
-    }
-
-    // Output results
-    output_results(
-        &sample_results,
-        config.output_path.as_deref(),
-        &abundance_thresholds,
-        config.confidence,
-        config.no_total,
-    )?;
-
-    Ok(())
+        fraction,
+        complexity,
+        targets,
+    })
 }
 
 /// Sort containment results based on the specified sort order (per-sample sorting)
@@ -1812,25 +1296,6 @@ fn sort_results(results: &mut [ContainmentResult], sort_order: SortOrder) {
             });
         }
     }
-}
-
-fn output_results(
-    samples: &[SampleResults],
-    output_path: Option<&Path>,
-    abundance_thresholds: &[usize],
-    confidence: bool,
-    no_total: bool,
-) -> Result<()> {
-    let mut writer = output_writer(output_path)?;
-    output_tsv(
-        &mut writer,
-        samples,
-        abundance_thresholds,
-        confidence,
-        no_total,
-    )?;
-
-    Ok(())
 }
 
 /// Format a Wilson 95% confidence interval for a containment proportion as
@@ -1982,6 +1447,299 @@ fn output_tsv(
     }
 
     Ok(())
+}
+
+// ── Streaming session ───────────────────────────────────────────────────────
+
+/// Parameters of a [`QuerySession`], as for `skope query`
+#[derive(Debug, Clone)]
+pub struct QueryOptions {
+    pub kmer_length: u8,
+    /// 0 takes every k-mer
+    pub smer_length: u8,
+    pub individual: bool,
+    pub discriminatory: bool,
+    pub confidence: bool,
+    pub abundance_thresholds: Vec<usize>,
+    pub sort_order: SortOrder,
+    pub no_total: bool,
+    pub fraction: f64,
+    pub complexity: f32,
+    pub limit_bp: Option<u64>,
+}
+
+impl Default for QueryOptions {
+    fn default() -> Self {
+        Self {
+            kmer_length: DEFAULT_KMER_LENGTH,
+            smer_length: DEFAULT_SMER_LENGTH,
+            individual: false,
+            discriminatory: false,
+            confidence: false,
+            abundance_thresholds: vec![10],
+            sort_order: SortOrder::Containment,
+            no_total: false,
+            fraction: 1.0,
+            complexity: 0.0,
+            limit_bp: None,
+        }
+    }
+}
+
+/// `skope index build-query` and `skope query` over fastx streams on one thread, e.g. in wasm.
+/// Add target streams or load an index, optionally add background streams, then add samples.
+/// One target stream acts as a file, several as a directory of files
+pub struct QuerySession {
+    options: QueryOptions,
+    thresholds: Vec<usize>,
+    /// Name and targets of each target stream, until grouped
+    groups: Vec<(String, Vec<TargetInfo>)>,
+    targets: Vec<TargetInfo>,
+    flags: u8,
+    /// Union counted against and the background k-mers found in it, until masked
+    background: Option<(Arc<KmerSet>, KmerSet)>,
+    /// Union counted against and the targets summary, once prepared
+    prepared: Option<(Arc<KmerSet>, String)>,
+    samples: Vec<SampleResults>,
+}
+
+impl QuerySession {
+    pub fn new(options: QueryOptions) -> Result<Self> {
+        validate_k_s(options.kmer_length, options.smer_length)?;
+        validate_fraction(options.fraction)?;
+        validate_complexity(options.complexity)?;
+        Ok(Self {
+            thresholds: normalize_abundance_thresholds(&options.abundance_thresholds),
+            options,
+            groups: Vec::new(),
+            targets: Vec::new(),
+            flags: 0,
+            background: None,
+            prepared: None,
+            samples: Vec::new(),
+        })
+    }
+
+    /// K-mer length, an index's once loaded
+    pub fn kmer_length(&self) -> u8 {
+        self.options.kmer_length
+    }
+
+    /// S-mer length, an index's once loaded
+    pub fn smer_length(&self) -> u8 {
+        self.options.smer_length
+    }
+
+    /// Add a target stream named after its file
+    pub fn add_targets(
+        &mut self,
+        name: &str,
+        stream: impl Read,
+        on_batch: impl FnMut(&ProcessingStats),
+    ) -> Result<()> {
+        anyhow::ensure!(
+            self.targets.is_empty() && self.background.is_none() && self.prepared.is_none(),
+            "Targets must precede background and samples, and cannot join an index"
+        );
+        let QueryOptions {
+            kmer_length: k,
+            smer_length: s,
+            confidence,
+            ..
+        } = self.options;
+        let mut processor = TargetsProcessor::new(
+            k,
+            s,
+            FracMinHash::from_fraction(self.options.fraction),
+            Kdust::from_threshold(self.options.complexity, k),
+            confidence,
+        );
+        process_stream(Input::File(stream), &mut processor, None, on_batch)?;
+        if confidence {
+            self.flags |= QUERY_INDEX_FLAG_POSITIONS;
+        }
+        let targets = std::mem::take(&mut *processor.targets.lock());
+        self.groups.push((name.to_string(), targets));
+        Ok(())
+    }
+
+    /// Load a prebuilt query index in place of targets. Its k, s, fraction and complexity prevail
+    pub fn load_index(&mut self, bytes: &[u8]) -> Result<()> {
+        anyhow::ensure!(
+            self.groups.is_empty() && self.targets.is_empty() && self.background.is_none(),
+            "An index replaces targets, so must come first"
+        );
+        let index = read_query_index(bytes)?;
+        check_index_fraction(self.options.fraction, index.fraction)?;
+        check_index_complexity(self.options.complexity, index.complexity)?;
+        index.require_positions(self.options.confidence)?;
+        self.options.kmer_length = index.kmer_length;
+        self.options.smer_length = index.smer_length;
+        self.options.fraction = index.fraction;
+        self.options.complexity = index.complexity;
+        self.flags = index.flags;
+        self.targets = index.targets;
+        Ok(())
+    }
+
+    /// Group target streams, rejecting duplicate names as for a directory
+    fn group(&mut self) -> Result<()> {
+        let lone_file = self.groups.len() == 1;
+        for (i, (name, _)) in self.groups.iter().enumerate() {
+            anyhow::ensure!(
+                self.groups[..i].iter().all(|(other, _)| other != name),
+                "Duplicate target name '{name}'"
+            );
+        }
+        for (name, targets) in std::mem::take(&mut self.groups) {
+            let grouped = group_targets(targets, &name, lone_file, self.options.individual)?;
+            self.targets.extend(grouped);
+        }
+        Ok(())
+    }
+
+    /// Find target k-mers in a background stream, to drop them from targets. Returns its summary
+    pub fn add_background(
+        &mut self,
+        stream: impl Read,
+        on_batch: impl FnMut(&ProcessingStats),
+    ) -> Result<String> {
+        anyhow::ensure!(self.prepared.is_none(), "Background must precede samples");
+        self.group()?;
+        let (k, s) = (self.options.kmer_length, self.options.smer_length);
+        let (union, found) = self
+            .background
+            .get_or_insert_with(|| (Arc::new(build_union(&self.targets, k)), KmerSet::new(k)));
+        let (counts, stats) = count_stream(Input::File(stream), union, k, s, None, on_batch)?;
+        let summary = counted_summary("Background", &stats, counts.len(), union.len());
+        found.extend(&counts.into_kmers());
+        self.flags |= QUERY_INDEX_FLAG_BACKGROUND;
+        Ok(summary)
+    }
+
+    /// Group targets and drop background k-mers
+    fn finish_targets(&mut self) -> Result<()> {
+        self.group()?;
+        if let Some((_, found)) = self.background.take() {
+            mask_targets(&mut self.targets, &found);
+        }
+        Ok(())
+    }
+
+    /// Query index of the targets, as `skope index build-query` writes. Precedes samples
+    pub fn index(&mut self) -> Result<Vec<u8>> {
+        anyhow::ensure!(
+            self.prepared.is_none(),
+            "The index must be written before samples are added"
+        );
+        self.finish_targets()?;
+        let mut bytes = Vec::new();
+        write_query_index(
+            &mut bytes,
+            &self.targets,
+            self.options.kmer_length,
+            self.options.smer_length,
+            self.options.fraction,
+            self.options.complexity,
+            self.flags,
+        )?;
+        Ok(bytes)
+    }
+
+    /// Ready targets for counting, applying `--discriminatory`. Returns the targets summary
+    pub fn prepare(&mut self) -> Result<String> {
+        if self.prepared.is_none() {
+            self.finish_targets()?;
+            let k = self.options.kmer_length;
+            let discriminatory = self.options.discriminatory;
+            let (shared, distinct) = share_kmers(&mut self.targets, k, discriminatory);
+            let mut summary = targets_summary(&self.targets, discriminatory, shared, distinct);
+            if let Some(warning) = empty_targets_warning(&self.targets) {
+                summary = format!("{summary}\n{warning}");
+            }
+            self.prepared = Some((Arc::new(build_union(&self.targets, k)), summary));
+        }
+        Ok(self
+            .prepared
+            .as_ref()
+            .map(|(_, summary)| summary.clone())
+            .unwrap_or_default())
+    }
+
+    /// Count a sample's target k-mers, preparing targets first. Returns its summary
+    pub fn add_sample<R: Read>(
+        &mut self,
+        name: &str,
+        input: Input<R>,
+        on_batch: impl FnMut(&ProcessingStats),
+    ) -> Result<String> {
+        anyhow::ensure!(
+            self.samples.iter().all(|sample| sample.sample_name != name),
+            "Duplicate sample name '{name}'"
+        );
+        self.prepare()?;
+        let union = Arc::clone(&self.prepared.as_ref().unwrap().0);
+        let QueryOptions {
+            kmer_length: k,
+            smer_length: s,
+            confidence,
+            sort_order,
+            limit_bp,
+            ..
+        } = self.options;
+        let (counts, stats) = count_stream(input, &union, k, s, limit_bp, on_batch)?;
+        let summary = counted_summary("Sample", &stats, counts.len(), union.len());
+        let mut results = calculate_containment_statistics(
+            &self.targets,
+            &counts,
+            &self.thresholds,
+            k,
+            confidence,
+        );
+        sort_results(&mut results, sort_order);
+        self.samples.push(SampleResults::new(
+            name.to_string(),
+            results,
+            &self.thresholds,
+            stats.total_seqs,
+            stats.total_bp,
+        ));
+        Ok(summary)
+    }
+
+    /// TSV of every sample so far, as `skope query` writes
+    pub fn tsv(&self) -> Result<String> {
+        let mut tsv = Vec::new();
+        output_tsv(
+            &mut tsv,
+            &self.samples,
+            &self.thresholds,
+            self.options.confidence,
+            self.options.no_total,
+        )?;
+        Ok(String::from_utf8(tsv)?)
+    }
+}
+
+/// Count a stream's target k-mers on one thread
+fn count_stream(
+    input: Input<impl Read>,
+    union: &Arc<KmerSet>,
+    kmer_length: u8,
+    smer_length: u8,
+    limit_bp: Option<u64>,
+    on_batch: impl FnMut(&ProcessingStats),
+) -> Result<(AbundanceMap, ProcessingStats)> {
+    let counts = Arc::new(Mutex::new(AbundanceMap::new(kmer_length)));
+    let mut processor = CountProcessor::new(
+        kmer_length,
+        smer_length,
+        Arc::clone(union),
+        Arc::clone(&counts),
+    );
+    let stats = process_stream(input, &mut processor, limit_bp, on_batch)?;
+    drop(processor);
+    Ok((Arc::into_inner(counts).unwrap().into_inner(), stats))
 }
 
 #[cfg(test)]

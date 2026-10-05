@@ -5,33 +5,14 @@ use std::path::{Path, PathBuf};
 
 use skope::{
     DEFAULT_KMER_LENGTH, DEFAULT_SMER_LENGTH, Input, derive_mates_name, derive_sample_name,
-    find_seq_files, find_seq_files_recursive, is_special_input_path, resolve_k_s, validate_k_s,
+    find_seq_files, find_seq_files_recursive, is_special_input_path, resolve_k_s,
+    validate_complexity, validate_fraction, validate_k_s,
 };
-
-/// Check the kdust threshold is in [0, 1], rejecting NaN and inf
-fn validate_complexity(complexity: f32) -> Result<()> {
-    if !(0.0..=1.0).contains(&complexity) {
-        return Err(anyhow::anyhow!(
-            "Invalid --complexity {complexity}: must be in [0, 1] (0 = retain all)"
-        ));
-    }
-    Ok(())
-}
 
 fn validate_rel_threshold(rel_threshold: f64) -> Result<()> {
     if !(0.0..=1.0).contains(&rel_threshold) {
         return Err(anyhow::anyhow!(
             "Invalid --rel-threshold {rel_threshold}: must be in [0, 1]"
-        ));
-    }
-    Ok(())
-}
-
-/// Validate the FracMinHash fraction is in (0, 1]
-fn validate_fraction(fraction: f64) -> Result<()> {
-    if !(fraction > 0.0 && fraction <= 1.0) {
-        return Err(anyhow::anyhow!(
-            "Invalid --fraction {fraction}: must be in (0, 1] (1 = retain all)"
         ));
     }
     Ok(())
@@ -750,13 +731,7 @@ fn main() -> Result<()> {
             )?;
             initialise_thread_pool(*threads)?;
 
-            // Parse sort order
-            let sort_order = match sort.as_str() {
-                "input" => skope::SortOrder::Original,
-                "target" => skope::SortOrder::Target,
-                "containment" => skope::SortOrder::Containment,
-                _ => unreachable!("clap should have validated the sort order"),
-            };
+            let sort_order = sort.parse()?;
 
             let config = skope::ContainmentConfig {
                 targets_path: targets.clone(),

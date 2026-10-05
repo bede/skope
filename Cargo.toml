@@ -15,24 +15,33 @@ exclude = ["data/*", "plot/*", "*.pdf", "*.png"]
 too_many_arguments = "allow"
 
 [features]
+# Native file I/O, multithreading and the skope binary
+cli = ["dep:clap", "dep:rayon", "dep:csv", "dep:indicatif", "dep:binseq"]
+# Build without AVX2 or NEON, e.g. for wasm32, which uses simd128
+scalar = ["packed-seq/scalar", "simd-minimizers/scalar"]
 # Enable all compression formats supported by niffler. Disable for faster builds.
 compression = ["niffler/default", "dep:flate2"]
 # Use to still handle .gz files when "compression" is not enabled.
 gz = ["niffler/gz", "dep:flate2"]
-default = ["compression"]
+default = ["cli", "compression"]
 
 [lib]
 name = "skope"
 path = "src/lib.rs"
 
+[[bin]]
+name = "skope"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"], optional = true }
 anyhow = "1.0"
-rayon = "1"
-csv = "1.4"
+rayon = { version = "1", optional = true }
+csv = { version = "1.4", optional = true }
 rapidhash = "4.4.1"
 parking_lot = "0.12"
-indicatif = "0.18"
+indicatif = { version = "0.18", optional = true }
 wincode = "0.6.1"
 
 packed-seq = "5.0.0"
@@ -41,7 +50,7 @@ simd-minimizers = "3.0.0"
 paraseq = { version = "0.6.0", default-features = false, features = ["anyhow", "niffler"] }
 niffler = { version = "3", default-features = false }
 # BINSEQ CBQ input. binseq >=0.9.6 canonicalises non-N ambiguous bases to N
-binseq = { version = "0.9.6", default-features = false, features = ["anyhow"] }
+binseq = { version = "0.9.6", default-features = false, features = ["anyhow"], optional = true }
 
 flate2 = { version = "1.1", features = ["zlib-rs"], optional = true }
 

@@ -1,9 +1,11 @@
+use crate::io::{
+    Progress, StdinTargets, TargetGroup, TargetSource, index_writer, output_writer, process_input,
+    resolve_targets, validate_index_output,
+};
 use crate::kmers::{Kdust, KmerVec, Kmers};
 use crate::{
-    FixedRapidHasher, IndexKind, Input, ProcessingStats, Progress, RapidHashSet, SeqProcessor,
-    StdinTargets, TargetGroup, TargetSource, check_index_complexity, complexity_info_line,
-    format_bp, format_bp_per_sec, index_writer, output_writer, process_input, resolve_targets,
-    validate_index_output,
+    FixedRapidHasher, IndexKind, Input, ProcessingStats, RapidHashSet, SeqProcessor,
+    check_index_complexity, complexity_info_line, format_bp, format_bp_per_sec,
 };
 use anyhow::{Context, Result};
 use parking_lot::Mutex;

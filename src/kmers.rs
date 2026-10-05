@@ -1,6 +1,4 @@
-use crate::FixedRapidHasher;
 use packed_seq::{PackedNSeq, PackedNSeqVec, Seq, SeqVec, unpack_base};
-use std::hash::BuildHasher;
 
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
 pub const DEFAULT_SMER_LENGTH: u8 = 9;
@@ -40,12 +38,12 @@ impl FracMinHash {
 
     #[inline(always)]
     fn keeps_u64(&self, kmer: u64) -> bool {
-        rapid_mix_u64(kmer) <= self.threshold
+        fmh_mix(kmer as u128) <= self.threshold
     }
 
     #[inline(always)]
     fn keeps_u128(&self, kmer: u128) -> bool {
-        rapid_mix_u128(kmer) <= self.threshold
+        fmh_mix(kmer) <= self.threshold
     }
 
     pub fn retain(&self, kmers: &mut KmerVec, positions: Option<&mut Vec<usize>>) {
@@ -84,14 +82,19 @@ fn retain_paired<T: Copy>(
     positions.truncate(w);
 }
 
+/// FracMinHash mixer: `FixedRapidHasher` hashing a lone u64 or u128 on 64-bit targets. Spelled
+/// out because rapidhash approximates its multiply on 32-bit targets such as wasm32
 #[inline(always)]
-fn rapid_mix_u64(kmer: u64) -> u64 {
-    FixedRapidHasher.hash_one(kmer)
+const fn fmh_mix(kmer: u128) -> u64 {
+    const SECRETS: [u64; 3] = [0x2d358dccaa6c78a5, 0x8bb84b93962eacc9, 0x4b33a62ed433d4a3];
+    const SEED: u64 = folded_multiply(SECRETS[2], SECRETS[1]);
+    folded_multiply(kmer as u64 ^ SEED, (kmer >> 64) as u64 ^ SECRETS[0])
 }
 
 #[inline(always)]
-fn rapid_mix_u128(kmer: u128) -> u64 {
-    FixedRapidHasher.hash_one(kmer)
+const fn folded_multiply(a: u64, b: u64) -> u64 {
+    let product = (a as u128).wrapping_mul(b as u128);
+    product as u64 ^ (product >> 64) as u64
 }
 
 /// kdust: max-normalised DUST triplet score in [0,1] of a packed canonical k-mer
@@ -694,18 +697,25 @@ mod tests {
     }
 
     #[test]
-    fn test_fmh_uses_fixed_rapid_hash_of_value() {
-        let fmh = FracMinHash::from_fraction(0.5);
-        let kmer64 = 0x0123_4567_89ab_cdef;
-        let kmer128 = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
+    #[cfg(target_pointer_width = "64")]
+    fn test_fmh_mix_is_fixed_rapid_hash() {
+        use crate::FixedRapidHasher;
+        use std::hash::BuildHasher;
+        let mut x = 0x0123_4567_89ab_cdef_u64;
+        for _ in 0..10_000 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let wide = (x as u128) << 64 | x.rotate_left(17) as u128;
+            assert_eq!(fmh_mix(x as u128), FixedRapidHasher.hash_one(x));
+            assert_eq!(fmh_mix(wide), FixedRapidHasher.hash_one(wide));
+        }
+    }
 
+    #[test]
+    fn test_fmh_mix_is_pinned() {
+        assert_eq!(fmh_mix(0x0123_4567_89ab_cdef), 0x2761_76eb_30f0_1727);
         assert_eq!(
-            fmh.keeps_u64(kmer64),
-            FixedRapidHasher.hash_one(kmer64) <= fmh.threshold
-        );
-        assert_eq!(
-            fmh.keeps_u128(kmer128),
-            FixedRapidHasher.hash_one(kmer128) <= fmh.threshold
+            fmh_mix(0x0123_4567_89ab_cdef_fedc_ba98_7654_3210),
+            0xa4cf_e37f_2cdd_ef66
         );
     }
 }
