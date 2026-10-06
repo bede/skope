@@ -161,7 +161,7 @@ Passing `--dump-kmers <path>` to `skope query` writes the selected _canonical_ t
 
 ## Browser
 
-`skope-wasm` runs `skope query` in the browser as WebAssembly, on one thread with SIMD128. Files are read locally and never uploaded, and results match the CLI's.
+`skope-wasm` runs `skope query` in the browser as WebAssembly, on one thread with SIMD128. Files are read locally and never uploaded, and results match the CLI's. Try it at [bede.im/skope](https://bede.im/skope/).
 
 ```bash
 ./skope-wasm/build.sh  # needs wasm-pack
@@ -177,3 +177,5 @@ In JavaScript, `Query` takes inputs as synchronous `read(offset, length)` callba
 ```bash
 cargo build --release && ./skope-wasm/build.sh nodejs && node skope-wasm/parity.mjs
 ```
+
+`./skope-wasm/deploy.sh` runs this check, builds the demo and publishes it to `bede.github.io/skope/`, as for deacon. `--no-push` commits without pushing.
