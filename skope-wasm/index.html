@@ -6,312 +6,177 @@
 <title>skope-wasm</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inconsolata:wght@400;700&family=Roboto+Flex:opsz,wght@8..144,400;8..144,600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg: #f5f5f5; --panel: #fff; --text: #333; --muted: #777; --line: #ddd;
-    --accent: #4a90d9; --accent-hover: #3a7bc8; --ok: #4caf50; --ok-bg: #f0fff0;
-    --drag-bg: #f0f7ff; --error: #d93b2b; --bar: #4a90d9; --bar-bg: #e8eef5;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #17191c; --panel: #212429; --text: #e3e3e3; --muted: #9a9ea6; --line: #383c43;
-      --accent: #5b9ee6; --accent-hover: #74aef0; --ok: #5cbf61; --ok-bg: #1d2a1e;
-      --drag-bg: #1c2633; --error: #ff7b6b; --bar: #5b9ee6; --bar-bg: #2b313a;
-    }
-  }
+  /* Look shared with updeacon-s3 */
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Roboto Flex', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); padding: 2rem 1rem; }
-  main { max-width: 760px; margin: 0 auto; }
-  h1 { font-size: 1.5rem; margin-bottom: 0.4rem; }
-  h1 sup { font-size: 0.5em; color: #713da7; font-weight: normal; }
-  h2 { font-size: 0.95rem; margin: 1.4rem 0 0.5rem; }
-  a { color: inherit; }
-  .subtitle { color: var(--muted); margin-bottom: 1.2rem; font-size: 0.9rem; line-height: 1.4; }
-  .drop { border: 2px dashed #aaa; padding: 1.4rem; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--panel); }
-  .drop:hover, .drop.dragover { border-color: var(--accent); background: var(--drag-bg); }
-  .drop.loaded { border-color: var(--ok); background: var(--ok-bg); }
-  .drop input { display: none; }
-  .drop .label { font-size: 0.95rem; }
-  .drop .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; }
-  .drop .files { font-family: Inconsolata, monospace; font-size: 0.85rem; margin-top: 0.5rem; word-break: break-all; }
-  .row { display: flex; gap: 0.6rem 1.2rem; flex-wrap: wrap; align-items: center; margin-top: 0.7rem; font-size: 0.85rem; }
-  .row label { display: flex; align-items: center; gap: 0.35rem; }
-  input[type="number"], input[type="text"], select { font: inherit; width: 5rem; padding: 0.2rem 0.4rem; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
-  select { width: auto; }
-  details { margin-top: 1rem; font-size: 0.85rem; }
-  summary { cursor: pointer; color: var(--muted); }
-  details .drop { margin-top: 0.6rem; padding: 0.9rem; }
-  .actions { display: flex; gap: 0.6rem; margin-top: 1.4rem; }
-  button { font: inherit; background: var(--accent); color: #fff; border: none; padding: 0.6rem 1.5rem; cursor: pointer; font-size: 0.95rem; }
-  button:hover:not(:disabled) { background: var(--accent-hover); }
-  button:disabled { background: #999; cursor: not-allowed; }
-  button.secondary { background: #6c757d; }
-  #status { margin-top: 1rem; padding: 0.8rem; background: var(--panel); border: 1px solid var(--line); font-size: 0.9rem; min-height: 2.6rem; }
+  :root { --accent: #6d4fd8; --accent-dark: #5d43b8; --accent-wash: #f3f1fc; --ok: #1a7f52; --ok-fill: #d9f0e2; --ok-edge: #a6dcc0; --error: #e74c3c; --mono: 'Geist Mono', ui-monospace, 'SF Mono', monospace; }
+  body { font-family: 'Geist', system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #333; padding: 2rem; max-width: 720px; margin: 0 auto; counter-reset: section; }
+  h1 { font-size: 1.5rem; font-weight: 400; margin-bottom: 0.5rem; }
+  .beta-tag { color: var(--accent); font-size: 0.5em; font-weight: 400; vertical-align: super; }
+  .subtitle { color: #666; font-size: 0.9rem; }
+  a { color: #333; text-decoration: underline; }
+  a:hover { color: #000; }
+  /* Counter numerals, so hidden sections leave no gap */
+  .section-head, .usage-head { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: #888; margin: 1.5rem 0 0.5rem; }
+  .section-head { counter-increment: section; }
+  .section-head::before { content: counter(section) " "; color: var(--accent); }
+  /* Collapsible section, its heading doubling as the toggle */
+  summary.section-head { cursor: pointer; list-style: none; width: fit-content; }
+  summary.section-head::-webkit-details-marker { display: none; }
+  summary.section-head::after { content: " ▸"; color: var(--accent); }
+  details[open] > summary.section-head::after { content: " ▾"; }
+  summary.section-head:hover { color: #555; }
+  .usage { color: #444; font-size: 0.9rem; }
+  .usage ol { list-style: none; counter-reset: step; }
+  .usage li { position: relative; padding-left: 1.4rem; margin-bottom: 0.3rem; line-height: 1.45; }
+  .usage li::before { counter-increment: step; content: counter(step); position: absolute; left: 0; top: 0.05em; color: var(--accent); font-family: var(--mono); font-size: 0.85rem; }
+
+  .drop-zone { border: 1px dashed #aaa; padding: 2rem; text-align: center; cursor: pointer; transition: all 0.2s; background: #fff; }
+  .drop-zone:hover, .drop-zone.dragover { border-color: var(--accent); background: var(--accent-wash); }
+  .drop-zone.loaded { border-style: solid; border-color: var(--ok); background: var(--ok-fill); padding: 1rem; }
+  .drop-zone.compact { padding: 0.8rem; }
+  .drop-zone input { display: none; }
+  .drop-zone .label { font-size: 0.8rem; color: #888; }
+  .drop-zone .summary { font-family: var(--mono); font-size: 0.9rem; color: #333; overflow-wrap: anywhere; }
+  .drop-zone .summary:empty, .drop-zone .info:empty { display: none; }
+  .drop-zone.loaded .label { margin-top: 0.3rem; }
+  .drop-zone .info { font-size: 0.8rem; color: #555; margin-top: 0.3rem; white-space: pre-line; }
+
+  .fields { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8rem; margin-bottom: 1rem; }
+  .field label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 0.25rem; }
+  .field input, .field select { width: 100%; height: 2.3rem; padding: 0 0.6rem; border: 1px solid #ccc; background: #fff; color: #333; font-family: var(--mono); font-size: 0.9rem; }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  .field input:disabled { background: #f0f0f0; color: #aaa; }
+  .checks { display: flex; flex-wrap: wrap; gap: 0.5rem 1.2rem; font-size: 0.85rem; color: #555; margin-bottom: 1rem; }
+  .checks label { display: flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+  .checks input { accent-color: var(--accent); }
+
+  .actions { display: flex; gap: 0.6rem; align-items: center; margin-top: 1.5rem; }
+  button { font: inherit; background: var(--accent); color: #fff; border: 1px solid transparent; padding: 0.6rem 1.5rem; cursor: pointer; font-size: 0.95rem; transition: all 0.15s; }
+  button:hover:not(:disabled) { background: var(--accent-dark); }
+  button:disabled { background: #ececec; color: #aaa; cursor: not-allowed; }
+  button.secondary { background: #fff; color: #6c757d; border-color: #ced4da; }
+  button.secondary:hover:not(:disabled) { background: #f3f4f5; border-color: #adb5bd; }
+  /* A brief pulsing glow when a button becomes clickable */
+  @keyframes button-glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(109, 79, 216, 0); }
+    50% { box-shadow: 0 0 11px 2px rgba(109, 79, 216, 0.6); }
+  }
+  button.pulse-glow { animation: button-glow 1.3s ease-in-out 3; }
+
+  .progress-wrap { margin-top: 1rem; }
+  progress { width: 100%; height: 0.55rem; appearance: none; -webkit-appearance: none; border: none; background: #eee; }
+  progress[value]::-webkit-progress-bar { background: #eee; }
+  progress[value]::-webkit-progress-value { background: #6c757d; }
+  progress[value]::-moz-progress-bar { background: #6c757d; }
+  .progress-label { font-size: 0.85rem; color: #555; margin-top: 0.3rem; }
+  #file-list { list-style: none; margin-top: 1rem; font-family: var(--mono); font-size: 0.8rem; max-height: 14rem; overflow-y: auto; border: 1px solid #ddd; background: #fff; }
+  #file-list li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.25rem 0.6rem; border-bottom: 1px solid #f0f0f0; }
+  #file-list li:last-child { border-bottom: none; }
+  #file-list .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #file-list .st { flex-shrink: 0; color: #888; text-align: right; }
+  #file-list li.done .st { color: var(--ok); }
+  #file-list li.active .st { color: var(--accent); }
+  #file-list li.failed .st { color: var(--error); }
+  #status { margin-top: 1rem; padding: 0.8rem; background: #fff; font-size: 0.9rem; min-height: 2.5rem; border: 1px solid #ddd; white-space: pre-line; }
   #status.error { border-color: var(--error); color: var(--error); }
-  #bar { height: 3px; background: var(--bar); width: 0; margin-top: 0.5rem; transition: width 0.1s; }
-  #log { font-family: Inconsolata, monospace; font-size: 0.82rem; color: var(--muted); white-space: pre-wrap; margin-top: 0.6rem; }
-  #downloads { display: flex; gap: 1rem; margin-top: 0.8rem; font-size: 0.9rem; }
-  .table-wrap { overflow-x: auto; margin-top: 0.8rem; background: var(--panel); border: 1px solid var(--line); }
-  table { border-collapse: collapse; font-family: Inconsolata, monospace; font-size: 0.85rem; width: 100%; }
-  th, td { padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
-  th { position: sticky; top: 0; background: var(--panel); font-weight: 700; }
-  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
-  tr.total td { font-weight: 700; }
-  td.bar { min-width: 7rem; background: linear-gradient(to right, var(--bar-bg) var(--fill), transparent var(--fill)); }
-  .note { font-size: 0.8rem; color: var(--muted); margin-top: 0.4rem; }
+  #status.success { border-color: var(--ok-edge); color: var(--ok); }
+
+  .downloads { display: flex; gap: 0.6rem; margin-bottom: 0.8rem; }
+  .downloads button { padding: 0.4rem 1rem; font-size: 0.85rem; }
+  .table-wrap { overflow: auto; max-height: 32rem; border: 1px solid #ddd; background: #fff; }
+  table { border-collapse: collapse; font-family: var(--mono); font-size: 0.8rem; width: 100%; }
+  th, td { padding: 0.3rem 0.6rem; border-bottom: 1px solid #f0f0f0; text-align: right; white-space: nowrap; }
+  th { position: sticky; top: 0; background: #fff; color: #888; font-weight: 500; border-bottom: 1px solid #ddd; }
+  th:nth-child(-n+2), td:nth-child(-n+2) { text-align: left; }
+  tr.total td { font-weight: 500; background: #fafafa; }
+  td.bar { background: linear-gradient(to right, var(--accent-wash) var(--fill), transparent var(--fill)); }
+  .note { font-size: 0.8rem; color: #888; margin-top: 0.4rem; }
+
+  @media (max-width: 600px) {
+    body { padding: 1rem; }
+    .fields { grid-template-columns: repeat(2, 1fr); }
+  }
 </style>
 </head>
 <body>
-<main>
-<h1>skope-wasm <sup>alpha</sup></h1>
-<p class="subtitle"><a href="https://github.com/bede/skope">Skope</a> in the browser. Estimate how much of each target is contained in sequencing samples, and at what abundance. Files are read locally and never uploaded.</p>
+<h1>skope-wasm <span class="beta-tag"></span></h1>
+<p class="subtitle">Containment estimation using <a href="
+  Runs <a href="https://github.com/bede/skope">Skope</a>.</p>
+<div class="usage-head">Usage</div>
+<div class="usage">
+  <ol>
+    <li>Drag &amp; drop target sequences in fasta/fastq format, or a skope query index (.sk)</li>
+    <li>Drag &amp; drop sample fasta/fastq files, or a directory containing them. Illumina R1/R2 files are paired automatically.</li>
+    <li>Review options and press run to start</li>
+  </ol>
+</div>
 
-<div class="drop" id="targets-zone">
+<div class="section-head">Targets</div>
+<div class="drop-zone" id="targets-zone">
   <input type="file" id="targets-input" multiple>
-  <div class="label">Drop targets, or click to select</div>
-  <div class="hint">FASTA/FASTQ, optionally gzipped. Several files act as a directory, one target per file. Or a skope query index (.sk)</div>
-  <div class="files" id="targets-files"></div>
+  <div class="summary" id="targets-summary"></div>
+  <div class="label">Click to select fasta/fastq[.gz] files or a query index (.sk), or drop them here</div>
+  <div class="info" id="targets-info"></div>
 </div>
 
-<h2>Samples</h2>
-<div class="drop" id="samples-zone">
+<div class="section-head">Samples</div>
+<div class="drop-zone" id="samples-zone">
   <input type="file" id="samples-input" multiple>
-  <div class="label">Drop samples, or click to select</div>
-  <div class="hint">FASTA/FASTQ, optionally gzipped. Each file is a sample unless paired</div>
-  <div class="files" id="samples-files"></div>
-</div>
-<div class="row">
-  <label><input type="radio" name="layout" value="single" checked> Single</label>
-  <label><input type="radio" name="layout" value="paired"> Paired files (R1, R2)</label>
-  <label><input type="radio" name="layout" value="interleaved"> Interleaved</label>
+  <div class="summary" id="samples-summary"></div>
+  <div class="label">Click to select fasta/fastq[.gz] files, or drop files or a directory here</div>
 </div>
 
-<h2>Options</h2>
-<div class="row">
-  <label>k <input type="number" id="kmer" value="31" min="3" max="61" step="2"></label>
-  <label>s <input type="number" id="smer" value="9" min="1" max="31" step="2"></label>
+<details id="options">
+<summary class="section-head">Options</summary>
+<div class="fields">
+  <div class="field"><label for="kmer">K-mer length</label><input type="number" id="kmer" value="31" min="3" max="61" step="2"></div>
+  <div class="field"><label for="smer">S-mer length</label><input type="number" id="smer" value="9" min="1" max="31" step="2"></div>
+  <div class="field"><label for="fraction">Fraction</label><input type="number" id="fraction" value="1" min="0" max="1" step="0.01"></div>
+  <div class="field"><label for="complexity">Complexity</label><input type="number" id="complexity" value="0" min="0" max="1" step="0.05"></div>
+  <div class="field"><label for="thresholds">Abundance thresholds</label><input type="text" id="thresholds" value="10" spellcheck="false"></div>
+  <div class="field"><label for="limit">Base limit</label><input type="text" id="limit" placeholder="none" spellcheck="false"></div>
+  <div class="field"><label for="sort">Sort</label><select id="sort"><option>containment</option><option>target</option><option>input</option></select></div>
+</div>
+<div class="checks">
+  <label><input type="checkbox" id="individual" checked> One target per record</label>
+  <label><input type="checkbox" id="total" checked> Show TOTAL rows</label>
   <label><input type="checkbox" id="all-kmers"> All k-mers</label>
-  <label>Abundance thresholds <input type="text" id="thresholds" value="10"></label>
-</div>
-<div class="row">
-  <label>Fraction <input type="number" id="fraction" value="1" min="0" max="1" step="0.01"></label>
-  <label>Complexity <input type="number" id="complexity" value="0" min="0" max="1" step="0.05"></label>
-  <label>Limit (bp) <input type="text" id="limit" placeholder="none"></label>
-  <label>Sort <select id="sort"><option>containment</option><option>target</option><option>input</option></select></label>
-</div>
-<div class="row">
-  <label><input type="checkbox" id="individual"> One target per record</label>
   <label><input type="checkbox" id="discriminatory"> Discriminatory</label>
   <label><input type="checkbox" id="confidence"> Confidence</label>
-  <label><input type="checkbox" id="total" checked> TOTAL rows</label>
-  <label><input type="checkbox" id="save-index"> Save index</label>
+  <label><input type="checkbox" id="interleaved"> Interleaved pairs</label>
 </div>
-<details>
-  <summary>Background masking</summary>
-  <div class="drop" id="background-zone">
-    <input type="file" id="background-input" multiple>
-    <div class="label">Drop background sequences to drop their k-mers from targets</div>
-    <div class="files" id="background-files"></div>
-  </div>
+<div class="drop-zone compact" id="background-zone">
+  <input type="file" id="background-input" multiple>
+  <div class="summary" id="background-summary"></div>
+  <div class="label">Optional background sequences: drop fasta/fastq[.gz] files whose k-mers will be ignored</div>
+  <div class="info" id="background-info"></div>
+</div>
 </details>
 
 <div class="actions">
   <button id="run-btn" disabled>Run</button>
-  <button id="reset-btn" class="secondary">Reset</button>
+  <button id="reset-btn" class="secondary" type="button">Reset</button>
 </div>
-<div id="status">Loading wasm…<div id="bar"></div></div>
-<div id="log"></div>
-<div id="downloads"></div>
-<div id="results"></div>
-</main>
 
-<script type="module">
-  import { MSG } from "./protocol.js";
+<div class="progress-wrap" id="progress-wrap" hidden>
+  <progress id="progress" value="0" max="100"></progress>
+  <div class="progress-label" id="progress-label"></div>
+</div>
+<ul id="file-list" hidden></ul>
 
-  const MAX_ROWS = 2000;
-  const $ = (id) => document.getElementById(id);
-  const files = { targets: [], samples: [], background: [] };
-  const urls = [];
-  let worker;
-  let ready = false;
-  let running = false;
+<div id="status">Loading wasm…</div>
 
-  const formatBytes = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${(n / 1e3).toFixed(0)} KB`;
-  const formatBp = (n) => n >= 1e9 ? `${(n / 1e9).toFixed(1)}Gbp` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}Mbp` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}Kbp` : `${n}bp`;
+<div id="results" hidden>
+  <div class="section-head">Results</div>
+  <div class="downloads">
+    <button id="download-tsv" class="secondary" type="button">Download TSV</button>
+  </div>
+  <div class="table-wrap" id="table-wrap"></div>
+  <p class="note" id="table-note" hidden></p>
+</div>
 
-  function setStatus(text, { error = false, fraction } = {}) {
-    $("status").firstChild.textContent = text;
-    $("status").className = error ? "error" : "";
-    if (fraction !== undefined) $("bar").style.width = `${Math.min(100, fraction * 100)}%`;
-  }
-
-  function update() {
-    $("run-btn").disabled = !ready || running || !files.targets.length || !files.samples.length;
-    $("smer").disabled = $("all-kmers").checked;
-  }
-
-  function download(name, blob) {
-    const url = URL.createObjectURL(blob);
-    urls.push(url);
-    const link = Object.assign(document.createElement("a"), { href: url, download: name, textContent: `Download ${name}` });
-    $("downloads").append(link);
-  }
-
-  function clearOutput() {
-    urls.splice(0).forEach(URL.revokeObjectURL);
-    $("log").textContent = "";
-    $("downloads").replaceChildren();
-    $("results").replaceChildren();
-  }
-
-  function render(tsv) {
-    const [header, ...rows] = tsv.trimEnd().split("\n").map((line) => line.split("\t"));
-    const table = document.createElement("table");
-    const head = table.createTHead().insertRow();
-    for (const name of header) head.append(Object.assign(document.createElement("th"), { textContent: name }));
-    const body = table.createTBody();
-    for (const row of rows.slice(0, MAX_ROWS)) {
-      const tr = body.insertRow();
-      if (row[0] === "TOTAL") tr.className = "total";
-      row.forEach((value, i) => {
-        const td = tr.insertCell();
-        td.textContent = value;
-        if (header[i] === "containment1") {
-          td.className = "bar";
-          td.style.setProperty("--fill", `${Number(value) * 100}%`);
-        }
-      });
-    }
-    const wrap = Object.assign(document.createElement("div"), { className: "table-wrap" });
-    wrap.append(table);
-    $("results").replaceChildren(wrap);
-    if (rows.length > MAX_ROWS) {
-      $("results").append(Object.assign(document.createElement("p"), { className: "note", textContent: `Showing ${MAX_ROWS} of ${rows.length} rows. Download the TSV for all` }));
-    }
-  }
-
-  function onMessage({ data }) {
-    if (data.type === MSG.READY) {
-      ready = true;
-      setStatus("Ready. Choose targets and samples");
-    } else if (data.type === MSG.PROGRESS) {
-      const percent = data.size ? ` (${Math.round((data.bytes / data.size) * 100)}%)` : "";
-      setStatus(`${data.stage}: ${data.records.toLocaleString()} records, ${formatBp(data.bases)}${percent}`, { fraction: data.size ? data.bytes / data.size : 0 });
-    } else if (data.type === MSG.LOG) {
-      $("log").textContent += `${data.line}\n`;
-    } else if (data.type === MSG.INDEX) {
-      const [first] = files.targets;
-      const name = files.targets.length === 1 ? `${first.name.replace(/\.(fa|fasta|fq|fastq)(\.gz)?$/i, "")}.sk` : "targets.sk";
-      download(name, new Blob([data.index]));
-    } else if (data.type === MSG.RESULT) {
-      running = false;
-      const took = data.seconds < 1 ? `${Math.round(data.seconds * 1000)} ms` : `${data.seconds.toFixed(1)} s`;
-      setStatus(`Done in ${took}`, { fraction: 1 });
-      render(data.tsv);
-      download("skope.tsv", new Blob([data.tsv], { type: "text/tab-separated-values" }));
-    } else if (data.type === MSG.ERROR) {
-      running = false;
-      setStatus(`Error: ${data.message}`, { error: true, fraction: 0 });
-    }
-    update();
-  }
-
-  function startWorker() {
-    worker?.terminate();
-    ready = running = false;
-    worker = new Worker("worker.js", { type: "module" });
-    worker.onmessage = onMessage;
-    worker.onerror = (event) => {
-      event.preventDefault();
-      setStatus(`Error: ${event.message || "worker failed to load"}. Build pkg/ with ./build.sh`, { error: true });
-    };
-    update();
-  }
-
-  function setupDrop(kind) {
-    const zone = $(`${kind}-zone`);
-    const input = $(`${kind}-input`);
-    const choose = (list) => {
-      files[kind] = [...list];
-      zone.classList.toggle("loaded", files[kind].length > 0);
-      $(`${kind}-files`).textContent = files[kind].map((file) => `${file.name} (${formatBytes(file.size)})`).join("\n");
-      update();
-    };
-    zone.addEventListener("click", () => input.click());
-    zone.addEventListener("dragover", (event) => { event.preventDefault(); zone.classList.add("dragover"); });
-    zone.addEventListener("dragleave", () => zone.classList.remove("dragover"));
-    zone.addEventListener("drop", (event) => {
-      event.preventDefault();
-      zone.classList.remove("dragover");
-      choose(event.dataTransfer.files);
-    });
-    input.addEventListener("change", () => choose(input.files));
-    return () => { input.value = ""; choose([]); };
-  }
-
-  // Bases with an optional K, M or G suffix, as `skope query --limit`
-  function parseBases(text) {
-    const match = text.trim().match(/^(\d+(?:\.\d+)?)\s*([kmg]?)$/i);
-    if (!match) throw new Error(`Invalid limit ${text}: expected bases such as 50M`);
-    return Math.round(Number(match[1]) * { "": 1, k: 1e3, m: 1e6, g: 1e9 }[match[2].toLowerCase()]);
-  }
-
-  function options() {
-    const allKmers = $("all-kmers").checked;
-    const thresholds = $("thresholds").value.split(",").map((t) => t.trim()).filter(Boolean).map(Number);
-    if (thresholds.some((t) => !Number.isInteger(t) || t < 0)) throw new Error("Abundance thresholds must be whole numbers");
-    return {
-      kmer: Number($("kmer").value),
-      smer: allKmers ? undefined : Number($("smer").value),
-      allKmers,
-      individual: $("individual").checked,
-      discriminatory: $("discriminatory").checked,
-      confidence: $("confidence").checked,
-      abundanceThresholds: thresholds,
-      sort: $("sort").value,
-      noTotal: !$("total").checked,
-      fraction: Number($("fraction").value),
-      complexity: Number($("complexity").value),
-      limit: $("limit").value.trim() ? parseBases($("limit").value) : undefined,
-    };
-  }
-
-  const clears = ["targets", "samples", "background"].map(setupDrop);
-  $("all-kmers").addEventListener("change", update);
-
-  $("run-btn").addEventListener("click", () => {
-    let message;
-    try {
-      message = {
-        type: MSG.RUN,
-        targets: files.targets,
-        background: files.background,
-        sampleFiles: files.samples,
-        layout: document.querySelector('input[name="layout"]:checked').value,
-        options: options(),
-        saveIndex: $("save-index").checked,
-      };
-    } catch (err) {
-      setStatus(`Error: ${err.message}`, { error: true });
-      return;
-    }
-    clearOutput();
-    running = true;
-    setStatus("Starting…", { fraction: 0 });
-    worker.postMessage(message);
-    update();
-  });
-
-  // Terminating the worker also cancels a run
-  $("reset-btn").addEventListener("click", () => {
-    clears.forEach((clear) => clear());
-    clearOutput();
-    setStatus("Loading wasm…", { fraction: 0 });
-    startWorker();
-  });
-
-  startWorker();
-</script>
+<script type="module" src="./app.js"></script>
 </body>
 </html>

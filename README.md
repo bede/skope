@@ -168,7 +168,7 @@ Passing `--dump-kmers <path>` to `skope query` writes the selected _canonical_ t
 ./skope-wasm/serve.sh  # then open http://localhost:8000
 ```
 
-The demo takes targets as one fastx file, several files (as for a directory, one target per file), or a query index (`.sk`). Samples can be single, paired (R1 and R2 files) or interleaved. Background masking and most query options are available, and the demo can save its targets as a query index for the CLI or later use.
+The demo takes targets as one fastx file, several files (as for a directory, one target per file), or a query index (`.sk`). Samples can be single, paired (R1 and R2 files pair automatically) or interleaved, and directories can be dropped. Background masking and most query options are available.
 
 Browser mode reads plain and gzipped FASTA/FASTQ only, not CBQ, zstd, xz or bzip2. It runs about 3× slower than the CLI on one thread, and has at most 4 GiB of memory.
 

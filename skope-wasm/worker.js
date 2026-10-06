@@ -1,65 +1,54 @@
 // Runs a query off the main thread. FileReaderSync lets wasm pull file slices as it parses
 import init, { Query, matesName, sampleName } from "./pkg/skope_wasm.js";
-import { MSG } from "./protocol.js";
+import { MSG, PHASE } from "./protocol.js";
 
 const PROGRESS_MS = 100;
-const files = new FileReaderSync();
-const bytes = (blob) => new Uint8Array(files.readAsArrayBuffer(blob));
+const reader = new FileReaderSync();
+const bytes = (blob) => new Uint8Array(reader.readAsArrayBuffer(blob));
 const read = (file) => (offset, length) => bytes(file.slice(offset, offset + length));
 const post = (type, data = {}) => self.postMessage({ type, ...data });
-const log = (line) => post(MSG.LOG, { line });
-
 const isIndex = (file) => new TextDecoder().decode(bytes(file.slice(0, 4))) === "SKPE";
+// Summaries lead with their stream, e.g. "Sample: ", which the page already shows
+const unlabel = (summary) => summary.replace(/^(Targets|Background|Sample): /gm, "");
 
-// Progress of one stage over `size` input bytes, throttled
-function progress(stage, size) {
+// Throttled progress of item `item` in `phase`
+function progress(phase, item) {
   let last = 0;
-  post(MSG.PROGRESS, { stage, records: 0, bases: 0, bytes: 0, size });
+  post(MSG.PROGRESS, { phase, item, bytes: 0, bases: 0 });
   return (records, bases, read) => {
     const now = performance.now();
     if (now - last < PROGRESS_MS) return;
     last = now;
-    post(MSG.PROGRESS, { stage, records, bases, bytes: read, size });
+    post(MSG.PROGRESS, { phase, item, records, bases, bytes: read });
   };
 }
 
-// Samples as single files, consecutive R1/R2 files sorted by name, or interleaved files
-function samples(list, layout) {
-  if (layout !== "paired") {
-    return list.map((file) => ({ name: sampleName(file.name), files: [file] }));
-  }
-  const sorted = [...list].sort((a, b) => a.name.localeCompare(b.name));
-  if (sorted.length % 2) throw new Error("Paired samples need an R1 and R2 file each");
-  return sorted.flatMap((file, i) => (i % 2 ? [] : [{ name: matesName(file.name), files: [file, sorted[i + 1]] }]));
-}
-
-function run({ targets, background, sampleFiles, layout, options, saveIndex }) {
+function run({ targets, background, samples, interleaved, options }) {
   const started = performance.now();
-  const list = samples(sampleFiles, layout);
   const query = new Query(options);
   try {
+    let info;
     if (targets.length === 1 && isIndex(targets[0])) {
       query.loadIndex(bytes(targets[0]));
-      log(`Index: ${targets[0].name} (k=${query.kmer}, ${query.smer ? `s=${query.smer}` : "all k-mers"})`);
+      info = `Query index, k=${query.kmer}, ${query.smer ? `s=${query.smer}` : "all k-mers"}`;
     } else {
-      for (const file of targets) {
-        query.addTargets(sampleName(file.name), read(file), progress(`Targets: ${file.name}`, file.size));
-      }
+      targets.forEach((file, i) => {
+        query.addTargets(sampleName(file.name), read(file), progress(PHASE.TARGETS, i));
+      });
     }
-    for (const file of background) {
-      log(query.addBackground(read(file), progress(`Background: ${file.name}`, file.size)));
-    }
-    if (saveIndex) {
-      const index = query.index();
-      self.postMessage({ type: MSG.INDEX, index }, [index.buffer]);
-    }
-    for (const line of query.prepare().split("\n")) log(line);
-    for (const sample of list) {
-      const [r1, r2] = sample.files;
-      const size = sample.files.reduce((sum, file) => sum + file.size, 0);
-      const report = progress(`Sample: ${sample.name}`, size);
-      log(query.addSample(sample.name, read(r1), r2 && read(r2), layout === "interleaved", report));
-    }
+    background.forEach((file, i) => {
+      const summary = query.addBackground(read(file), progress(PHASE.BACKGROUND, i));
+      post(MSG.BACKGROUND, { item: i, summary: unlabel(summary) });
+    });
+    const summary = unlabel(query.prepare());
+    post(MSG.TARGETS, { summary: info ? `${info}\n${summary}` : summary });
+    samples.forEach((files, i) => {
+      const [r1, r2] = files;
+      const name = r2 ? matesName(r1.name) : sampleName(r1.name);
+      const report = progress(PHASE.SAMPLES, i);
+      const summary = query.addSample(name, read(r1), r2 && read(r2), !r2 && interleaved, report);
+      post(MSG.SAMPLE, { item: i, name, summary: unlabel(summary) });
+    });
     post(MSG.RESULT, { tsv: query.tsv(), seconds: (performance.now() - started) / 1000 });
   } finally {
     query.free();
