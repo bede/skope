@@ -24,8 +24,8 @@
   /* Collapsible section, its heading doubling as the toggle */
   summary.section-head { cursor: pointer; list-style: none; width: fit-content; }
   summary.section-head::-webkit-details-marker { display: none; }
-  summary.section-head::after { content: " ▸"; color: var(--accent); }
-  details[open] > summary.section-head::after { content: " ▾"; }
+  summary.section-head::after { content: "▸"; display: inline-block; margin-left: 0.4em; font-size: 1.6em; line-height: 0; vertical-align: -0.04em; color: var(--accent); }
+  details[open] > summary.section-head::after { content: "▾"; }
   summary.section-head:hover { color: #555; }
   .usage { color: #444; font-size: 0.9rem; }
   .usage ol { list-style: none; counter-reset: step; }
