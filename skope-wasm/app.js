@@ -2,8 +2,8 @@
 import { MSG, PHASE } from "./protocol.js?v=dev";
 import { SEQ_RE, describeGroups, pairSequenceFiles } from "./pairing.js?v=dev";
 
-// Source commit, stamped by deploy.sh like every ?v= cache token
-const BUILD = "dev";
+// Source commit, from the ?v= cache token deploy.sh stamps on this module
+const BUILD = new URL(import.meta.url).searchParams.get("v") ?? "dev";
 
 const MAX_ROWS = 2000;
 const INDEX_RE = /\.sk$/i;
@@ -11,7 +11,7 @@ const UNSUPPORTED_RE = /\.(zst|xz|bz2)$/i;
 const PHASE_LABELS = {
   [PHASE.TARGETS]: "Collecting target k-mers",
   [PHASE.BACKGROUND]: "Masking background",
-  [PHASE.SAMPLES]: "Counting sample",
+  [PHASE.SAMPLES]: "Processing sample",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -289,7 +289,7 @@ function onProgress({ phase, item, bytes, bases }) {
   if (phase === PHASE.SAMPLES) {
     const size = run.sizes[phase][item];
     rows[item].li.className = "active";
-    rows[item].st.textContent = `counting ${size ? Math.min(100, (bytes / size) * 100).toFixed(0) : 100}%`;
+    rows[item].st.textContent = `processing ${size ? Math.min(100, (bytes / size) * 100).toFixed(0) : 100}%`;
   }
 }
 
