@@ -12,7 +12,7 @@ Skope is being used in applications such as [metagenomic control validation](htt
 
 ```bash
 # Bioconda
-conda install -c bioconda deacon
+conda install -c bioconda skope
 
 # Latest stable
 RUSTFLAGS="-C target-cpu=native" cargo install skope
