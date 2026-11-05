@@ -9,26 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `--all-kmers` disables syncmer selection and instead selects and evaluates all (canonical) *k*-mers. Underneath this simply fixes `s=0`. Use this to hunt for individual k-mers. This (unsurprisingly!) uses more memory.
 - `query`, `classify` and `lenhist` accept paired samples, given as R1,R2 or as interleaved files with `--interleaved`. Mates pool their *k*-mers, and paired and single samples can share a run.
 - Support for BINSEQ CBQ input (`.cbq`/`.cba`) for targets, backgrounds and samples. Paired reads are supported either as separate files with comma-delimited paths or as single files in conjunction with `--interleaved`.
-- `skope-wasm`: WebAssembly bindings for `query`, with a browser demo. See [Browser](README.md#browser).
-- `QuerySession` runs `index build-query` and `query` over `std::io::Read` streams on one thread, for embedding.
+- `--all-kmers` disables syncmer selection and instead selects and evaluates all (canonical) *k*-mers. Underneath this simply fixes `s=0`. Use this to hunt for individual k-mers. This uses more memory!
+- WebAssembly bindings for `skope query`, with a browser demo. See [Browser](README.md#browser).
 
 ### Changed
 
 - `--dump-syncmers` is now `--dump-kmers`.
-- `classify` and `lenhist` use distinct *k*-mers for match thresholds. Zero hits never match, and `-r` must be in `[0, 1]`.
-- `classify --per-seq` reports distinct hits and *k*-mers, with one row per pair.
-- Faster `--limit` checks, once per batch. Limits are approximate.
+- Faster `--limit` checks once per batch. Limits are approximate.
 - Commands that write indexes detect uncaptured stdout and refuse to write rather than clobber the current shell.
-- Native file I/O, multithreading and the binary need the new default `cli` feature. Without it, the library builds for wasm32 (with `scalar`), and `classify` and `length` are unavailable.
-- `Input` is generic over its source, defaulting to `PathBuf`.
+- Native file I/O, multithreading and the binary need the new default `cli` feature. Without it, the library builds for wasm32.
+- ~2.5x faster under wasm32 due to simd128 intrinsics added in packed-seq 5.1.1, seq-hash 0.2.1 and simd-minimizers 3.1.0. Single core throughput for rsviruses17900.fasta is 360 Mbp/s on M5.
 
 ### Fixed
 
+- Fixed integer overflow for base counts under wasm32 caused by using usize (now uses u64).
 - Sound handling of rare (and horrid) Windows line endings in fastx input ([#101](https://github.com/bede/deacon/issues/101)). Previously `\r` was treated as an ambiguous base and would break syncmer selection in wrapped multiline fastx. Fixed via paraseq 0.6.0.
-- Paired and interleaved batching for 151/251 bp records and unequal mate lengths.
 - `--fraction` selected different *k*-mers on 32-bit targets, where rapidhash approximates its multiply. Selection on 64-bit targets is unchanged.
 
 ## [0.5.0] - 2026-09-14

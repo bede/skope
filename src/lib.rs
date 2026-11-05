@@ -117,7 +117,7 @@ pub struct ProcessingStats {
     pub last_reported: u64,
 }
 
-pub fn format_bp(bp: usize) -> String {
+pub fn format_bp(bp: u64) -> String {
     if bp >= 1_000_000_000 {
         format!("{:.1}Gbp", bp as f64 / 1_000_000_000.0)
     } else if bp >= 1_000_000 {

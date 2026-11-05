@@ -165,7 +165,7 @@ fn process_seqs_input(
         eprintln!(
             "Sample: {} records ({}), {} classified, {} ambiguous, {} unclassified ({})",
             stats.total_seqs,
-            format_bp(stats.total_bp as usize),
+            format_bp(stats.total_bp),
             classified,
             ambiguous,
             unclassified,
@@ -267,7 +267,7 @@ pub fn run_lenhist(config: &LengthHistogramConfig) -> Result<()> {
     }
 
     if let Some(limit) = config.limit_bp {
-        options.push_str(&format!(", limit={}", format_bp(limit as usize)));
+        options.push_str(&format!(", limit={}", format_bp(limit)));
     }
 
     eprintln!("Skope v{}; mode: lenhist; options: {}", version, options);

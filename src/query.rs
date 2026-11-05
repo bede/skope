@@ -886,7 +886,7 @@ fn counted_summary(label: &str, stats: &ProcessingStats, found: usize, total: us
     format!(
         "{label}: {} records ({}), found {found} of {total} distinct target k-mers",
         stats.total_seqs,
-        format_bp(stats.total_bp as usize)
+        format_bp(stats.total_bp)
     )
 }
 
@@ -1002,7 +1002,7 @@ fn targets_summary(
         format!(
             "Targets: {} records ({}), {} discriminatory k-mers ({} shared k-mers dropped)",
             targets.len(),
-            format_bp(total_bp),
+            format_bp(total_bp as u64),
             total_unique_kmers,
             shared_kmers
         )
@@ -1015,7 +1015,7 @@ fn targets_summary(
         format!(
             "Targets: {} records ({}), {} k-mers, of which {} ({:.1}%) shared by multiple targets",
             targets.len(),
-            format_bp(total_bp),
+            format_bp(total_bp as u64),
             total_unique_kmers,
             shared_kmers,
             shared_pct

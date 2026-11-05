@@ -93,9 +93,9 @@ function setTargets(files) {
   targets = error ? [] : indexes.length ? indexes : seqs.sort((a, b) => (relativePath(a) < relativePath(b) ? -1 : 1));
 
   let summary = "";
-  if (indexes.length && targets.length) summary = `${targets[0].name} · query index · ${humanBytes(targets[0].size)}`;
-  else if (targets.length === 1) summary = `${targets[0].name} · ${humanBytes(targets[0].size)}`;
-  else if (targets.length) summary = `${targets.length} target files, one target each · ${humanBytes(totalSize(targets))}`;
+  if (indexes.length && targets.length) summary = `${targets[0].name} (query index, ${humanBytes(targets[0].size)})`;
+  else if (targets.length === 1) summary = `${targets[0].name} (${humanBytes(targets[0].size)})`;
+  else if (targets.length) summary = `${targets.length} target files, one target each, ${humanBytes(totalSize(targets))} in total`;
   else if (files.length && !error) summary = "No fasta/fastq files or query index found";
   setZone("targets", targets, summary, error);
 }
@@ -110,7 +110,7 @@ function setSamples(files) {
   }
   const size = samples.reduce((sum, group) => sum + group.size, 0);
   let summary = "";
-  if (samples.length) summary = `${plural(samples.length, "sample")} (${describeGroups(samples)}) · ${humanBytes(size)}`;
+  if (samples.length) summary = `${plural(samples.length, "sample")} (${describeGroups(samples)}), ${humanBytes(size)} in total`;
   else if (files.length && !error) summary = "No fasta/fastq files found in selection";
   setZone("samples", samples, summary, error);
   renderRows();
@@ -120,7 +120,7 @@ function setBackground(files) {
   const error = unsupported(files);
   background = error ? [] : files.filter((file) => SEQ_RE.test(file.name));
   let summary = "";
-  if (background.length) summary = `${plural(background.length, "background file")} · ${humanBytes(totalSize(background))}`;
+  if (background.length) summary = `${plural(background.length, "background file")}, ${humanBytes(totalSize(background))} in total`;
   else if (files.length && !error) summary = "No fasta/fastq files found";
   setZone("background", background, summary, error);
 }
@@ -284,7 +284,7 @@ function onProgress({ phase, item, bytes, bases }) {
   const count = run.sizes[phase].length;
   $("progress").value = pct;
   $("progress-label").textContent =
-    `${PHASE_LABELS[phase]} ${count > 1 ? `${item + 1} of ${count} ` : ""}· ` +
+    `${PHASE_LABELS[phase]}${count > 1 ? ` ${item + 1} of ${count}` : ""}: ` +
     `${humanBytes(done)} / ${humanBytes(run.total)} (${pct.toFixed(1)}%)`;
   if (phase === PHASE.SAMPLES) {
     const size = run.sizes[phase][item];
@@ -312,7 +312,7 @@ function onMessage({ data }) {
       const found = /found (\d+) of (\d+)/.exec(data.summary);
       rows[data.item].li.className = "done";
       rows[data.item].st.textContent = found
-        ? `done · ${Number(found[1]).toLocaleString()} of ${Number(found[2]).toLocaleString()} k-mers found`
+        ? `done. ${Number(found[1]).toLocaleString()} of ${Number(found[2]).toLocaleString()} k-mers found`
         : "done";
       break;
     }

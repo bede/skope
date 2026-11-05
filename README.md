@@ -138,16 +138,9 @@ skope query --confidence refs.fa sample.fq
 
   - Fewer than 3 k-mers at either the modal nonzero depth or the depth above it
 
-## Paired samples
+## Paired sequences
 
-Give a paired sample as two comma-separated files (R1,R2), or use `--interleaved` for interleaved files. Paired and single samples can share a run. Mates pool their *k*-mers: `query` counts each target *k*-mer at most once per pair, while `classify` and `lenhist` give both mates the same classification. `classify --per-seq` writes one row per pair. A paired sample is named after its R1 file, minus a mate tag such as `_R1`.
-
-Summaries count both mates, and `lenhist` bins their lengths separately under the pair's classification. `--limit` is approximate and checked per batch, so in-flight batches can finish beyond the limit.
-
-```bash
-skope query refs.fa a_R1.fq.gz,a_R2.fq.gz b_R1.fq.gz,b_R2.fq.gz c.fq.gz
-skope query --interleaved refs.fa a.interleaved.fq.gz
-```
+Specify a paired sample as two comma-separated file paths (`r1.fastq.gz,r2.fastq.gz`), or use `--interleaved` for interleaved paired sequences.
 
 ## CBQ input
 
@@ -161,21 +154,4 @@ Passing `--dump-kmers <path>` to `skope query` writes the selected _canonical_ t
 
 ## Browser
 
-`skope-wasm` runs `skope query` in the browser as WebAssembly, on one thread with SIMD128. Files are read locally and never uploaded, and results match the CLI's. Try it at [bede.im/skope](https://bede.im/skope/).
-
-```bash
-./skope-wasm/build.sh  # needs wasm-pack
-./skope-wasm/serve.sh  # then open http://localhost:8000
-```
-
-The demo takes targets as one fastx file, several files (as for a directory, one target per file), or a query index (`.sk`). Samples can be single, paired (R1 and R2 files pair automatically) or interleaved, and directories can be dropped. Background masking and most query options are available.
-
-Browser mode reads plain and gzipped FASTA/FASTQ only, not CBQ, zstd, xz or bzip2. It runs about 3× slower than the CLI on one thread, and has at most 4 GiB of memory.
-
-In JavaScript, `Query` takes inputs as synchronous `read(offset, length)` callbacks that return a `Uint8Array`, such as `FileReaderSync` reads in a worker (see `skope-wasm/worker.js`). In Rust, `skope::QuerySession` runs the same pipeline over any `std::io::Read`. To check the compiled wasm against the CLI:
-
-```bash
-cargo build --release && ./skope-wasm/build.sh nodejs && node skope-wasm/parity.mjs
-```
-
-`./skope-wasm/deploy.sh` runs this check, builds the demo and publishes it to `bede.github.io/skope/`, as for deacon. `--no-push` commits without pushing.
+`skope-wasm` runs `skope query` in the browser as WebAssembly. Try it at [bede.im/skope](https://bede.im/skope/).

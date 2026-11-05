@@ -311,7 +311,7 @@ pub(crate) fn build_classification_index(
                 group.files.len(),
                 if group.files.len() == 1 { "" } else { "s" },
                 stats.total_seqs,
-                format_bp(stats.total_bp as usize),
+                format_bp(stats.total_bp),
                 group_kmers,
                 unique_kmers,
             );
@@ -385,7 +385,7 @@ fn build_individual_groups(
             "  {} records from {} ({})",
             names.len(),
             group.name,
-            format_bp(stats.total_bp as usize),
+            format_bp(stats.total_bp),
         );
     }
 
@@ -1264,7 +1264,7 @@ fn process_sample(
                 "Sample {}: {} seqs ({}) ({})",
                 sample_name,
                 stats.total_seqs,
-                format_bp(stats.total_bp as usize),
+                format_bp(stats.total_bp),
                 format_bp_per_sec(bp_per_sec)
             );
         }

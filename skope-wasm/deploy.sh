@@ -10,7 +10,8 @@ PAGES_ROOT="${PAGES_ROOT:-$(dirname "$REPO")/bede.github.io}"
 DEST="$PAGES_ROOT/skope"
 
 # The deployed app. skope/ holds only these, so a rename can't leave an orphan behind
-FILES=(index.html app.js pairing.js protocol.js worker.js pkg/skope_wasm.js pkg/skope_wasm_bg.wasm)
+FILES=(index.html fonts.css app.js pairing.js protocol.js worker.js pkg/skope_wasm.js pkg/skope_wasm_bg.wasm
+  fonts/{fraunces,geist,geist-mono}-latin{,-ext}.woff2)
 
 git -C "$PAGES_ROOT" rev-parse --git-dir > /dev/null
 
@@ -32,7 +33,7 @@ mkdir -p "$DEST"
 (cd "$SRC" && rsync -R "${FILES[@]}" "$DEST/")
 
 # One deployment is one coherent module graph, so stamp every cache token with the revision
-sed -E -i.bak "s/[?]v=dev\"/?v=$SOURCE_HASH\"/g" "$DEST"/*.html "$DEST"/*.js
+sed -E -i.bak "s/[?]v=dev\"/?v=$SOURCE_HASH\"/g" "$DEST"/*.html "$DEST"/*.css "$DEST"/*.js
 rm "$DEST"/*.bak
 echo "Deployed skope-wasm $SOURCE_HASH to $DEST"
 

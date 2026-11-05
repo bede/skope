@@ -192,7 +192,7 @@ impl Progress {
                 "{}: {} seqs ({}). {:.0} seqs/s ({})",
                 self.label,
                 stats.total_seqs,
-                format_bp(stats.total_bp as usize),
+                format_bp(stats.total_bp),
                 stats.total_seqs as f64 / secs,
                 format_bp_per_sec(stats.total_bp as f64 / secs)
             ));

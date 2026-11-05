@@ -300,7 +300,7 @@ pub fn print_query_index_info(path: &Path) -> Result<()> {
     println!("  S-mer length (s): {smer_length}");
     println!("  Targets: {n_targets}");
     println!("  Total k-mers: {total_kmers}");
-    println!("  Total length: {}", format_bp(total_bp as usize));
+    println!("  Total length: {}", format_bp(total_bp));
     println!(
         "  FracMinHash fraction: {}",
         if fraction >= 1.0 {
@@ -471,7 +471,7 @@ pub fn run_query(config: &ContainmentConfig) -> Result<()> {
     }
 
     if let Some(limit) = config.limit_bp {
-        options.push_str(&format!(", limit={}", format_bp(limit as usize)));
+        options.push_str(&format!(", limit={}", format_bp(limit)));
     }
 
     let source = resolve_targets(&config.targets_path, IndexKind::Query, StdinTargets::Reject)?;

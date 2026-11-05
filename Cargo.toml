@@ -20,7 +20,7 @@ too_many_arguments = "allow"
 [features]
 # Native file I/O, multithreading and the skope binary
 cli = ["dep:clap", "dep:rayon", "dep:csv", "dep:indicatif", "dep:binseq"]
-# Build without AVX2 or NEON, e.g. for wasm32, which uses simd128
+# Build without AVX2, NEON or simd128
 scalar = ["packed-seq/scalar", "simd-minimizers/scalar"]
 # Enable all compression formats supported by niffler. Disable for faster builds.
 compression = ["niffler/default", "dep:flate2"]
@@ -47,8 +47,8 @@ parking_lot = "0.12"
 indicatif = { version = "0.18", optional = true }
 wincode = "0.6.1"
 
-packed-seq = "5.0.0"
-simd-minimizers = "3.0.0"
+packed-seq = { version = "5.1.1", default-features = false }
+simd-minimizers = "3.1.0"
 
 paraseq = { version = "0.6.0", default-features = false, features = ["anyhow", "niffler"] }
 niffler = { version = "3", default-features = false }
