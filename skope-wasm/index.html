@@ -16,15 +16,15 @@
   a { color: #333; text-decoration: underline; }
   a:hover { color: #000; }
   /* Counter numerals, so hidden sections leave no gap */
-  .section-head, .usage-head { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: #888; margin: 1.5rem 0 0.5rem; }
+  .section-head, .usage-head { font-family: var(--mono); font-size: 0.85rem; color: #555; margin: 1.5rem 0 0.5rem; }
   .section-head { counter-increment: section; }
   .section-head::before { content: counter(section) " "; color: var(--accent); }
   /* Collapsible section, its heading doubling as the toggle */
   summary.section-head { cursor: pointer; list-style: none; width: fit-content; }
   summary.section-head::-webkit-details-marker { display: none; }
-  summary.section-head::after { content: "▸"; display: inline-block; margin-left: 0.4em; font-size: 1.6em; line-height: 0; vertical-align: -0.04em; color: var(--accent); }
+  summary.section-head::after { content: "▸"; display: inline-block; margin-left: 0.4em; font-size: 1.4em; line-height: 0; vertical-align: -0.04em; color: var(--accent); }
   details[open] > summary.section-head::after { content: "▾"; }
-  summary.section-head:hover { color: #555; }
+  summary.section-head:hover { color: #333; }
   .usage { color: #444; font-size: 0.9rem; }
   .usage ol { list-style: none; counter-reset: step; }
   .usage li { position: relative; padding-left: 1.4rem; margin-bottom: 0.3rem; line-height: 1.45; }
